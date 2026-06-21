@@ -1,0 +1,13 @@
+# Default ignore rules for `ground docs ingest`. Glob syntax (gitignore-style).
+.git/
+node_modules/
+dist/
+build/
+coverage/
+.env
+.env.*
+*.key
+*.pem
+secrets/
+*.lock
+*.tsbuildinfo

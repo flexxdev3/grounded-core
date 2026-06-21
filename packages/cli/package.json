@@ -1,0 +1,27 @@
+{
+  "name": "@grounded/cli",
+  "version": "0.1.0",
+  "description": "Grounded CLI — the `ground` command.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "ground": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@grounded/core": "workspace:*",
+    "commander": "^15.0.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
