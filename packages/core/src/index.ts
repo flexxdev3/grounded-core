@@ -15,3 +15,13 @@ export * from "./contract.js";
 export { loadConfig, defaultConfig, CONFIG_FILENAME } from "./config.js";
 export { openStore } from "./store.js";
 export { createEmbeddingProvider } from "./embedding/index.js";
+
+// Install helpers — ready-to-paste MCP server config snippets (dependency-free).
+export {
+  installSnippet,
+  allInstallSnippets,
+  INSTALL_TARGETS,
+  SERVER_KEY,
+  BIN_COMMAND,
+} from "./install/config.js";
+export type { InstallTarget, InstallSnippet } from "./install/config.js";

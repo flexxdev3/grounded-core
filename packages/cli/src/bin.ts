@@ -8,7 +8,16 @@ import { docsCommand } from "./commands/docs.js";
 import { recallCommand } from "./commands/recall.js";
 import { getCommand } from "./commands/get.js";
 import { briefCommand } from "./commands/brief.js";
+import { mcpCommand } from "./commands/mcp.js";
+import { hooksCommand } from "./commands/hooks.js";
+import { uiCommand } from "./commands/ui.js";
 import type { GlobalOpts } from "./util/store.js";
+
+// Exit quietly when a downstream pipe closes early (e.g. `ground ... | head`).
+process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EPIPE") process.exit(0);
+  throw err;
+});
 
 const program = new Command();
 
@@ -36,6 +45,9 @@ program.addCommand(docsCommand(global));
 program.addCommand(recallCommand(global));
 program.addCommand(getCommand(global));
 program.addCommand(briefCommand(global));
+program.addCommand(mcpCommand(global));
+program.addCommand(hooksCommand(global));
+program.addCommand(uiCommand(global));
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);

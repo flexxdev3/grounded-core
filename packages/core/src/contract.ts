@@ -283,6 +283,8 @@ export interface ListOptions {
   project?: string;
   scope?: string;
   status?: string;
+  /** docs only: return one row per document (chunk 0) instead of every chunk. */
+  documents?: boolean;
 }
 
 // ---------------------------------------------------------------------------

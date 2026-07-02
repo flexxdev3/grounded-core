@@ -506,6 +506,7 @@ export class SqliteStore implements Store {
       where.push("status = ?");
       params.push(opts.status);
     }
+    if (opts?.documents) where.push("chunk_idx = 0");
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
     const limit = opts?.limit ?? 100;
     const offset = opts?.offset ?? 0;
@@ -684,7 +685,7 @@ export class SqliteStore implements Store {
       );
       const ids = unionIds(vec, lex);
       const meta = this.factsMeta(ids);
-      const out = fuseLane("fact", vec, lex, meta, this.cfg);
+      const out = fuseLane("fact", vec, lex, meta, this.cfg).slice(0, limit);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
@@ -707,7 +708,7 @@ export class SqliteStore implements Store {
         : vec;
       const ids = unionIds(filteredVec, lex);
       const meta = this.sessionsMeta(ids);
-      const out = fuseLane("session", filteredVec, lex, meta, this.cfg);
+      const out = fuseLane("session", filteredVec, lex, meta, this.cfg).slice(0, limit);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
@@ -720,7 +721,7 @@ export class SqliteStore implements Store {
       const lex = this.lexicalLane("fts_docs", "docs", matchExpr, undefined, laneN);
       const ids = unionIds(vec, lex);
       const meta = this.docsMeta(ids);
-      const out = fuseLane("doc", vec, lex, meta, this.cfg);
+      const out = fuseLane("doc", vec, lex, meta, this.cfg).slice(0, limit);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
@@ -728,7 +729,11 @@ export class SqliteStore implements Store {
       }
     }
 
-    const ordered = orderResults(fused, orderMeta).slice(0, limit);
+    // Per-lane cap already applied above (each source contributes up to `limit`).
+    // orderResults groups by source tier (facts → sessions → docs), each ranked
+    // within its lane — the live system's sectioned model. No global truncation,
+    // so a weak-but-present fact can never bury a strong session/doc.
+    const ordered = orderResults(fused, orderMeta);
     return ordered.map((f) => this.toRecallResult(f));
   }
 

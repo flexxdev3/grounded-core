@@ -1,0 +1,3 @@
+[mcp_servers.grounded]
+command = "grounded-mcp"
+args = []

@@ -423,6 +423,7 @@ export class PostgresStore implements Store {
       params.push(opts.status);
       where.push(`status = $${params.length}`);
     }
+    if (opts?.documents) where.push("chunk_idx = 0");
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
     params.push(opts?.limit ?? 100);
     const limitIdx = params.length;
@@ -590,7 +591,7 @@ export class PostgresStore implements Store {
       for (const h of vec) ids.add(h.id);
       for (const h of lex) ids.add(h.id);
       const meta = await this.metaFor(st, [...ids]);
-      const out = fuseLane(st, vec, lex, meta, this.cfg);
+      const out = fuseLane(st, vec, lex, meta, this.cfg).slice(0, limit);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
@@ -598,7 +599,10 @@ export class PostgresStore implements Store {
       }
     }
 
-    const ordered = orderResults(fused, orderMeta).slice(0, limit);
+    // Per-lane cap already applied above (each source contributes up to `limit`).
+    // orderResults groups by source tier, each ranked within its lane — the live
+    // system's sectioned model. No global truncation across sources.
+    const ordered = orderResults(fused, orderMeta);
     const out: RecallResult[] = [];
     for (const f of ordered) {
       const r = await this.toRecallResult(f);

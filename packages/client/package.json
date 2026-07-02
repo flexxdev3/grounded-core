@@ -1,12 +1,16 @@
 {
-  "name": "@grounded/api",
+  "name": "@grounded/client",
   "version": "0.1.0",
-  "description": "Grounded REST API (Hono).",
+  "description": "Grounded API client — a thin typed fetch wrapper.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
-  "bin": {
-    "grounded-api": "./dist/bin.js"
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "files": [
     "dist"
@@ -17,12 +21,10 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@grounded/core": "workspace:*",
-    "@grounded/ui": "workspace:*",
-    "hono": "^4.12.0",
-    "@hono/node-server": "^1.13.7"
+    "@grounded/core": "workspace:*"
   },
   "devDependencies": {
+    "@grounded/api": "workspace:*",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   }

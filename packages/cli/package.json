@@ -8,7 +8,8 @@
     "ground": "./dist/bin.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "hooks"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -17,6 +18,7 @@
   },
   "dependencies": {
     "@grounded/core": "workspace:*",
+    "@grounded/api": "workspace:*",
     "commander": "^15.0.0",
     "picocolors": "^1.1.1"
   },

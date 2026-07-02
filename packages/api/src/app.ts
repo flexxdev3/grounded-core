@@ -231,6 +231,7 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
     };
     const source = c.req.query("source");
     if (source !== undefined) opts.scope = source;
+    if (c.req.query("documents") === "true") opts.documents = true;
     return c.json(await store.docsList(opts));
   });
 

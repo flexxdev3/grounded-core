@@ -17,6 +17,17 @@ export function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
+/** commander reducer for repeatable `--env KEY=VAL` flags. */
+export function parseEnvPair(
+  value: string,
+  acc: Record<string, string> = {},
+): Record<string, string> {
+  const i = value.indexOf("=");
+  const key = i > 0 ? value.slice(0, i).trim() : "";
+  if (!key) throw new Error(`expected KEY=VAL, got "${value}"`);
+  return { ...acc, [key]: value.slice(i + 1) };
+}
+
 export function parseTypedId(value: string): import("@grounded/core").TypedId {
   const m = /^(fact|session|doc):(\d+)$/.exec(value);
   if (!m) throw new Error(`invalid typed id "${value}" (expected e.g. doc:12)`);

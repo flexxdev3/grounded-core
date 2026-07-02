@@ -49,8 +49,18 @@ export function recallCommand(global: () => GlobalOpts): Command {
           const results = await store.recall(query, ro);
           if (g.json) return printJson(results);
           if (results.length === 0) return line(c.dim("no results"));
-          header(`${results.length} result(s)`);
-          for (const r of results) printCard(r);
+          // Sectioned like the live recall: each lane ranked within itself.
+          const SECTIONS: { type: SourceType; label: string }[] = [
+            { type: "fact", label: "facts" },
+            { type: "session", label: "sessions" },
+            { type: "doc", label: "docs" },
+          ];
+          for (const { type, label } of SECTIONS) {
+            const lane = results.filter((r) => r.sourceType === type);
+            if (lane.length === 0) continue;
+            header(`${label} · ${lane.length}`);
+            for (const r of lane) printCard(r);
+          }
         });
       },
     );
