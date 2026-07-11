@@ -32,7 +32,7 @@ import {
   type FusedItem,
   type LaneHit,
 } from "../engine/recall.js";
-import { assembleBrief } from "../engine/brief.js";
+import { assembleBrief, deriveFactScopes } from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
 import { chunkText, deriveTitle } from "../ingest/chunk.js";
@@ -143,7 +143,10 @@ export class PostgresStore implements Store {
       params.push(opts.status);
       where.push(`status = $${params.length}`);
     }
-    if (opts?.scope) {
+    if (opts?.scopes && opts.scopes.length > 0) {
+      params.push(opts.scopes);
+      where.push(`scope = ANY($${params.length}::text[])`);
+    } else if (opts?.scope) {
       params.push(opts.scope);
       where.push(`scope = $${params.length}`);
     }
@@ -691,7 +694,11 @@ export class PostgresStore implements Store {
       project: o.project,
       limit: o.recentSessions ?? 8,
     });
-    const facts = await this.factsList({ status: "active", limit: 30 });
+    const facts = await this.factsList({
+      status: "active",
+      scopes: deriveFactScopes(o),
+      limit: 30,
+    });
     let relatedDocs: RecallResult[] = [];
     const hint = o.query ?? o.cwd;
     if (hint) {
@@ -703,15 +710,19 @@ export class PostgresStore implements Store {
   async health(): Promise<HealthReport> {
     let storageOk = true;
     let storageDetail = "postgres + pgvector + tsvector";
-    let counts = { facts: 0, sessions: 0, docs: 0 };
+    let counts = { facts: 0, sessions: 0, docs: 0, documents: 0 };
     try {
       const f = await this.pool.query(`select count(*)::int c from ${this.q("facts")}`);
       const s = await this.pool.query(`select count(*)::int c from ${this.q("sessions")}`);
       const d = await this.pool.query(`select count(*)::int c from ${this.q("docs")}`);
+      const dd = await this.pool.query(
+        `select count(*)::int c from ${this.q("docs")} where chunk_idx = 0`,
+      );
       counts = {
         facts: Number((f.rows[0] as Row).c),
         sessions: Number((s.rows[0] as Row).c),
         docs: Number((d.rows[0] as Row).c),
+        documents: Number((dd.rows[0] as Row).c),
       };
     } catch (err) {
       storageOk = false;
@@ -720,12 +731,18 @@ export class PostgresStore implements Store {
     const embHealth = await this.embedder.health();
     return {
       ok: storageOk && (embHealth.ok || !this.embedder.enabled),
-      storage: { adapter: "postgres", ok: storageOk, detail: storageDetail },
+      storage: {
+        adapter: "postgres",
+        ok: storageOk,
+        detail: storageDetail,
+        location: `${this.schema} schema`,
+      },
       embeddings: {
         provider: this.embedder.id,
         ok: embHealth.ok,
         dims: this.embedder.dims,
         detail: embHealth.detail,
+        model: this.cfg.embeddings.model,
       },
       counts,
     };

@@ -207,6 +207,8 @@ export interface BriefOptions {
   query?: string;
   /** recent-session count (default 8). */
   recentSessions?: number;
+  /** explicit fact scope set; overrides the default global+agent+project derivation. */
+  factScopes?: string[];
   format?: "markdown" | "json";
 }
 
@@ -272,9 +274,10 @@ export interface TimelineOptions {
 
 export interface HealthReport {
   ok: boolean;
-  storage: { adapter: StorageAdapter; ok: boolean; detail?: string };
-  embeddings: { provider: string; ok: boolean; dims: number; detail?: string };
-  counts: { facts: number; sessions: number; docs: number };
+  storage: { adapter: StorageAdapter; ok: boolean; detail?: string; location?: string };
+  embeddings: { provider: string; ok: boolean; dims: number; detail?: string; model?: string };
+  /** `docs` counts chunks; `documents` counts distinct source files (chunk_idx = 0). */
+  counts: { facts: number; sessions: number; docs: number; documents: number };
 }
 
 export interface ListOptions {
@@ -282,6 +285,8 @@ export interface ListOptions {
   offset?: number;
   project?: string;
   scope?: string;
+  /** facts only: match any of these scopes (OR). Takes precedence over `scope`. */
+  scopes?: string[];
   status?: string;
   /** docs only: return one row per document (chunk 0) instead of every chunk. */
   documents?: boolean;

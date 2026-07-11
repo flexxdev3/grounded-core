@@ -35,7 +35,7 @@ import {
   type FusedItem,
   type LaneHit,
 } from "../engine/recall.js";
-import { assembleBrief } from "../engine/brief.js";
+import { assembleBrief, deriveFactScopes } from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
 import { chunkText, deriveTitle } from "../ingest/chunk.js";
@@ -184,7 +184,10 @@ export class SqliteStore implements Store {
       where.push("status = ?");
       params.push(opts.status);
     }
-    if (opts?.scope) {
+    if (opts?.scopes && opts.scopes.length > 0) {
+      where.push(`scope in (${opts.scopes.map(() => "?").join(", ")})`);
+      params.push(...opts.scopes);
+    } else if (opts?.scope) {
       where.push("scope = ?");
       params.push(opts.scope);
     }
@@ -834,7 +837,11 @@ export class SqliteStore implements Store {
       project: o.project,
       limit: recentN,
     });
-    const facts = await this.factsList({ status: "active", limit: 30 });
+    const facts = await this.factsList({
+      status: "active",
+      scopes: deriveFactScopes(o),
+      limit: 30,
+    });
     let relatedDocs: RecallResult[] = [];
     const hint = o.query ?? o.cwd;
     if (hint) {
@@ -849,6 +856,8 @@ export class SqliteStore implements Store {
       sessions: (this.db.prepare(`select count(*) c from sessions`).get() as Row)
         .c as number,
       docs: (this.db.prepare(`select count(*) c from docs`).get() as Row).c as number,
+      documents: (this.db.prepare(`select count(*) c from docs where chunk_idx = 0`).get() as Row)
+        .c as number,
     };
     const embHealth = await this.embedder.health();
     return {
@@ -857,17 +866,20 @@ export class SqliteStore implements Store {
         adapter: "sqlite",
         ok: true,
         detail: this.vectorActive() ? "sqlite-vec + fts5" : "fts5 (lexical-only)",
+        location: this.cfg.storage.path,
       },
       embeddings: {
         provider: this.embedder.id,
         ok: embHealth.ok,
         dims: this.embedder.dims,
         detail: embHealth.detail,
+        model: this.cfg.embeddings.model,
       },
       counts: {
         facts: Number(counts.facts),
         sessions: Number(counts.sessions),
         docs: Number(counts.docs),
+        documents: Number(counts.documents),
       },
     };
   }

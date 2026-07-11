@@ -165,6 +165,26 @@ describe("Store lifecycle (sqlite, embeddings=none)", () => {
     expect(brief.text).toBeUndefined();
   });
 
+  it("facts: scopes filter + brief excludes off-scope facts", async () => {
+    await store.factsAdd({ fact: "in-project fact", scope: "project:alpha" });
+    await store.factsAdd({ fact: "other-project fact", scope: "money" });
+
+    // multi-scope list returns only the requested scopes
+    const scoped = await store.factsList({
+      status: "active",
+      scopes: ["global", "project:alpha"],
+    });
+    const scopeSet = new Set(scoped.map((f) => f.scope));
+    expect(scopeSet.has("project:alpha")).toBe(true);
+    expect(scopeSet.has("money")).toBe(false);
+
+    // brief scoped to project:alpha surfaces its fact, hides the off-scope one
+    const brief = await store.brief({ project: "alpha", format: "markdown" });
+    expect(brief.text).toContain("in-project fact");
+    expect(brief.text).not.toContain("other-project fact");
+    expect(brief.text).toContain("scope: global + project:alpha");
+  });
+
   it("docsPrune marks missing nothing when files present", async () => {
     const res = await store.docsPrune();
     expect(res.missing).toBe(0);

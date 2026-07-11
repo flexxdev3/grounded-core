@@ -13,6 +13,21 @@ export function startupNote(): string {
   return STARTUP_NOTE;
 }
 
+/**
+ * The scope set a brief loads facts from: an explicit `factScopes` override, or
+ * the default `global` + `agent:<agent>` + `project:<project>` derivation. This
+ * is what keeps off-agent scopes (e.g. another project's facts) out of startup.
+ */
+export function deriveFactScopes(opts: BriefOptions): string[] {
+  if (opts.factScopes && opts.factScopes.length > 0) {
+    return [...new Set(opts.factScopes)];
+  }
+  const scopes = ["global"];
+  if (opts.agent) scopes.push(`agent:${opts.agent}`);
+  if (opts.project) scopes.push(`project:${opts.project}`);
+  return [...new Set(scopes)];
+}
+
 export interface BriefParts {
   recentSessions: Session[];
   facts: Fact[];
@@ -33,10 +48,7 @@ export function assembleBrief(parts: BriefParts, opts: BriefOptions): BriefResul
 }
 
 function factsScopeLabel(opts: BriefOptions): string {
-  const scopes = ["global"];
-  if (opts.agent) scopes.push(`agent:${opts.agent}`);
-  if (opts.project) scopes.push(`project:${opts.project}`);
-  return scopes.join(" + ");
+  return deriveFactScopes(opts).join(" + ");
 }
 
 export function renderMarkdown(brief: BriefResult, opts: BriefOptions): string {

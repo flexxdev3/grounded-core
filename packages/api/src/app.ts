@@ -161,8 +161,13 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
 
   // ---- facts ----
   app.get("/facts", async (c) => {
+    const scopesRaw = c.req.query("scopes");
     const opts: ListOptions = {
       scope: c.req.query("scope"),
+      scopes: scopesRaw
+        ? scopesRaw.split(",").map((s) => s.trim()).filter(Boolean)
+        : undefined,
+      status: c.req.query("status"),
       limit: parseIntQuery(c.req.query("limit"), "limit"),
       offset: parseIntQuery(c.req.query("offset"), "offset"),
     };
@@ -271,6 +276,7 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
       cwd: optString(body.cwd, "cwd"),
       query: optString(body.query, "query"),
       recentSessions: optNumber(body.recentSessions, "recentSessions"),
+      factScopes: optStringArray(body.factScopes, "factScopes"),
       format: ((): BriefOptions["format"] => {
         const f = optString(body.format, "format");
         if (f === undefined) return undefined;
