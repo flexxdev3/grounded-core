@@ -36,6 +36,27 @@ export interface Fact {
   updatedAt: string; // ISO-8601
 }
 
+export type VisionStatus = "active" | "superseded";
+
+/**
+ * The direction record — what all the work is FOR. One active record per scope:
+ * "global" (Global Vision) or "project:<name>" (Project Vision). Always injected
+ * into the brief; never ranked by recall.
+ */
+export interface Vision {
+  id: number;
+  /** "global" | "project:<name>". */
+  scope: string;
+  /** the vision itself — narrative markdown. */
+  content: string;
+  status: VisionStatus;
+  supersededBy?: number | null;
+  createdBy?: string | null;
+  source?: string | null;
+  createdAt: string; // ISO-8601
+  updatedAt: string; // ISO-8601
+}
+
 /** A chronological work-log entry. Maps from `labwork`. */
 export interface Session {
   id: number;
@@ -214,6 +235,8 @@ export interface BriefOptions {
 
 export interface BriefResult {
   startupNote: string;
+  /** the direction: Global Vision + the project's Vision (null when unset). */
+  vision: { global: Vision | null; project: Vision | null };
   recentSessions: Session[];
   facts: Fact[];
   relatedDocs: RecallResult[];
@@ -229,6 +252,15 @@ export interface FactInput {
   topicKey?: string;
   pinned?: boolean;
   importance?: number;
+  createdBy?: string;
+  source?: string;
+}
+
+export interface VisionInput {
+  /** narrative markdown. */
+  content: string;
+  /** "global" (default) | "project:<name>". */
+  scope?: string;
   createdBy?: string;
   source?: string;
 }
@@ -308,6 +340,13 @@ export interface Store {
   factsDelete(id: number): Promise<boolean>;
   /** mark old fact superseded and insert the replacement; returns the new fact. */
   factsSupersede(oldId: number, replacement: FactInput): Promise<Fact>;
+
+  // vision — one active record per scope; set supersedes; excluded from recall.
+  visionGet(scope: string): Promise<Vision | null>;
+  visionList(opts?: ListOptions): Promise<Vision[]>;
+  /** insert the new active record and supersede the prior active one for that scope (lineage kept). */
+  visionSet(input: VisionInput): Promise<Vision>;
+  visionDelete(id: number): Promise<boolean>;
 
   // sessions
   sessionsAdd(input: SessionInput): Promise<Session>;

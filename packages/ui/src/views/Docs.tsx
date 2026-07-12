@@ -30,11 +30,12 @@ interface DocGroup {
 }
 
 export function DocsView() {
-  const { openRecord } = useApp();
+  const { openRecord, project } = useApp();
   const version = useDataVersion();
   const [ingesting, setIngesting] = useState(false);
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const [closed, setClosed] = useState<Set<string>>(new Set());
   // `documents: true` → one row per document (chunk 0), not every chunk.
   const { data, loading, error } = useAsync<Doc[]>(() => api.docs.list({ documents: true, limit: 2000 }), [version]);
 
@@ -55,14 +56,29 @@ export function DocsView() {
     }, new Map<string, DocGroup>()).values(),
   )
     .map((g) => ({ ...g, docs: g.docs.sort((a, b) => a.title.localeCompare(b.title)) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    // Current project pinned to the top; everything else alphabetical.
+    .sort((a, b) => {
+      const ap = project && a.name === project ? 0 : 1;
+      const bp = project && b.name === project ? 0 : 1;
+      return ap - bp || a.name.localeCompare(b.name);
+    });
 
-  // When filtering, auto-expand every matched group; otherwise honor toggles.
-  const isOpen = (name: string) => (q ? true : open.has(name));
+  // Auto-open: any group while filtering, and the current-project group by default.
+  const isOpen = (name: string) => (q ? true : open.has(name) || (!!project && name === project && !closed.has(name)));
   const toggle = (name: string) => {
-    const next = new Set(open);
-    next.has(name) ? next.delete(name) : next.add(name);
-    setOpen(next);
+    if (isOpen(name)) {
+      const nc = new Set(closed).add(name);
+      const no = new Set(open);
+      no.delete(name);
+      setClosed(nc);
+      setOpen(no);
+    } else {
+      const no = new Set(open).add(name);
+      const nc = new Set(closed);
+      nc.delete(name);
+      setOpen(no);
+      setClosed(nc);
+    }
   };
 
   return (

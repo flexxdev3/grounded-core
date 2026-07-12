@@ -8,16 +8,33 @@ import { Modal } from "../components/Modal.js";
 import { FactForm } from "../components/FactForm.js";
 import { IconPlus } from "../icons.js";
 
+const FOCUS = "__focus";
+
 export function FactsView() {
-  const { openRecord } = useApp();
+  const { openRecord, project } = useApp();
   const version = useDataVersion();
   const [adding, setAdding] = useState(false);
-  const [scope, setScope] = useState<string>("all");
+  // null = auto: focus the project (global + project scope) when one is active.
+  const [scope, setScope] = useState<string | null>(null);
+  const [q, setQ] = useState("");
   const { data, loading, error } = useAsync<Fact[]>(() => api.facts.list({ limit: 500 }), [version]);
 
   const facts = data ?? [];
-  const scopes = ["all", ...Array.from(new Set(facts.map((f) => f.scope))).sort()];
-  const shown = scope === "all" ? facts : facts.filter((f) => f.scope === scope);
+  const effScope = scope ?? (project ? FOCUS : "all");
+  const scopes = Array.from(new Set(facts.map((f) => f.scope))).sort();
+  const query = q.trim().toLowerCase();
+
+  const shown = facts.filter((f) => {
+    const inScope =
+      effScope === "all"
+        ? true
+        : effScope === FOCUS
+          ? f.scope === "global" || f.scope === project
+          : f.scope === effScope;
+    if (!inScope) return false;
+    if (!query) return true;
+    return f.fact.toLowerCase().includes(query) || (f.detail ?? "").toLowerCase().includes(query);
+  });
   // pinned first, then importance, then recency
   shown.sort((a, b) =>
     Number(b.pinned) - Number(a.pinned) ||
@@ -48,9 +65,25 @@ export function FactsView() {
         </button>
       </div>
 
+      <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", marginBottom: "0.9rem" }}>
+        <input class="input" value={q} placeholder="search facts…" style={{ flex: 1 }}
+          onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
+        <span class="mono" style={{ fontSize: "0.7rem", color: "var(--paper-faint)", whiteSpace: "nowrap" }}>
+          {shown.length} of {facts.length}
+        </span>
+      </div>
+
       <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.2rem" }}>
+        {project && (
+          <button class={`chip${effScope === FOCUS ? " active" : ""}`} onClick={() => setScope(FOCUS)}>
+            global + {project}
+          </button>
+        )}
+        <button class={`chip${effScope === "all" ? " active" : ""}`} onClick={() => setScope("all")}>
+          all
+        </button>
         {scopes.map((s) => (
-          <button key={s} class={`chip${scope === s ? " active" : ""}`} onClick={() => setScope(s)}>
+          <button key={s} class={`chip${effScope === s ? " active" : ""}`} onClick={() => setScope(s)}>
             {s}
           </button>
         ))}
@@ -59,7 +92,11 @@ export function FactsView() {
       {loading && <div class="empty">Loading facts…</div>}
       {error && <div class="empty" style={{ color: "var(--copper-bright)" }}>{error}</div>}
       {!loading && !error && shown.length === 0 && (
-        <div class="empty">No facts yet. Add the first hard rule.</div>
+        <div class="empty">
+          {facts.length === 0
+            ? "No facts yet. Add the first hard rule."
+            : "No facts match this filter."}
+        </div>
       )}
       {shown.map((f) => (
         <ListRow

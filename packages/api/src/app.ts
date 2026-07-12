@@ -15,6 +15,7 @@ import type {
   SourceType,
   Store,
   TypedId,
+  VisionInput,
 } from "@grounded/core/contract";
 import { openApiDocument } from "./openapi.js";
 
@@ -116,6 +117,16 @@ function factInput(body: unknown): FactInput {
   };
 }
 
+function visionInput(body: unknown): VisionInput {
+  if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+  return {
+    content: asString(body.content, "content"),
+    scope: optString(body.scope, "scope"),
+    createdBy: optString(body.createdBy, "createdBy"),
+    source: optString(body.source, "source"),
+  };
+}
+
 function sessionInput(body: unknown): SessionInput {
   if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
   return {
@@ -190,6 +201,30 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
     const id = parseId(c.req.param("id"));
     const input = factInput(await readJson(c));
     return c.json(await store.factsSupersede(id, input), 201);
+  });
+
+  // ---- vision ----
+  app.get("/vision", async (c) => {
+    const opts: ListOptions = {
+      scope: c.req.query("scope"),
+      status: c.req.query("status") ?? "active",
+      limit: parseIntQuery(c.req.query("limit"), "limit"),
+      offset: parseIntQuery(c.req.query("offset"), "offset"),
+    };
+    if (opts.status === "all") opts.status = undefined;
+    return c.json(await store.visionList(opts));
+  });
+
+  app.post("/vision", async (c) => {
+    const input = visionInput(await readJson(c));
+    return c.json(await store.visionSet(input), 201);
+  });
+
+  app.delete("/vision/:id", async (c) => {
+    const id = parseId(c.req.param("id"));
+    const deleted = await store.visionDelete(id);
+    if (!deleted) throw new NotFoundError(`vision ${id} not found`);
+    return c.json({ deleted: true, id });
   });
 
   // ---- sessions ----

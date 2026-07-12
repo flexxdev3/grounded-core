@@ -12,10 +12,11 @@ const MATCH_COLOR: Record<MatchedBy, string> = {
 };
 
 export function RecallView() {
-  const { openRecord, recallSeed } = useApp();
+  const { openRecord, recallSeed, project } = useApp();
   const [query, setQuery] = useState(recallSeed);
   const [sources, setSources] = useState<Set<SourceType>>(new Set(ALL_SOURCES));
   const [lexicalOnly, setLexicalOnly] = useState(false);
+  const [scoped, setScoped] = useState(true);
   const [results, setResults] = useState<RecallResult[] | null>(null);
   const [meta, setMeta] = useState("");
   const [busy, setBusy] = useState(false);
@@ -28,13 +29,17 @@ export function RecallView() {
     const t0 = performance.now();
     try {
       const src = [...sources];
+      const proj = scoped && project ? project : undefined;
       const res = await api.recall(q.trim(), {
         sources: src.length === ALL_SOURCES.length ? undefined : src,
         lexicalOnly,
+        project: proj,
       });
       const ms = Math.round(performance.now() - t0);
       setResults(res);
-      setMeta(`${res.length} result${res.length === 1 ? "" : "s"} · ${lexicalOnly ? "lexical" : "hybrid"} · ${ms}ms`);
+      setMeta(
+        `${res.length} result${res.length === 1 ? "" : "s"} · ${lexicalOnly ? "lexical" : "hybrid"}${proj ? ` · ${proj}` : ""} · ${ms}ms`,
+      );
     } catch (e) {
       setError(errMessage(e));
       setResults([]);
@@ -81,8 +86,14 @@ export function RecallView() {
             {typeLabel(s)}
           </button>
         ))}
+        {project && (
+          <button class={`chip${scoped ? " active" : ""}`} onClick={() => setScoped(!scoped)}
+            style={{ marginLeft: "auto" }} title="Bias facts & sessions toward the current project">
+            {scoped ? `scoped · ${project}` : "all projects"}
+          </button>
+        )}
         <button class={`chip${lexicalOnly ? " active" : ""}`} onClick={() => setLexicalOnly(!lexicalOnly)}
-          style={{ marginLeft: "auto" }}>
+          style={project ? undefined : { marginLeft: "auto" }}>
           lexical-only
         </button>
       </div>

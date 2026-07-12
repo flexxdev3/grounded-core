@@ -1,8 +1,10 @@
 import { createContext } from "preact";
-import { useContext, useState } from "preact/hooks";
-import type { TypedId, SourceType } from "@grounded/core/contract";
+import { useContext, useEffect, useState } from "preact/hooks";
+import type { TypedId, SourceType, Session } from "@grounded/core/contract";
+import { api } from "./api.js";
 import {
   IconOverview,
+  IconVision,
   IconFacts,
   IconSessions,
   IconDocs,
@@ -14,6 +16,7 @@ import {
 import { useToastChannel } from "./hooks.js";
 import { RecordDrawer } from "./components/RecordDrawer.js";
 import { OverviewView } from "./views/Overview.js";
+import { VisionView } from "./views/Vision.js";
 import { FactsView } from "./views/Facts.js";
 import { SessionsView } from "./views/Sessions.js";
 import { DocsView } from "./views/Docs.js";
@@ -21,12 +24,13 @@ import { BriefView } from "./views/Brief.js";
 import { RecallView } from "./views/Recall.js";
 import { HealthView } from "./views/Health.js";
 
-export type View = "overview" | "facts" | "sessions" | "docs" | "brief" | "recall" | "health";
+export type View = "overview" | "vision" | "facts" | "sessions" | "docs" | "brief" | "recall" | "health";
 
 export interface Counts {
   facts: number;
   sessions: number;
-  docs: number;
+  /** distinct source documents (not chunks). */
+  documents: number;
 }
 
 interface AppApi {
@@ -36,6 +40,24 @@ interface AppApi {
   setCounts: (c: Counts) => void;
   recallSeed: string;
   storageAdapter: string;
+  /** current project scope; null = all projects. */
+  project: string | null;
+  setProject: (p: string | null) => void;
+  /** known projects, most-recent first. */
+  projects: string[];
+}
+
+const PROJECT_KEY = "grounded.project";
+const ALL = "__all__";
+
+function loadStoredProject(): { value: string | null; explicit: boolean } {
+  try {
+    const v = localStorage.getItem(PROJECT_KEY);
+    if (v === null) return { value: null, explicit: false };
+    return { value: v === ALL ? null : v, explicit: true };
+  } catch {
+    return { value: null, explicit: false };
+  }
 }
 
 const AppContext = createContext<AppApi | null>(null);
@@ -47,9 +69,10 @@ export function useApp(): AppApi {
 
 const NAV: { view: View; label: string; icon: typeof IconFacts; group: "workspace" | "tools"; count?: keyof Counts }[] = [
   { view: "overview", label: "Overview", icon: IconOverview, group: "workspace" },
+  { view: "vision", label: "Vision", icon: IconVision, group: "workspace" },
   { view: "facts", label: "Facts", icon: IconFacts, group: "workspace", count: "facts" },
   { view: "sessions", label: "Sessions", icon: IconSessions, group: "workspace", count: "sessions" },
-  { view: "docs", label: "Docs", icon: IconDocs, group: "workspace", count: "docs" },
+  { view: "docs", label: "Docs", icon: IconDocs, group: "workspace", count: "documents" },
   { view: "brief", label: "Brief", icon: IconBrief, group: "workspace" },
   { view: "recall", label: "Recall", icon: IconRecall, group: "tools" },
   { view: "health", label: "Health", icon: IconHealth, group: "tools" },
@@ -60,9 +83,41 @@ export function App() {
   const [drawerId, setDrawerId] = useState<TypedId | null>(null);
   const [recallSeed, setRecallSeed] = useState("");
   const [search, setSearch] = useState("");
-  const [counts, setCounts] = useState<Counts>({ facts: 0, sessions: 0, docs: 0 });
+  const [counts, setCounts] = useState<Counts>({ facts: 0, sessions: 0, documents: 0 });
   const [storageAdapter, setStorageAdapter] = useState("sqlite");
+  const [project, setProjectState] = useState<string | null>(() => loadStoredProject().value);
+  const [projects, setProjects] = useState<string[]>([]);
   const toastMsg = useToastChannel();
+
+  // Derive the known projects from recent sessions (recency-ordered). On first
+  // ever load with no stored pick, auto-focus the most recent project.
+  useEffect(() => {
+    let live = true;
+    api.sessions
+      .list({ limit: 300 })
+      .then((rows: Session[]) => {
+        if (!live) return;
+        const seen: string[] = [];
+        for (const s of rows) {
+          const p = s.project?.trim();
+          if (p && !seen.includes(p)) seen.push(p);
+        }
+        setProjects(seen);
+        const stored = loadStoredProject();
+        if (!stored.explicit && seen[0]) setProject(seen[0]);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setProject = (p: string | null) => {
+    setProjectState(p);
+    try {
+      localStorage.setItem(PROJECT_KEY, p ?? ALL);
+    } catch {
+      /* ignore */
+    }
+  };
 
   const navigate = (v: View, opts?: { query?: string }) => {
     if (opts?.query !== undefined) setRecallSeed(opts.query);
@@ -76,7 +131,20 @@ export function App() {
     navigate("recall", { query: search.trim() });
   };
 
-  const appApi: AppApi = { navigate, openRecord, counts, setCounts, recallSeed, storageAdapter };
+  // Ensure the active project is always selectable even if it fell off the recent list.
+  const projectOptions = project && !projects.includes(project) ? [project, ...projects] : projects;
+
+  const appApi: AppApi = {
+    navigate,
+    openRecord,
+    counts,
+    setCounts,
+    recallSeed,
+    storageAdapter,
+    project,
+    setProject,
+    projects,
+  };
 
   return (
     <AppContext.Provider value={appApi}>
@@ -127,6 +195,24 @@ export function App() {
 
         <main class="main">
           <header class="topbar">
+            <label class="proj-switch" title="Scope the console to one project">
+              <span class="proj-label">project</span>
+              <select
+                value={project ?? ALL}
+                onChange={(e) => {
+                  const v = (e.target as HTMLSelectElement).value;
+                  setProject(v === ALL ? null : v);
+                }}
+              >
+                <option value={ALL}>All projects</option>
+                {projectOptions.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+              <span class="proj-caret" aria-hidden="true">▾</span>
+            </label>
             <form class="searchbox" onSubmit={submitSearch}>
               <span class="prompt">&gt;_</span>
               <input
@@ -140,6 +226,7 @@ export function App() {
 
           <div class="scroll">
             {view === "overview" && <OverviewView onAdapter={setStorageAdapter} />}
+            {view === "vision" && <VisionView />}
             {view === "facts" && <FactsView />}
             {view === "sessions" && <SessionsView />}
             {view === "docs" && <DocsView />}

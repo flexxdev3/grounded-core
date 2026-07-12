@@ -64,7 +64,20 @@ create table if not exists "${s}".docs (
   ) stored
 );
 
+create table if not exists "${s}".vision (
+  id bigint generated always as identity primary key,
+  scope text not null default 'global',
+  content text not null,
+  status text not null default 'active',
+  superseded_by bigint,
+  created_by text,
+  source text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create unique index if not exists idx_docs_path_chunk on "${s}".docs(path, chunk_idx);
+create unique index if not exists idx_vision_active on "${s}".vision(scope) where status = 'active';
 create index if not exists idx_facts_status on "${s}".facts(status);
 create index if not exists idx_facts_scope on "${s}".facts(scope);
 create index if not exists idx_sessions_project on "${s}".sessions(project);

@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-# Grounded end-to-end smoke test. Builds the workspace, then runs the full loop
-# against a throwaway SQLite cabinet using the built bins directly from dist/.
+# Grounded end-to-end smoke test. Builds the workspace, stands up the API against
+# a throwaway SQLite cabinet, and drives the full loop the way the product now
+# works: data flows over the HTTP API (facts/sessions/docs/recall/brief), while
+# the `grounded` bin covers cabinet init and agent wiring (mcp/hooks).
 #
 #   pnpm smoke                 # or: bash scripts/smoke.sh
 #
-# The embeddings=none leg is the always-green baseline. The Ollama leg is wrapped
-# non-fatal so this passes on a machine without the homelab GPU box reachable.
+# The embeddings=none leg is the always-green baseline (lexical recall). No local
+# data CLI is exercised — that surface was retired in favor of service + API/MCP.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GROUND="node $ROOT/packages/cli/dist/bin.js"
 MCP="node $ROOT/packages/mcp/dist/bin.js"
 API="node $ROOT/packages/api/dist/bin.js"
+PORT=7456
+BASE="http://127.0.0.1:$PORT"
 
-# Throwaway cabinet for this run.
 TMP="$(mktemp -d)"
 export GROUNDED_HOME="$TMP/.grounded"
 export GROUNDED_EMBED_PROVIDER="none"
-trap 'rm -rf "$TMP"' EXIT
+API_PID=""
+trap '[ -n "$API_PID" ] && kill "$API_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 fail() { echo "SMOKE FAIL: $1" >&2; exit 1; }
+post() { curl -s -X POST "$BASE/$1" -H 'content-type: application/json' -d "$2"; }
 
 echo "==> build"
 ( cd "$ROOT" && pnpm -r build ) || fail "build"
@@ -27,24 +32,40 @@ echo "==> build"
 echo "==> init (sqlite cabinet at $GROUNDED_HOME)"
 $GROUND init || fail "init"
 
-echo "==> seed facts / session / docs"
-$GROUND facts add "Never push without explicit instruction" --pin || fail "facts add"
-$GROUND session add --project demo --agent codex "Initialized the demo workspace" || fail "session add"
-$GROUND docs ingest "$ROOT/examples/docs" || fail "docs ingest"
+echo "==> start api (grounded-api self-bootstraps the cabinet)"
+GROUNDED_API_PORT=$PORT $API >/dev/null 2>&1 &
+API_PID=$!
+curl -s --retry 20 --retry-connrefused --retry-delay 0 -o /dev/null "$BASE/health" \
+  || fail "api did not come up"
+
+echo "==> seed facts / session / docs over the API"
+post facts   '{"fact":"Never push without explicit instruction","pinned":true}' | grep -q '"id"' || fail "POST /facts"
+post sessions '{"summary":"Initialized the demo workspace","project":"demo","agent":"codex"}' | grep -q '"id"' || fail "POST /sessions"
+post docs/ingest "{\"paths\":[\"$ROOT/examples/docs\"]}" | grep -q '.' || fail "POST /docs/ingest"
 
 echo "==> recall (embeddings=none, lexical)"
-$GROUND recall "demo workspace" --lexical-only || fail "recall (none)"
-
-echo "==> recall (ollama @ homelab, non-fatal)"
-GROUNDED_EMBED_PROVIDER=ollama \
-GROUNDED_EMBED_BASEURL="${GROUNDED_EMBED_BASEURL:-http://192.168.1.217:11434}" \
-GROUNDED_EMBED_MODEL="${GROUNDED_EMBED_MODEL:-nomic-embed-text}" \
-  $GROUND recall "what did we decide about memory" \
-  && echo "   (ollama recall OK)" \
-  || echo "   (ollama recall skipped/failed — non-fatal)"
+post recall '{"query":"demo workspace","lexicalOnly":true}' | grep -q 'demo' || fail "POST /recall"
 
 echo "==> brief"
-$GROUND brief --agent codex --project demo --cwd "$ROOT" || fail "brief"
+post brief '{"agent":"codex","project":"demo"}' | grep -q '.' || fail "POST /brief"
+
+echo "==> vision: set global + project, brief carries the VISION section"
+post vision '{"content":"Ship taste at scale. Design out front, engineering underneath."}' | grep -q '"scope":"global"' || fail "POST /vision (global)"
+post vision '{"scope":"project:demo","content":"The demo project proves the loop end to end."}' | grep -q '"scope":"project:demo"' || fail "POST /vision (project)"
+# second set on the same scope must supersede, leaving exactly one active global record
+post vision '{"content":"Ship taste at scale — v2."}' >/dev/null || fail "POST /vision (supersede)"
+ACTIVE_COUNT="$(curl -s "$BASE/vision?scope=global" | node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).length)')"
+[ "$ACTIVE_COUNT" = "1" ] || fail "vision supersede left $ACTIVE_COUNT active global records"
+BRIEF_TEXT="$(post brief '{"agent":"codex","project":"demo"}')"
+case "$BRIEF_TEXT" in *'=== VISION (global · project:demo) ==='*) echo "   vision section OK" ;; *) fail "brief missing VISION section" ;; esac
+case "$BRIEF_TEXT" in *'Apply this:'*) echo "   apply line OK" ;; *) fail "brief missing apply line" ;; esac
+case "$BRIEF_TEXT" in *'v2'*) echo "   supersede OK (brief shows the new version)" ;; *) fail "brief shows stale vision" ;; esac
+
+echo "==> console + health served on one origin"
+case "$(curl -s "$BASE/")" in *'id="app"'*) echo "   console OK" ;; *) fail "console not served at /" ;; esac
+case "$(curl -s "$BASE/health")" in *'"ok":true'*) echo "   health OK" ;; *) fail "health not served" ;; esac
+
+kill "$API_PID" 2>/dev/null; API_PID=""
 
 echo "==> mcp install snippet is valid JSON"
 $GROUND --json mcp install claude-code \
@@ -52,20 +73,7 @@ $GROUND --json mcp install claude-code \
   || fail "mcp install snippet invalid"
 
 echo "==> hooks print claude-code is non-empty"
-HOOKS_OUT="$($GROUND hooks print claude-code)"
-case "$HOOKS_OUT" in *SessionStart*) echo "   hooks OK" ;; *) fail "hooks print" ;; esac
-
-echo "==> api serves the console + JSON on one origin"
-API_PORT=7456
-GROUNDED_API_PORT=$API_PORT $API >/dev/null 2>&1 &
-API_PID=$!
-curl -s --retry 20 --retry-connrefused --retry-delay 0 -o /dev/null "http://127.0.0.1:$API_PORT/health" \
-  || { kill $API_PID 2>/dev/null; fail "api did not come up"; }
-INDEX_OUT="$(curl -s "http://127.0.0.1:$API_PORT/")"
-HEALTH_OUT="$(curl -s "http://127.0.0.1:$API_PORT/health")"
-kill $API_PID 2>/dev/null
-case "$INDEX_OUT" in *'id="app"'*) echo "   console OK" ;; *) fail "console not served at /" ;; esac
-case "$HEALTH_OUT" in *'"ok":true'*) echo "   health OK" ;; *) fail "health not served" ;; esac
+case "$($GROUND hooks print claude-code)" in *SessionStart*) echo "   hooks OK" ;; *) fail "hooks print" ;; esac
 
 echo "==> grounded-mcp tools/list over stdio"
 MCP_OUT="$(printf '%s\n%s\n' \

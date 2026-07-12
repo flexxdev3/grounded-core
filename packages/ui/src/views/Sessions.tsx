@@ -8,10 +8,13 @@ import { IconPlus } from "../icons.js";
 import { fmtDate } from "../util.js";
 
 export function SessionsView() {
-  const { openRecord } = useApp();
+  const { openRecord, project } = useApp();
   const version = useDataVersion();
   const [adding, setAdding] = useState(false);
-  const { data, loading, error } = useAsync<Session[]>(() => api.sessions.list({ limit: 200 }), [version]);
+  const { data, loading, error } = useAsync<Session[]>(
+    () => api.sessions.list({ project: project ?? undefined, limit: 200 }),
+    [version, project],
+  );
 
   const sessions = data ?? [];
   // group by day for the timeline
@@ -25,7 +28,7 @@ export function SessionsView() {
     <div class="view-max">
       <div style={{ display: "flex", alignItems: "center", marginBottom: "1.4rem" }}>
         <div style={{ flex: 1 }}>
-          <div class="eyebrow">&gt;_ sessions · what happened recently</div>
+          <div class="eyebrow">&gt;_ sessions · {project ? `project · ${project}` : "all projects"}</div>
           <h1 class="h-serif" style={{ fontSize: "1.7rem", margin: 0 }}>Sessions</h1>
         </div>
         <button class="btn btn-primary" onClick={() => setAdding(true)}>
@@ -60,14 +63,14 @@ export function SessionsView() {
         </div>
       ))}
 
-      {adding && <SessionModal onClose={() => setAdding(false)} />}
+      {adding && <SessionModal onClose={() => setAdding(false)} defaultProject={project ?? ""} />}
     </div>
   );
 }
 
-function SessionModal({ onClose }: { onClose: () => void }) {
+function SessionModal({ onClose, defaultProject }: { onClose: () => void; defaultProject: string }) {
   const [summary, setSummary] = useState("");
-  const [project, setProject] = useState("");
+  const [project, setProject] = useState(defaultProject);
   const [details, setDetails] = useState("");
   const [tags, setTags] = useState("");
   const [busy, setBusy] = useState(false);

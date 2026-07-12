@@ -7,7 +7,7 @@ export const openApiDocument = {
     title: "Grounded API",
     version: "0.1.0",
     description:
-      "REST surface over the Grounded Store: facts, sessions, docs, source-cited recall, and startup briefs.",
+      "REST surface over the Grounded Store: vision, facts, sessions, docs, source-cited recall, and startup briefs.",
     license: { name: "Apache-2.0" },
   },
   servers: [{ url: "http://127.0.0.1:7437", description: "local" }],
@@ -65,6 +65,31 @@ export const openApiDocument = {
           topicKey: { type: "string" },
           pinned: { type: "boolean" },
           importance: { type: "number" },
+          createdBy: { type: "string" },
+          source: { type: "string" },
+        },
+      },
+      Vision: {
+        type: "object",
+        required: ["id", "scope", "content", "status", "createdAt", "updatedAt"],
+        properties: {
+          id: { type: "integer" },
+          scope: { type: "string", description: '"global" or "project:<name>"' },
+          content: { type: "string", description: "narrative markdown" },
+          status: { type: "string", enum: ["active", "superseded"] },
+          supersededBy: { type: ["integer", "null"] },
+          createdBy: { type: ["string", "null"] },
+          source: { type: ["string", "null"] },
+          createdAt: { type: "string" },
+          updatedAt: { type: "string" },
+        },
+      },
+      VisionInput: {
+        type: "object",
+        required: ["content"],
+        properties: {
+          content: { type: "string" },
+          scope: { type: "string" },
           createdBy: { type: "string" },
           source: { type: "string" },
         },
@@ -161,9 +186,16 @@ export const openApiDocument = {
       },
       BriefResult: {
         type: "object",
-        required: ["startupNote", "recentSessions", "facts", "relatedDocs"],
+        required: ["startupNote", "vision", "recentSessions", "facts", "relatedDocs"],
         properties: {
           startupNote: { type: "string" },
+          vision: {
+            type: "object",
+            properties: {
+              global: { oneOf: [{ $ref: "#/components/schemas/Vision" }, { type: "null" }] },
+              project: { oneOf: [{ $ref: "#/components/schemas/Vision" }, { type: "null" }] },
+            },
+          },
           recentSessions: { type: "array", items: { $ref: "#/components/schemas/Session" } },
           facts: { type: "array", items: { $ref: "#/components/schemas/Fact" } },
           relatedDocs: { type: "array", items: { $ref: "#/components/schemas/RecallResult" } },
@@ -290,6 +322,53 @@ export const openApiDocument = {
           "201": {
             description: "Replacement fact",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Fact" } } },
+          },
+        },
+      },
+    },
+    "/vision": {
+      get: {
+        summary: "List vision records (default active only; status=all for history)",
+        parameters: [
+          { name: "scope", in: "query", schema: { type: "string" } },
+          { name: "status", in: "query", schema: { type: "string" } },
+          { name: "limit", in: "query", schema: { type: "integer" } },
+          { name: "offset", in: "query", schema: { type: "integer" } },
+        ],
+        responses: {
+          "200": {
+            description: "Vision records",
+            content: {
+              "application/json": {
+                schema: { type: "array", items: { $ref: "#/components/schemas/Vision" } },
+              },
+            },
+          },
+        },
+      },
+      post: {
+        summary: "Set the vision for a scope (supersedes the prior active record)",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/VisionInput" } } },
+        },
+        responses: {
+          "201": {
+            description: "Created vision record",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Vision" } } },
+          },
+        },
+      },
+    },
+    "/vision/{id}": {
+      delete: {
+        summary: "Delete a vision record",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        responses: {
+          "200": { description: "Deletion result" },
+          "404": {
+            description: "Not found",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
           },
         },
       },

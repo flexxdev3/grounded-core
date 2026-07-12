@@ -24,5 +24,26 @@
   "devDependencies": {
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grounded/grounded.git",
+    "directory": "packages/mcp"
+  },
+  "homepage": "https://github.com/grounded/grounded#readme",
+  "bugs": {
+    "url": "https://github.com/grounded/grounded/issues"
+  },
+  "keywords": [
+    "grounded",
+    "mcp",
+    "model-context-protocol",
+    "memory"
+  ],
+  "engines": {
+    "node": ">=20"
   }
 }

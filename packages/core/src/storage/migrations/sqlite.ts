@@ -47,6 +47,18 @@ create table if not exists docs (
   ingested_at text not null
 );
 
+create table if not exists vision (
+  id integer primary key autoincrement,
+  scope text not null default 'global',
+  content text not null,
+  status text not null default 'active',
+  superseded_by integer,
+  created_by text,
+  source text,
+  created_at text not null,
+  updated_at text not null
+);
+
 create index if not exists idx_facts_status on facts(status);
 create index if not exists idx_facts_scope on facts(scope);
 create index if not exists idx_facts_topic on facts(topic_key);
@@ -55,6 +67,7 @@ create index if not exists idx_sessions_created on sessions(created_at);
 create index if not exists idx_docs_path on docs(path);
 create index if not exists idx_docs_status on docs(status);
 create unique index if not exists idx_docs_path_chunk on docs(path, chunk_idx);
+create unique index if not exists idx_vision_active on vision(scope) where status = 'active';
 `;
 
 export const SQLITE_FTS = `

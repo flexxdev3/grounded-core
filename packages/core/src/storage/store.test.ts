@@ -158,6 +158,8 @@ describe("Store lifecycle (sqlite, embeddings=none)", () => {
     expect(brief.text).toContain("=== MOST RECENT WORK");
     expect(brief.text).toContain("=== FACTS BRAIN");
     expect(brief.recentSessions.length).toBeGreaterThan(0);
+    // no vision set yet → section omitted entirely
+    expect(brief.text).not.toContain("=== VISION");
   });
 
   it("brief: json format omits text", async () => {
@@ -188,5 +190,61 @@ describe("Store lifecycle (sqlite, embeddings=none)", () => {
   it("docsPrune marks missing nothing when files present", async () => {
     const res = await store.docsPrune();
     expect(res.missing).toBe(0);
+  });
+
+  it("vision: set / get / one-active-per-scope with lineage", async () => {
+    const v1 = await store.visionSet({
+      content: "Ship taste at scale without diluting the standard.",
+    });
+    expect(v1.scope).toBe("global");
+    expect(v1.status).toBe("active");
+
+    const got = await store.visionGet("global");
+    expect(got?.id).toBe(v1.id);
+
+    // set again → v1 superseded with lineage, exactly one active
+    const v2 = await store.visionSet({
+      content: "Ship taste at scale. Design out front, engineering underneath.",
+    });
+    expect(v2.id).not.toBe(v1.id);
+    const old = (await store.visionList({ scope: "global", status: "superseded" })).find(
+      (v) => v.id === v1.id,
+    );
+    expect(old?.supersededBy).toBe(v2.id);
+    const active = await store.visionList({ scope: "global", status: "active" });
+    expect(active.length).toBe(1);
+    expect(active[0]!.id).toBe(v2.id);
+
+    // project vision is independent of global
+    const pv = await store.visionSet({
+      scope: "project:grounded",
+      content: "Self-hosted continuity for multi-agent workspaces.",
+    });
+    expect((await store.visionGet("project:grounded"))?.id).toBe(pv.id);
+    expect((await store.visionGet("global"))?.id).toBe(v2.id);
+  });
+
+  it("brief: renders VISION section (global + project) with the apply line", async () => {
+    const brief = await store.brief({ project: "grounded", format: "markdown" });
+    expect(brief.vision.global).not.toBeNull();
+    expect(brief.vision.project?.scope).toBe("project:grounded");
+    const text = brief.text!;
+    expect(text).toContain("=== VISION (global · project:grounded) ===");
+    expect(text).toContain("Design out front, engineering underneath.");
+    expect(text).toContain("--- project:grounded ---");
+    expect(text).toContain("Self-hosted continuity for multi-agent workspaces.");
+    expect(text).toContain("Apply this: flag any plan, play, or design that conflicts");
+    // order: VISION after STARTUP CONTEXT, before MOST RECENT WORK
+    expect(text.indexOf("=== VISION")).toBeGreaterThan(text.indexOf("=== STARTUP CONTEXT ==="));
+    expect(text.indexOf("=== VISION")).toBeLessThan(text.indexOf("=== MOST RECENT WORK"));
+
+    // no project → global only, no divider
+    const globalOnly = await store.brief({ format: "markdown" });
+    expect(globalOnly.text).toContain("=== VISION (global) ===");
+    expect(globalOnly.text).not.toContain("--- project:grounded ---");
+
+    const deleted = await store.visionDelete(brief.vision.project!.id);
+    expect(deleted).toBe(true);
+    expect(await store.visionGet("project:grounded")).toBeNull();
   });
 });

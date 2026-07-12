@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type { GlobalOpts } from "../util/store.js";
+import type { GlobalOpts } from "../util/global.js";
 import { c, line, printJson, header, field, fail } from "../util/output.js";
 
 type HookTarget = "claude-code" | "codex" | "cursor" | "generic";
@@ -37,7 +37,8 @@ function wiring(target: HookTarget, absScript: string): string {
     "This script prints the brief to stdout. Invoke it from your runtime's",
     "startup/pre-session command, or run it manually:",
     `  ${absScript} "$PWD"`,
-    "Or skip the hook entirely and run `ground brief` when you need context.",
+    "It fetches from the running service ($GROUNDED_URL, default",
+    "http://127.0.0.1:7437) — or hit POST /brief directly when you need context.",
   ].join("\n");
 }
 

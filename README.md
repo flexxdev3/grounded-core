@@ -2,10 +2,10 @@
 
 **Self-hosted continuity for multi-agent workspaces.**
 
-Grounded gives coding agents and operators a shared, source-cited memory layer: explicit **facts**,
-recent **sessions**, indexed **docs**, hybrid **recall**, and startup **briefs**. It runs locally on
-SQLite (zero services) or Postgres + pgvector, works through CLI / MCP / hooks, and stays useful
-without any LLM.
+Grounded gives coding agents and operators a shared, source-cited memory layer: a shared **vision**,
+explicit **facts**, recent **sessions**, indexed **docs**, hybrid **recall**, and startup **briefs**. It runs locally on
+SQLite (zero services) or Postgres + pgvector as a **persistent service** you talk to over MCP, HTTP,
+or the web console — and stays useful without any LLM.
 
 > Not a brain. Not a chat app. Not a vector-DB wrapper. Not an agent framework. Not cloud-first memory magic.
 
@@ -16,6 +16,7 @@ operator in control — the system retrieves, ranks, cites, and injects:
 
 | Lane | Purpose |
 |---|---|
+| **vision** | Where it's all going (Global Vision + one Project Vision per project; always in the brief) |
 | **facts** | Durable hard rules / operator truths (explicit) |
 | **sessions** | What happened recently (chronological work log) |
 | **docs** | What you've written down (indexed files/notes) |
@@ -24,46 +25,55 @@ operator in control — the system retrieves, ranks, cites, and injects:
 
 ## Quick start
 
-```sh
-ground init                               # creates ~/.grounded with a local SQLite cabinet
-ground facts add "Never push without explicit instruction"
-ground session add --project demo "Initialized the demo workspace"
-ground docs ingest ./docs ./notes
-ground recall "what did we decide about memory"
-ground brief --agent codex --cwd "$PWD"
-ground mcp install claude-code            # print a ready-to-paste MCP server config
-ground hooks print claude-code            # print a SessionStart brief hook + wiring
-```
-
-Works fully offline with `embeddings = "none"` (lexical recall). Add Ollama or OpenAI embeddings for
-semantic recall. The bins read these env knobs (no config edit needed):
-`GROUNDED_HOME`, `GROUNDED_EMBED_PROVIDER`, `GROUNDED_EMBED_BASEURL`, `GROUNDED_EMBED_MODEL`.
-
-## Install
-
-`npx grounded` (published packages) is coming. Until then, install locally from this repo:
+Grounded runs as a persistent service. One command stands it up — it detects what your host can do
+(Docker or systemd), lets you choose, creates `~/.grounded`, and refuses to double-install if one is
+already running:
 
 ```sh
-pnpm install && pnpm build                # build all packages to dist/
-pnpm smoke                                # end-to-end check (init → recall → brief → mcp → hooks)
-
-# pack all packages (pnpm rewrites workspace:* to real versions), then install them together:
-mkdir -p /tmp/grounded-tgz
-for p in core cli api mcp client; do pnpm -C packages/$p pack --pack-destination /tmp/grounded-tgz; done
-npm i -g /tmp/grounded-tgz/grounded-*.tgz  # → `ground`, `grounded-api`, `grounded-mcp` on PATH
-ground init
+grounded install        # detect → pick Docker or systemd → cabinet + service on http://127.0.0.1:7437
+grounded status         # is it running, how, and healthy?
+grounded mcp install claude-code   # print a ready-to-paste MCP server config
 ```
 
-> Install **all tarballs in one `npm i -g`** so the inter-package deps resolve from the set — and use
-> `pnpm pack`, not `npm pack` (the latter leaves `workspace:*` unresolvable). During development you can
-> skip the install and run the bins straight from `dist/` (that's what `pnpm smoke` does). On a fresh
-> machine `better-sqlite3` builds a native module on install; if it can't, recall degrades to
-> lexical-only rather than failing.
+Then use it three ways — no local data CLI needed:
+
+- **Console** — open `http://127.0.0.1:7437/` to browse/add vision, facts, sessions, docs, recall, and briefs.
+- **Agents** — over MCP (`ground_recall`, `ground_session_add`, `ground_brief`, …).
+- **Scripts** — plain HTTP:
+
+  ```sh
+  curl -s localhost:7437/facts -d '{"fact":"Never push without explicit instruction"}'
+  curl -s localhost:7437/recall -d '{"query":"what did we decide about memory"}'
+  curl -s localhost:7437/brief  -d '{"agent":"codex","cwd":"'"$PWD"'"}'
+  ```
+
+Manage the service with `grounded start | stop | restart | logs | uninstall`. Works fully offline with
+`embeddings = "none"` (lexical recall); add Ollama or OpenAI for semantic recall. Env knobs (no config
+edit needed): `GROUNDED_HOME`, `GROUNDED_API_PORT`, `GROUNDED_API_TOKEN`, `GROUNDED_EMBED_PROVIDER`,
+`GROUNDED_EMBED_BASEURL`, `GROUNDED_EMBED_MODEL`.
+
+## Install methods
+
+`grounded install` offers only what your host supports:
+
+| Method | What it does | When |
+|---|---|---|
+| **Docker** | builds the image (first run) and runs a labelled, `restart=unless-stopped` container mounting `~/.grounded` | Docker daemon reachable — the default |
+| **systemd (user)** | `npm i -g @grounded/api`, writes `~/.config/systemd/user/grounded.service`, `enable --now` | no root; runs as you (`loginctl enable-linger` to survive logout) |
+| **systemd (system)** | same, at `/etc/systemd/system` via sudo | always-on; needs root/sudo |
+
+Once published the installer runs via `npx @grounded/cli install` (the unscoped `grounded` name is taken
+on npm; the on-PATH command after a global install is still `grounded`). From this repo today, build
+first (`pnpm install && pnpm build`) so the installer can build the Docker image or link the
+`@grounded/api` bin, then run `node packages/cli/dist/bin.js install`. Point the Docker path at a
+published image with `--image <ref>` or `GROUNDED_IMAGE`; otherwise it builds from source. On a fresh
+machine `better-sqlite3` builds a native module; if it can't, recall degrades to lexical-only rather than
+failing. Full release steps: [`RELEASING.md`](RELEASING.md).
 
 ## Wire into an agent (MCP + briefs)
 
-1. `ground mcp install <claude-code|codex|cursor|generic>` → paste the snippet into the printed file.
-2. `ground hooks print <claude-code|generic>` → paste the SessionStart hook + wiring (Claude Code
+1. `grounded mcp install <claude-code|codex|cursor|generic>` → paste the snippet into the printed file.
+2. `grounded hooks print <claude-code|generic>` → paste the SessionStart hook + wiring (Claude Code
    needs `jq`; the generic wrapper prints the brief to stdout).
 3. Restart the agent — the brief loads at startup and the `ground_*` MCP tools are available.
 
@@ -75,7 +85,7 @@ Three plug points, all swappable by config — never by fork:
 
 - **Embeddings** — `ollama` (default) · `openai` · `none` (lexical-only)
 - **Storage / index** — `sqlite` (default; sqlite-vec + FTS5, single file) · `postgres` (pgvector + tsvector)
-- **Agent integration** — MCP (stdio + HTTP) · hooks · CLI · client lib
+- **Agent integration** — MCP (stdio + HTTP) · web console · HTTP API · hooks · client lib
 
 The homelab stack (Ollama + Postgres) is just one adapter set — the default, never hardcoded into core.
 
@@ -84,7 +94,7 @@ The homelab stack (Ollama + Postgres) is just one adapter set — the default, n
 | Package | What |
 |---|---|
 | [`@grounded/core`](packages/core) | types/contract, storage + embedding adapters, hybrid recall engine, ingest |
-| [`@grounded/cli`](packages/cli) | the `ground` command |
+| [`@grounded/cli`](packages/cli) | the `grounded` installer — stand up & manage the service |
 | [`@grounded/api`](packages/api) | Hono REST server |
 | [`@grounded/mcp`](packages/mcp) | MCP server (progressive disclosure) |
 | [`@grounded/client`](packages/client) | thin typed `fetch` wrapper over the API |

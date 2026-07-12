@@ -49,7 +49,7 @@ select:focus-visible { outline: 2px solid rgba(156, 191, 145, 0.6); outline-offs
 }
 .brand-name { font-family: var(--serif); font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; color: #f3ecdf; }
 .brand-sub { font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(190, 214, 178, 0.6); margin-top: 0.25rem; }
-.nav-group { font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(190, 214, 178, 0.5); padding: 0.3rem 0.7rem 0.45rem; }
+.nav-group { font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(190, 214, 178, 0.68); padding: 0.3rem 0.7rem 0.45rem; }
 .nav-group.spaced { padding-top: 1rem; }
 
 .nav-btn {
@@ -95,6 +95,29 @@ select:focus-visible { outline: 2px solid rgba(156, 191, 145, 0.6); outline-offs
 .searchbox .hint { font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.1em; color: rgba(236, 230, 216, 0.32); white-space: nowrap; }
 .topbar-actions { flex: none; display: flex; align-items: center; gap: 0.6rem; margin-left: auto; }
 
+.proj-switch {
+  flex: none; position: relative; display: inline-flex; align-items: center; gap: 0.5rem;
+  padding: 0.5rem 0.7rem 0.5rem 0.8rem; border-radius: 9px;
+  border: 1px solid var(--line-2); background: var(--sage-wash); cursor: pointer;
+}
+.proj-switch:hover { border-color: var(--line-strong); }
+.proj-label { font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--verdigris); }
+.proj-switch select {
+  appearance: none; -webkit-appearance: none; border: 0; background: transparent; cursor: pointer;
+  color: var(--paper); font-family: var(--sans); font-size: 0.82rem; font-weight: 600;
+  padding-right: 0.2rem; max-width: 12rem;
+}
+.proj-switch select:focus { outline: none; }
+.proj-switch select option { background: #0d130f; color: var(--paper); }
+.proj-caret { font-size: 0.6rem; color: var(--verdigris); pointer-events: none; }
+
+.brief-pre {
+  margin: 0; padding: 1rem 1.1rem; border-radius: 11px;
+  border: 1px solid var(--line-copper); background: rgba(6, 9, 8, 0.7);
+  font-family: var(--mono); font-size: 0.74rem; line-height: 1.6; color: rgba(236, 230, 216, 0.82);
+  white-space: pre-wrap; word-break: break-word; max-height: 30rem; overflow-y: auto;
+}
+
 .scroll { flex: 1 1 auto; overflow-y: auto; padding: clamp(1.1rem, 2.6vw, 2rem); animation: fadeIn 220ms ease; }
 .view-max { max-width: 60rem; margin: 0 auto; }
 .eyebrow { font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--moss); margin-bottom: 0.7rem; }
@@ -114,9 +137,9 @@ select:focus-visible { outline: 2px solid rgba(156, 191, 145, 0.6); outline-offs
 .btn-primary {
   color: #10140e; border: 1px solid rgba(190, 214, 178, 0.42);
   background: linear-gradient(135deg, #dbe6c9, #9cbf91 60%, #c98f5a 140%);
-  box-shadow: 0 8px 24px rgba(156, 191, 145, 0.18); font-weight: 700;
+  box-shadow: 0 4px 14px rgba(156, 191, 145, 0.1); font-weight: 700;
 }
-.btn-primary:hover { box-shadow: var(--glow-strong); }
+.btn-primary:hover { box-shadow: var(--glow); }
 .btn-ghost { background: transparent; }
 .btn-danger { border-color: rgba(201, 143, 90, 0.4); color: var(--copper-bright); background: transparent; }
 .btn-danger:hover { background: rgba(201, 143, 90, 0.12); box-shadow: none; border-color: rgba(201, 143, 90, 0.7); }
@@ -143,7 +166,7 @@ select:focus-visible { outline: 2px solid rgba(156, 191, 145, 0.6); outline-offs
 }
 .row:hover { border-color: var(--line-2); background: rgba(18, 24, 19, 0.6); }
 .row-title { flex: 1; min-width: 0; color: #f1ece0; font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; }
-.row-meta { flex: none; font-family: var(--mono); font-size: 0.66rem; color: rgba(236, 230, 216, 0.4); }
+.row-meta { flex: none; font-family: var(--mono); font-size: 0.66rem; color: var(--paper-faint); }
 .type-tag {
   flex: none; width: 3rem; text-align: center; font-family: var(--mono); font-size: 0.54rem;
   font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; padding: 0.28rem 0;

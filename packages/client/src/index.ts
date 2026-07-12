@@ -20,6 +20,8 @@ import type {
   IngestReport,
   FullRecord,
   TypedId,
+  Vision,
+  VisionInput,
 } from "@grounded/core/contract";
 
 export interface ClientOptions {
@@ -51,6 +53,13 @@ export interface GroundedClient {
   brief(opts?: BriefOptions): Promise<BriefResult>;
   /** Fetch a full record by typed id, e.g. "fact:27" / "session:274" / "doc:1091". */
   get(typedId: TypedId): Promise<FullRecord>;
+  vision: {
+    /** Set the vision for a scope; supersedes the prior active record (lineage kept). */
+    set(input: VisionInput): Promise<Vision>;
+    /** Default lists active records; pass status "superseded" or "all" for history. */
+    list(opts?: ListOptions): Promise<Vision[]>;
+    delete(id: number): Promise<{ deleted: boolean; id: number }>;
+  };
   facts: {
     add(input: FactInput): Promise<Fact>;
     list(opts?: ListOptions): Promise<Fact[]>;
@@ -109,6 +118,15 @@ export function createClient(options: ClientOptions): GroundedClient {
     recall: (query, opts = {}) => request<RecallResult[]>("POST", "/recall", { query, ...opts }),
     brief: (opts = {}) => request<BriefResult>("POST", "/brief", opts),
     get: (typedId) => request<FullRecord>("GET", `/get/${typedId}`),
+    vision: {
+      set: (input) => request<Vision>("POST", "/vision", input),
+      list: (opts = {}) =>
+        request<Vision[]>(
+          "GET",
+          `/vision${qs({ scope: opts.scope, status: opts.status, limit: opts.limit, offset: opts.offset })}`,
+        ),
+      delete: (id) => request<{ deleted: boolean; id: number }>("DELETE", `/vision/${id}`),
+    },
     facts: {
       add: (input) => request<Fact>("POST", "/facts", input),
       list: (opts = {}) =>

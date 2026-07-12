@@ -24,6 +24,9 @@ import type {
   Store,
   TimelineOptions,
   TypedId,
+  Vision,
+  VisionInput,
+  VisionStatus,
 } from "../contract.js";
 import {
   fuseLane,
@@ -193,6 +196,102 @@ export class PostgresStore implements Store {
       [created.id, oldId],
     );
     return created;
+  }
+
+  // ---- vision --------------------------------------------------------------
+  // One active record per scope; set supersedes; excluded from recall (no embedding/tsv).
+
+  private rowToVision(r: Row): Vision {
+    return {
+      id: Number(r.id),
+      scope: String(r.scope),
+      content: String(r.content),
+      status: String(r.status) as VisionStatus,
+      supersededBy: r.superseded_by == null ? null : Number(r.superseded_by),
+      createdBy: (r.created_by as string | null) ?? null,
+      source: (r.source as string | null) ?? null,
+      createdAt: new Date(r.created_at as string).toISOString(),
+      updatedAt: new Date(r.updated_at as string).toISOString(),
+    };
+  }
+
+  async visionGet(scope: string): Promise<Vision | null> {
+    const res = await this.pool.query(
+      `select * from ${this.q("vision")} where scope = $1 and status = 'active'`,
+      [scope],
+    );
+    const r = res.rows[0] as Row | undefined;
+    return r ? this.rowToVision(r) : null;
+  }
+
+  async visionList(opts?: ListOptions): Promise<Vision[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (opts?.status) {
+      params.push(opts.status);
+      where.push(`status = $${params.length}`);
+    }
+    if (opts?.scope) {
+      params.push(opts.scope);
+      where.push(`scope = $${params.length}`);
+    }
+    const whereSql = where.length ? `where ${where.join(" and ")}` : "";
+    params.push(opts?.limit ?? 100);
+    const limitIdx = params.length;
+    params.push(opts?.offset ?? 0);
+    const offsetIdx = params.length;
+    const res = await this.pool.query(
+      `select * from ${this.q("vision")} ${whereSql} order by updated_at desc limit $${limitIdx} offset $${offsetIdx}`,
+      params,
+    );
+    return (res.rows as Row[]).map((r) => this.rowToVision(r));
+  }
+
+  async visionSet(input: VisionInput): Promise<Vision> {
+    const scope = input.scope ?? "global";
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const prior = await client.query(
+        `select id from ${this.q("vision")} where scope = $1 and status = 'active' for update`,
+        [scope],
+      );
+      const priorId = prior.rows[0] ? Number((prior.rows[0] as Row).id) : null;
+      // retire first — the partial unique index forbids two active rows per scope.
+      if (priorId != null) {
+        await client.query(
+          `update ${this.q("vision")} set status = 'superseded', updated_at = now() where id = $1`,
+          [priorId],
+        );
+      }
+      const res = await client.query(
+        `insert into ${this.q("vision")}(scope, content, status, created_by, source)
+         values ($1, $2, 'active', $3, $4) returning *`,
+        [scope, input.content, input.createdBy ?? null, input.source ?? null],
+      );
+      const created = this.rowToVision(res.rows[0] as Row);
+      if (priorId != null) {
+        await client.query(
+          `update ${this.q("vision")} set superseded_by = $1 where id = $2`,
+          [created.id, priorId],
+        );
+      }
+      await client.query("commit");
+      return created;
+    } catch (err) {
+      await client.query("rollback");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async visionDelete(id: number): Promise<boolean> {
+    const res = await this.pool.query(
+      `delete from ${this.q("vision")} where id = $1`,
+      [id],
+    );
+    return (res.rowCount ?? 0) > 0;
   }
 
   // ---- sessions ----------------------------------------------------------
@@ -704,7 +803,11 @@ export class PostgresStore implements Store {
     if (hint) {
       relatedDocs = await this.recall(hint, { sources: ["doc"], limit: 5 });
     }
-    return assembleBrief({ recentSessions, facts, relatedDocs }, o);
+    const vision = {
+      global: await this.visionGet("global"),
+      project: o.project ? await this.visionGet(`project:${o.project}`) : null,
+    };
+    return assembleBrief({ vision, recentSessions, facts, relatedDocs }, o);
   }
 
   async health(): Promise<HealthReport> {

@@ -19,6 +19,9 @@ RUN pnpm --filter @grounded/core build \
 
 # ---- runtime ----
 FROM node:22-bookworm-slim AS runtime
+# Detection label — `grounded` installer and `detect()` filter on this so a
+# double-install is caught even for a hand-run container.
+LABEL com.grounded.managed="true"
 RUN corepack enable
 WORKDIR /app
 # Whole tree incl. the pnpm symlink farm + built dist (native better-sqlite3

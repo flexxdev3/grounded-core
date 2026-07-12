@@ -61,4 +61,20 @@ suite("Store lifecycle (postgres, embeddings=none)", () => {
     const h = await store.health();
     expect(h.storage.adapter).toBe("postgres");
   });
+
+  it("vision: one-active-per-scope + brief renders VISION", async () => {
+    const v1 = await store.visionSet({ content: "first direction" });
+    const v2 = await store.visionSet({ content: "second direction" });
+    const old = (await store.visionList({ scope: "global", status: "superseded" })).find(
+      (v) => v.id === v1.id,
+    );
+    expect(old?.supersededBy).toBe(v2.id);
+    const active = await store.visionList({ scope: "global", status: "active" });
+    expect(active.length).toBe(1);
+
+    const brief = await store.brief({ format: "markdown" });
+    expect(brief.text).toContain("=== VISION (global) ===");
+    expect(brief.text).toContain("second direction");
+    expect(brief.text).toContain("Apply this:");
+  });
 });

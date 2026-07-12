@@ -1,7 +1,7 @@
 # Ready-made agent configs
 
 Copy-paste these to wire the Grounded MCP server (`grounded-mcp`) into an agent. Or run
-`ground mcp install <target>` to print the same snippet (optionally with `--env KEY=VAL`).
+`grounded mcp install <target>` to print the same snippet (optionally with `--env KEY=VAL`).
 
 | File | Agent | Paste into |
 |---|---|---|
@@ -15,7 +15,7 @@ The `grounded-mcp` binary must be on `PATH` (it ships with `@grounded/cli` / the
 ## Startup briefs (SessionStart hooks)
 
 To auto-inject a brief at session start, print the hook script with
-`ground hooks print <claude-code|generic>` and wire it per the printed instructions.
+`grounded hooks print <claude-code|generic>` and wire it per the printed instructions.
 The Claude Code hook needs `jq`; the generic wrapper prints the brief to stdout (no `jq`).
 
 > These files are generated from `installSnippet()` in `@grounded/core` and kept in sync by

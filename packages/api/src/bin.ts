@@ -1,8 +1,22 @@
 #!/usr/bin/env node
-import { loadConfig, openStore } from "@grounded/core";
+import { bootstrap, loadConfig, openStore } from "@grounded/core";
 import { startServer } from "./server.js";
 
 async function main(): Promise<void> {
+  // Self-bootstrap: ensure the cabinet, config, and migrations exist before we
+  // serve. Idempotent — a warm cabinet is a no-op. This lets both the Docker
+  // container and a systemd ExecStart run this bin directly with no separate
+  // init step or ExecStartPre. Honors GROUNDED_HOME (e.g. /cabinet in Docker).
+  // A read-only cabinet (e.g. a :ro Docker mount with a hand-managed config)
+  // is fine — serve with the existing config instead of dying on mkdir.
+  try {
+    await bootstrap();
+  } catch (err) {
+    console.warn(
+      `bootstrap skipped (${err instanceof Error ? err.message : err}); serving with existing config`,
+    );
+  }
+
   const config = loadConfig();
   const store = await openStore(config);
 

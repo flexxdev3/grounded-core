@@ -1,4 +1,4 @@
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import type { HealthReport } from "@grounded/core/contract";
 import { api } from "../api.js";
@@ -7,9 +7,13 @@ import { useAsync, useDataVersion } from "../hooks.js";
 export function HealthView({ onAdapter }: { onAdapter: (a: string) => void }) {
   const version = useDataVersion();
   const { data, loading, error, reload } = useAsync<HealthReport>(() => api.health(), [version]);
+  const [checkedAt, setCheckedAt] = useState("");
 
   useEffect(() => {
-    if (data) onAdapter(data.storage.adapter);
+    if (data) {
+      onAdapter(data.storage.adapter);
+      setCheckedAt(new Date().toLocaleTimeString());
+    }
   }, [data]);
 
   return (
@@ -19,7 +23,14 @@ export function HealthView({ onAdapter }: { onAdapter: (a: string) => void }) {
           <div class="eyebrow">&gt;_ health · is the cabinet live</div>
           <h1 class="h-serif" style={{ fontSize: "1.7rem", margin: 0 }}>Health</h1>
         </div>
-        <button class="btn btn-sm" onClick={reload}>Re-check</button>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.8rem" }}>
+          {checkedAt && (
+            <span class="mono" style={{ fontSize: "0.66rem", color: "var(--paper-faint)" }}>
+              checked {checkedAt}
+            </span>
+          )}
+          <button class="btn btn-sm" onClick={reload}>Re-check</button>
+        </div>
       </div>
 
       {loading && <div class="empty">Checking…</div>}
@@ -35,17 +46,20 @@ export function HealthView({ onAdapter }: { onAdapter: (a: string) => void }) {
           <div class="stat-grid">
             <Panel title="Storage" ok={data.storage.ok}>
               <Line k="adapter" v={data.storage.adapter} />
+              {data.storage.location && <Line k="location" v={data.storage.location} />}
               {data.storage.detail && <Line k="detail" v={data.storage.detail} />}
             </Panel>
             <Panel title="Embeddings" ok={data.embeddings.ok}>
               <Line k="provider" v={data.embeddings.provider} />
+              {data.embeddings.model && <Line k="model" v={data.embeddings.model} />}
               <Line k="dims" v={String(data.embeddings.dims)} />
               {data.embeddings.detail && <Line k="detail" v={data.embeddings.detail} />}
             </Panel>
             <Panel title="Counts" ok>
               <Line k="facts" v={String(data.counts.facts)} />
               <Line k="sessions" v={String(data.counts.sessions)} />
-              <Line k="docs" v={String(data.counts.docs)} />
+              <Line k="documents" v={String(data.counts.documents)} />
+              <Line k="doc chunks" v={String(data.counts.docs)} />
             </Panel>
           </div>
         </>

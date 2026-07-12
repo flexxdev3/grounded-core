@@ -5,7 +5,7 @@ import { useAsync, useDataVersion } from "../hooks.js";
 import { useApp } from "../app.js";
 
 export function OverviewView({ onAdapter }: { onAdapter: (a: string) => void }) {
-  const { navigate, setCounts } = useApp();
+  const { navigate, setCounts, project } = useApp();
   const version = useDataVersion();
   const health = useAsync<HealthReport>(() => api.health(), [version]);
   const facts = useAsync<Fact[]>(() => api.facts.list({ limit: 200 }), [version]);
@@ -13,16 +13,16 @@ export function OverviewView({ onAdapter }: { onAdapter: (a: string) => void }) 
   const h = health.data;
   useEffect(() => {
     if (h) {
-      setCounts(h.counts);
+      setCounts({ facts: h.counts.facts, sessions: h.counts.sessions, documents: h.counts.documents });
       onAdapter(h.storage.adapter);
     }
   }, [h]);
   const pinned = (facts.data ?? []).filter((f) => f.pinned).length;
 
-  const cards: { key: string; num: string | number; label: string; sub: string; view: Parameters<typeof navigate>[0]; copper?: boolean }[] = [
+  const cards: { key: string; num: string | number; label: string; sub: string; view: Parameters<typeof navigate>[0] }[] = [
     { key: "facts", num: h?.counts.facts ?? "—", label: "Facts", sub: `${pinned} pinned`, view: "facts" },
     { key: "sessions", num: h?.counts.sessions ?? "—", label: "Sessions", sub: "logged work", view: "sessions" },
-    { key: "docs", num: h?.counts.docs ?? "—", label: "Docs", sub: "indexed chunks", view: "docs" },
+    { key: "docs", num: h?.counts.documents ?? "—", label: "Docs", sub: h ? `${h.counts.docs} chunks` : "indexed", view: "docs" },
   ];
 
   return (
@@ -41,14 +41,13 @@ export function OverviewView({ onAdapter }: { onAdapter: (a: string) => void }) 
             <div class="stat-sub">{c.sub}</div>
           </button>
         ))}
-        <div class="card stat-copper">
-          <div class="stat-num" style={{ display: "flex", alignItems: "baseline", gap: "0.15rem" }}>
-            {h ? h.embeddings.dims : "—"}
-            <span class="mono" style={{ fontSize: "1rem", color: "var(--copper)" }}>d</span>
+        <button class="card stat-btn stat-copper" onClick={() => navigate("sessions")}>
+          <div class="stat-num h-serif" style={{ fontSize: project ? "1.7rem" : "2rem", lineHeight: 1.1, wordBreak: "break-word" }}>
+            {project ?? "All"}
           </div>
-          <div class="stat-label">Embeddings</div>
-          <div class="stat-sub">{h?.embeddings.provider ?? "…"}</div>
-        </div>
+          <div class="stat-label">Focus</div>
+          <div class="stat-sub">{project ? "current project →" : "all projects →"}</div>
+        </button>
       </div>
 
       <div class="card" style={{ marginTop: "1.4rem", display: "flex", flexDirection: "column" }}>
@@ -59,7 +58,7 @@ export function OverviewView({ onAdapter }: { onAdapter: (a: string) => void }) 
           Assemble the startup context any agent should load first — recent sessions, pinned facts, related docs.
         </p>
         <div class="terminal" style={{ whiteSpace: "nowrap" }}>
-          <span class="accent">&gt;_</span> <span class="kw">ground brief</span> --agent claude
+          <span class="accent">&gt;_</span> <span class="kw">ground brief</span> --agent claude{project ? ` --project ${project}` : ""}
           <span style={{ display: "inline-block", width: "0.5em", height: "1em", background: "var(--verdigris)", boxShadow: "0 0 12px rgba(156,191,145,0.6)", transform: "translateY(0.16em)", marginLeft: "0.1em", animation: "blink 1.1s steps(1) infinite" }} />
         </div>
         <button class="btn btn-sm" style={{ marginTop: "1rem", alignSelf: "flex-start" }} onClick={() => navigate("brief")}>

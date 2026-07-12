@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { installSnippet, INSTALL_TARGETS } from "@grounded/core";
 import type { InstallTarget, InstallSnippet } from "@grounded/core";
-import type { GlobalOpts } from "../util/store.js";
+import type { GlobalOpts } from "../util/global.js";
 import { c, line, printJson, header, field, fail } from "../util/output.js";
 import { parseEnvPair } from "../util/parse.js";
 

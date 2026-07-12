@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useState, useEffect } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import type { BriefResult } from "@grounded/core/contract";
 import { api } from "../api.js";
@@ -7,11 +7,18 @@ import { useApp } from "../app.js";
 import { copyText, fmtDate } from "../util.js";
 
 export function BriefView() {
-  const { openRecord } = useApp();
+  const { openRecord, project: ctxProject } = useApp();
   const version = useDataVersion();
   const [agent, setAgent] = useState("claude");
-  const [project, setProject] = useState("");
-  const [pending, setPending] = useState({ agent: "claude", project: "" });
+  const [project, setProject] = useState(ctxProject ?? "");
+  const [pending, setPending] = useState({ agent: "claude", project: ctxProject ?? "" });
+
+  // Follow the global project switcher until the user overrides it here.
+  useEffect(() => {
+    setProject(ctxProject ?? "");
+    setPending((p) => ({ ...p, project: ctxProject ?? "" }));
+  }, [ctxProject]);
+
   const { data, loading, error } = useAsync<BriefResult>(
     () => api.brief({ agent: pending.agent || undefined, project: pending.project || undefined, format: "markdown" }),
     [pending, version],
@@ -48,24 +55,35 @@ export function BriefView() {
       {error && <div class="empty" style={{ color: "var(--copper-bright)" }}>{error}</div>}
 
       {data && (
-        <div class="stack" style={{ gap: "1.4rem" }}>
-          <Section title={`Facts · ${data.facts.length}`}>
+        <div class="stack" style={{ gap: "1.6rem" }}>
+          {/* The primary artifact: exactly what an agent receives at startup. */}
+          {data.text && (
+            <div>
+              <div class="field-label" style={{ marginBottom: "0.6rem" }}>
+                What the agent receives
+              </div>
+              <pre class="brief-pre">{data.text}</pre>
+            </div>
+          )}
+
+          {/* Clickable breakdown, ordered to mirror the brief: sessions → facts → docs. */}
+          <Section title={`Most recent work · ${data.recentSessions.length}`}>
+            {data.recentSessions.length === 0 && <Muted>No recent sessions.</Muted>}
+            {data.recentSessions.map((s) => (
+              <div key={s.id} class="row" onClick={() => openRecord(`session:${s.id}`)}>
+                <span class="row-title">{s.summary}</span>
+                <span class="row-meta">{[s.project, fmtDate(s.createdAt).slice(0, 10)].filter(Boolean).join(" · ")}</span>
+              </div>
+            ))}
+          </Section>
+
+          <Section title={`Facts brain · ${data.facts.length}`}>
             {data.facts.length === 0 && <Muted>No facts in scope.</Muted>}
             {data.facts.map((f) => (
               <div key={f.id} class="row" onClick={() => openRecord(`fact:${f.id}`)}>
                 {f.pinned && <span class="pin-dot">★</span>}
                 <span class="row-title">{f.fact}</span>
                 <span class="row-meta">{f.scope}</span>
-              </div>
-            ))}
-          </Section>
-
-          <Section title={`Recent sessions · ${data.recentSessions.length}`}>
-            {data.recentSessions.length === 0 && <Muted>No recent sessions.</Muted>}
-            {data.recentSessions.map((s) => (
-              <div key={s.id} class="row" onClick={() => openRecord(`session:${s.id}`)}>
-                <span class="row-title">{s.summary}</span>
-                <span class="row-meta">{fmtDate(s.createdAt).slice(0, 10)}</span>
               </div>
             ))}
           </Section>

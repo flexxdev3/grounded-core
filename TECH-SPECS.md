@@ -1,7 +1,7 @@
 # grounded-core — technical specs
 
 Implementation reference for the built engine + surfaces. Documents **what the code does** —
-concrete schemas, config keys, formulas, route/tool tables — as of Phases 0–5.
+concrete schemas, config keys, formulas, route/tool tables — as of Phases 0–7 (service-first).
 
 **Boundary with [`CONTRACT.md`](packages/core/CONTRACT.md):** the contract is the *normative* rule set
 every `Store` implementation must honor (recall semantics, graceful degradation, citation guarantees).
@@ -20,14 +20,14 @@ pnpm workspace, TypeScript + ESM. Five packages; everything depends on `@grounde
 | Package | Role | Key dirs |
 |---|---|---|
 | `@grounded/core` | engine: store contract, adapters, recall, ingest, brief, config, install snippets | `src/{storage,embedding,engine,ingest,install}` |
-| `@grounded/cli` | `ground` command (commander) + SessionStart hook scripts | `src/commands`, `src/util`, `hooks/` |
+| `@grounded/cli` | `grounded` installer (commander) — install/manage the service + SessionStart hook scripts | `src/commands`, `src/util`, `hooks/` |
 | `@grounded/api` | Hono REST + OpenAPI | `src/{app,bin,openapi}.ts` |
 | `@grounded/mcp` | MCP server (stdio + streamable HTTP) | `src/{server,bin,installConfig}.ts` |
 | `@grounded/client` | thin typed `fetch` wrapper over the API (types-only core dep) | `src/index.ts` |
 
 Consumers (cli/api/mcp/client) depend only on the `Store` interface + the record/option types in
 `contract.ts`. The dependency-free install-snippet helpers live in `core` so the CLI can offer
-`ground mcp install` without pulling in the MCP SDK; `@grounded/mcp` re-exports them for back-compat.
+`grounded mcp install` without pulling in the MCP SDK; `@grounded/mcp` re-exports them for back-compat.
 
 ---
 
@@ -95,6 +95,11 @@ e.g. `fact:2`, `session:274`, `doc:1091`.
 **Fact** (`contract.ts:16-37`): `id, scope, category, fact, detail?, topicKey?, pinned, importance(0..1),
 status("active"|"superseded"|"archived"), supersededBy?, createdBy?, source?, createdAt, updatedAt`.
 
+**Vision**: `id, scope("global"|"project:<name>"), content(markdown), status("active"|"superseded"),
+supersededBy?, createdBy?, source?, createdAt, updatedAt`. One active record per scope (partial unique
+index); `visionSet` supersedes the prior active record for that scope with lineage. **Excluded from
+recall** — no embedding, no FTS row, not a `SourceType`. Always injected into the brief.
+
 **Session** (`contract.ts:40-54`): `id, machine?, project?, workspace?, agent?, summary, details?,
 tags?(string[]), source("manual"|"hook"|"import"|…), createdAt`.
 
@@ -105,13 +110,13 @@ status("active"|"archived"|"missing"), kind?, machine?, ingestedAt`.
 matchedBy("vector"|"lexical"|"both"), createdAt?, updatedAt?, path?, source?, citation, snippet`
 (snippet ≤ 200 chars). No full bodies.
 
-**BriefResult** (`contract.ts:213-220`): `startupNote, recentSessions(Session[]), facts(Fact[]),
-relatedDocs(RecallResult[]), text?` (`text` filled when `format != "json"`).
+**BriefResult**: `startupNote, vision({global, project} — Vision|null each), recentSessions(Session[]),
+facts(Fact[]), relatedDocs(RecallResult[]), text?` (`text` filled when `format != "json"`).
 
-**Store interface** (`contract.ts:293-326`) — 19 methods:
-`init · factsAdd · factsList · factsGet · factsDelete · factsSupersede · sessionsAdd · sessionsList ·
-sessionsGet · sessionsTimeline · docsIngest · docsList · docsGet · docsPrune · recall · get · brief ·
-health · close`.
+**Store interface** — 23 methods:
+`init · visionGet · visionList · visionSet · visionDelete · factsAdd · factsList · factsGet ·
+factsDelete · factsSupersede · sessionsAdd · sessionsList · sessionsGet · sessionsTimeline ·
+docsIngest · docsList · docsGet · docsPrune · recall · get · brief · health · close`.
 
 **Errors** (`contract.ts:332-358`): `GroundedError` (base, `code="GROUNDED_ERROR"`) →
 `EmbedError("EMBED_ERROR")`, `StoreError("STORE_ERROR")`, `ConfigError("CONFIG_ERROR")`.
@@ -126,18 +131,21 @@ requirement — this section documents the concrete DDL.
 
 ### 4.1 SQLite (default) — `storage/sqlite.ts`, `storage/migrations/sqlite.ts`
 
-One file. Three base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts:3-78`.
+One file. Four base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts`.
 
 **Base tables** (column names are snake_case; mapped to camelCase records):
 - `facts(id INTEGER PK AUTOINCREMENT, scope, category, fact, detail, topic_key, pinned INT, importance REAL,
   status, superseded_by, created_by, source, created_at, updated_at)`
+- `vision(id, scope, content, status, superseded_by, created_by, source, created_at, updated_at)`
+  — no FTS/vec rows (vision is injected, never searched).
 - `sessions(id, machine, project, workspace, agent, summary, details, tags, source, created_at)`
   — `tags` stored as serialized text.
 - `docs(id, source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine,
   ingested_at)`
 
-**Indexes** (`migrations/sqlite.ts:50-57`): `facts(status)`, `facts(scope)`, `facts(topic_key)`,
-`sessions(project)`, `sessions(created_at)`, `docs(path)`, `docs(status)`, **`docs(path, chunk_idx)` UNIQUE**.
+**Indexes**: `facts(status)`, `facts(scope)`, `facts(topic_key)`,
+`sessions(project)`, `sessions(created_at)`, `docs(path)`, `docs(status)`, **`docs(path, chunk_idx)` UNIQUE**,
+**`vision(scope) where status='active'` UNIQUE** (the one-active-per-scope invariant).
 
 **Lexical — FTS5 external-content** (`migrations/sqlite.ts:60-70`), `tokenize='porter unicode61'`:
 - `fts_facts(fact, detail)` content=`facts`
@@ -168,6 +176,7 @@ Same logical columns as SQLite, plus per-table:
 - `search_tsv tsvector generated always as (to_tsvector('english', …)) stored` — facts over
   `fact || detail`, sessions over `summary || details`, docs over `title || body`.
 - `tags text[]` (native array, vs SQLite's serialized text), timestamps `timestamptz default now()`.
+- `vision` mirrors the SQLite table (no embedding/tsv columns) with the same partial unique active index.
 
 **Indexes** (`migrations/postgres.ts:67-76`): same b-tree set as SQLite + **`docs(path,chunk_idx)` UNIQUE** +
 GIN on each `search_tsv` (`idx_facts_tsv`, `idx_sessions_tsv`, `idx_docs_tsv`).
@@ -229,14 +238,20 @@ Embeddings off/unavailable → lexical-only, `matchedBy="lexical"`, no error.
 `recall(query ?? cwd, {sources:["doc"], limit:5})` when a hint exists (`sqlite.ts:834-836`).
 Default recent-session count 8 (`contract.ts:209`).
 
-Markdown render (`brief.ts:42-79`) mirrors the live `labwork-hook.sh`:
+Markdown render mirrors the live `labwork-hook.sh`, plus the vision section:
 ```
 === STARTUP CONTEXT ===
 <startupNote>
+=== VISION (global · project:Y) ===          (omitted when no vision records exist)
+<Global Vision content>
+--- project:Y ---
+<Project Vision content>
+Apply this: flag any plan, play, or design that conflicts with the vision before executing it.
 === MOST RECENT WORK (newest first) ===
 === FACTS BRAIN (curated · scope: global + agent:X + project:Y) ===
 === RELATED DOCS ===   (omitted when empty)
 ```
+Both adapters' `brief()` fetch `visionGet("global")` + `visionGet("project:<p>")` (when project set).
 `format=json` returns the structured object; `format=markdown` also fills `.text`.
 
 ---
@@ -260,48 +275,42 @@ heading → else first non-empty line (≤120 chars) → else path.
 
 ---
 
-## 9. CLI surface — `@grounded/cli`
+## 9. Installer CLI surface — `@grounded/cli`
 
-`commander`-based. Binary `ground` (`bin.ts:13-43`), v0.1.0,
-"self-hosted continuity for multi-agent workspaces".
+`commander`-based. Binary **`grounded`** (`bin.ts`), v0.1.0. **Service-first pivot:** the data verbs
+(`facts/session/docs/recall/get/brief`) were removed — those operations now live on the service surface
+(console / MCP / HTTP API §10–11). The CLI **never opens a store**; it stands up and manages the running
+service. Install kit lives engine-side in `core/src/install/{bootstrap,detect,unit}.ts`.
 
 **Global flags:** `--home <path>` (overrides `GROUNDED_HOME`), `--json` (machine output).
-**Errors:** all flow through `reportAndExit` → `error: [<code>] <message>` on stderr, **exit 1**
-(`util/store.ts:43-51`). Data commands use the `withStore(opts, run)` wrapper (open config → open store →
-run → always `close()`).
+**Errors:** `error: <message>` on stderr, **exit 1**. `bin.ts` installs a stdout `EPIPE` handler so
+`grounded … | head` exits cleanly.
 
-| Command | Args | Notable flags | Store call |
-|---|---|---|---|
-| `init` | — | — | `init()` → `{home, configPath, wroteConfig}` |
-| `status` | — | — | `health()` |
-| `facts add` | `<text>` | `--scope --category --detail --topic-key --pin --importance` | `factsAdd` |
-| `facts list` | — | `--scope --limit` | `factsList` |
-| `facts delete` | `<id>` | — | `factsDelete` |
-| `facts supersede` | `<oldId> <text>` | same as add | `factsSupersede` |
-| `session add` | `<summary>` | `--project --agent --machine --workspace --details --tags a,b` | `sessionsAdd` |
-| `session list` | — | `--project --limit` | `sessionsList` |
-| `session timeline` | — | `--around <id> --query --project --window <n>` | `sessionsTimeline` |
-| `docs ingest` | `<path...>` | `--source --kind --machine --dry-run` | `docsIngest` |
-| `docs list` | — | `--source --status --limit` | `docsList` |
-| `docs prune` | — | `--remove` | `docsPrune` |
-| `recall` | `<query>` | `--limit --project --sources a,b --lexical-only` | `recall` |
-| `get` | `<typedId>` | — | `get` |
-| `brief` | — | `--agent --project --machine --cwd --query --format md\|json` | `brief` |
-| `mcp install` | `[target]` | `--env KEY=VAL` (repeatable) `--all` | none (prints snippet) |
-| `mcp targets` | — | — | none |
-| `hooks print` | `[target]` | — | none (prints script) |
-| `hooks targets` | — | — | none |
+| Command | Args / flags | What it does |
+|---|---|---|
+| `install` | `--port --method <docker\|systemd-user\|systemd-system> --image <ref> --token --yes --force` | preflight → detect running instance → dynamic method menu → `bootstrap()` → materialize backend → health-poll → write `install.json` |
+| `status` | `--port` | `detect()` — running? how (docker/systemd/manifest)? `/health` counts. `--json` dumps the full `DetectResult` |
+| `start` / `stop` / `restart` | — | resolve method via `detect()`/manifest → `docker`/`systemctl` lifecycle |
+| `logs` | `-f/--follow` | `docker logs` or `journalctl` for the resolved backend |
+| `uninstall` | `--purge --yes` | tear down container/unit + drop `install.json`; `--purge` also deletes the cabinet |
+| `init` | — | low-level cabinet primitive → `bootstrap()` (also invoked inside `install`) |
+| `mcp install` | `[target]` `--env KEY=VAL` `--all` | print MCP server config snippet (no store) |
+| `mcp targets` / `hooks targets` | — | list targets |
+| `hooks print` | `[target]` | print the SessionStart wrapper (curls `POST /brief`) + wiring |
 
-Output: TTY-aware colored markdown by default; `--json` → `JSON.stringify(…, 2)`. Parsers
-(`util/parse.ts`): `parseInteger`, `parseFloatOpt`, `parseList` (comma split), `parseTypedId`
-(regex `^(fact|session|doc):(\d+)$`), `parseEnvPair` (`KEY=VAL` reducer for `--env`). `mcp`/`hooks` are
-pure (no `withStore`). `bin.ts` installs a stdout `EPIPE` handler so `ground … | head` exits cleanly.
+**Install methods** (offered only when the host supports them — `util/preflight.ts` probes Docker daemon,
+systemd user/system managers, npm, port): **docker** (image resolved local→pull→build, labelled
+`com.grounded.managed`, `restart=unless-stopped`, `~/.grounded:/cabinet`), **systemd-user**
+(`~/.config/systemd/user/grounded.service` via `npm i -g @grounded/api`), **systemd-system** (`/etc`, sudo).
+Rendered by `core/src/install/unit.ts`. Interactive menu via `util/prompt.ts` (node `readline`, zero deps;
+non-TTY auto-picks the default). Detection (`core/src/install/detect.ts`) is layered: `/health` fingerprint
++ docker label + `systemctl is-active` + `install.json` manifest — the double-install guard.
 
 ---
 
 ## 10. API surface — `@grounded/api`
 
-Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes as CLI/MCP (the contract types).
+Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes as the console/MCP (the contract types).
 
 **Server** (`bin.ts`): `@hono/node-server`; port `GROUNDED_API_PORT` (default **7437**), host
 `GROUNDED_API_HOST` (default `127.0.0.1`). SIGINT/SIGTERM graceful shutdown.
@@ -314,6 +323,9 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 |---|---|---|
 | GET | `/health` | `health` |
 | GET | `/openapi.json` | static OpenAPI 3.1 doc (`openapi.ts`) |
+| GET | `/vision` `?scope&status&limit&offset` (default `status=active`; `status=all` for history) | `visionList` |
+| POST | `/vision` | `visionSet` (201, supersedes prior active for the scope) |
+| DELETE | `/vision/:id` | `visionDelete` |
 | GET | `/facts` `?scope&limit&offset` | `factsList` |
 | POST | `/facts` | `factsAdd` (201) |
 | DELETE | `/facts/:id` | `factsDelete` |
@@ -347,6 +359,8 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 | `ground_timeline` | `around?, query?, project?, window?` | `sessionsTimeline` |
 | `ground_get` | `typedId` (`^(fact\|session\|doc):\d+$`) | `get` |
 | `ground_brief` | `agent?, project?, machine?, cwd?, query?, format?` | `brief` |
+| `ground_vision_get` | `project?` | `visionGet` ×2 → `{global, project}` |
+| `ground_vision_set` | `content, scope?` | `visionSet` |
 | `ground_facts_add` | `fact, scope?, category?, detail?, topicKey?, pinned?, importance?` | `factsAdd` |
 | `ground_facts_list` | `scope?, limit?` | `factsList` |
 | `ground_facts_delete` | `id` | `factsDelete` |
@@ -366,17 +380,18 @@ TOML `[mcp_servers.grounded]`. Returns `{target, label, file, snippet}`. Source 
 
 **Install snippets** — `installSnippet(target, env?)` / `allInstallSnippets(env?)` in
 `core/src/install/config.ts`, targets `claude-code | codex | cursor | generic`. Surfaced by
-`ground mcp install [target] [--env KEY=VAL]` (print-only) and shipped as ready-made files in
+`grounded mcp install [target] [--env KEY=VAL]` (print-only) and shipped as ready-made files in
 `examples/configs/*`. A drift test (`core/src/install/config.test.ts`) asserts each example file
 byte-matches `installSnippet(target).snippet`.
 
 **SessionStart hooks** — shell wrappers in `packages/cli/hooks/` (shipped via package `files`):
-- `grounded-session-start.sh` — Claude Code: reads hook JSON from stdin, derives agent/project/cwd, runs
-  `ground brief --format md` failure-silent, emits
+- `grounded-session-start.sh` — Claude Code: reads hook JSON from stdin, derives agent/project/cwd,
+  `curl`s `POST $GROUNDED_URL/brief` (format=markdown) failure-silent, extracts `.text`, emits
   `{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext}}`; on empty/error → `{}` + exit 0.
-  Needs `jq`.
-- `grounded-session-start.generic.sh` — prints the brief markdown to stdout; no `jq`.
-Surfaced by `ground hooks print [target]` (resolves the shipped script via `import.meta.url` →
+  Needs `jq` + `curl`.
+- `grounded-session-start.generic.sh` — `curl`s the same endpoint and prints the brief markdown to stdout;
+  uses `jq` to extract `.text` when present, raw JSON otherwise.
+Surfaced by `grounded hooks print [target]` (resolves the shipped script via `import.meta.url` →
 `../../hooks/`, prints script + per-target wiring). Env knobs: `GROUNDED_BIN`, `GROUNDED_AGENT`.
 
 **Client lib** — `@grounded/client` `createClient({baseUrl, token?, fetch?, headers?}) → GroundedClient`

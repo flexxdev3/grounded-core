@@ -16,7 +16,9 @@
       "import": "./dist/contract.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -34,5 +36,29 @@
     "@types/pg": "^8.11.10",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grounded/grounded.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/grounded/grounded#readme",
+  "bugs": {
+    "url": "https://github.com/grounded/grounded/issues"
+  },
+  "keywords": [
+    "memory",
+    "recall",
+    "embeddings",
+    "agents",
+    "mcp",
+    "sqlite",
+    "pgvector"
+  ],
+  "engines": {
+    "node": ">=20"
   }
 }

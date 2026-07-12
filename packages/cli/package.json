@@ -1,11 +1,11 @@
 {
   "name": "@grounded/cli",
   "version": "0.1.0",
-  "description": "Grounded CLI — the `ground` command.",
+  "description": "Grounded installer — the `grounded` command (install/manage the service).",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "ground": "./dist/bin.js"
+    "grounded": "./dist/bin.js"
   },
   "files": [
     "dist",
@@ -18,12 +18,33 @@
   },
   "dependencies": {
     "@grounded/core": "workspace:*",
-    "@grounded/api": "workspace:*",
     "commander": "^15.0.0",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grounded/grounded.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/grounded/grounded#readme",
+  "bugs": {
+    "url": "https://github.com/grounded/grounded/issues"
+  },
+  "keywords": [
+    "grounded",
+    "installer",
+    "cli",
+    "self-hosted",
+    "memory"
+  ],
+  "engines": {
+    "node": ">=20"
   }
 }

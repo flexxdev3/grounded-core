@@ -168,6 +168,44 @@ export function createServer(store: Store): McpServer {
   );
 
   server.registerTool(
+    "ground_vision_get",
+    {
+      title: "Get vision",
+      description:
+        "Get the active Global Vision and, when project is given, that Project Vision — the direction the work serves.",
+      inputSchema: {
+        project: z.string().optional().describe("project name (loads its Project Vision too)"),
+      },
+    },
+    guard(async ({ project }) => {
+      const global = await store.visionGet("global");
+      const proj = project ? await store.visionGet(`project:${project}`) : null;
+      return json({ global, project: proj });
+    }),
+  );
+
+  server.registerTool(
+    "ground_vision_set",
+    {
+      title: "Set vision",
+      description:
+        "Set the vision for a scope (narrative markdown). Supersedes the prior active record for that scope; lineage is kept.",
+      inputSchema: {
+        content: z.string().describe("the vision — narrative markdown"),
+        scope: z.string().optional().describe('"global" (default) or "project:<name>"'),
+      },
+    },
+    guard(async ({ content, scope }) => {
+      const created = await store.visionSet({
+        content,
+        ...(scope !== undefined ? { scope } : {}),
+        source: "mcp",
+      });
+      return json(created);
+    }),
+  );
+
+  server.registerTool(
     "ground_facts_add",
     {
       title: "Add fact",

@@ -27,6 +27,9 @@ import type {
   Store,
   TimelineOptions,
   TypedId,
+  Vision,
+  VisionInput,
+  VisionStatus,
 } from "../contract.js";
 import {
   fuseLane,
@@ -234,6 +237,86 @@ export class SqliteStore implements Store {
       )
       .run(created.id, nowIso(), oldId);
     return created;
+  }
+
+  // ---- vision --------------------------------------------------------------
+  // One active record per scope; set supersedes; excluded from recall (no FTS/vec rows).
+
+  private rowToVision(r: Row): Vision {
+    return {
+      id: Number(r.id),
+      scope: String(r.scope),
+      content: String(r.content),
+      status: String(r.status) as VisionStatus,
+      supersededBy: r.superseded_by == null ? null : Number(r.superseded_by),
+      createdBy: (r.created_by as string | null) ?? null,
+      source: (r.source as string | null) ?? null,
+      createdAt: String(r.created_at),
+      updatedAt: String(r.updated_at),
+    };
+  }
+
+  async visionGet(scope: string): Promise<Vision | null> {
+    const r = this.db
+      .prepare(`select * from vision where scope = ? and status = 'active'`)
+      .get(scope) as Row | undefined;
+    return r ? this.rowToVision(r) : null;
+  }
+
+  async visionList(opts?: ListOptions): Promise<Vision[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (opts?.status) {
+      where.push("status = ?");
+      params.push(opts.status);
+    }
+    if (opts?.scope) {
+      where.push("scope = ?");
+      params.push(opts.scope);
+    }
+    const whereSql = where.length ? `where ${where.join(" and ")}` : "";
+    const rows = this.db
+      .prepare(`select * from vision ${whereSql} order by updated_at desc limit ? offset ?`)
+      .all(...params, opts?.limit ?? 100, opts?.offset ?? 0) as Row[];
+    return rows.map((r) => this.rowToVision(r));
+  }
+
+  async visionSet(input: VisionInput): Promise<Vision> {
+    const scope = input.scope ?? "global";
+    const ts = nowIso();
+    const run = this.db.transaction(() => {
+      const prior = this.db
+        .prepare(`select id from vision where scope = ? and status = 'active'`)
+        .get(scope) as Row | undefined;
+      // retire first — the partial unique index forbids two active rows per scope.
+      if (prior) {
+        this.db
+          .prepare(`update vision set status = 'superseded', updated_at = ? where id = ?`)
+          .run(ts, Number(prior.id));
+      }
+      const info = this.db
+        .prepare(
+          `insert into vision(scope, content, status, created_by, source, created_at, updated_at)
+           values (?, ?, 'active', ?, ?, ?, ?)`,
+        )
+        .run(scope, input.content, input.createdBy ?? null, input.source ?? null, ts, ts);
+      const id = Number(info.lastInsertRowid);
+      if (prior) {
+        this.db
+          .prepare(`update vision set superseded_by = ? where id = ?`)
+          .run(id, Number(prior.id));
+      }
+      return id;
+    });
+    const id = run();
+    const r = this.db.prepare(`select * from vision where id = ?`).get(id) as Row | undefined;
+    if (!r) throw new StoreError("failed to read inserted vision");
+    return this.rowToVision(r);
+  }
+
+  async visionDelete(id: number): Promise<boolean> {
+    const info = this.db.prepare(`delete from vision where id = ?`).run(id);
+    return info.changes > 0;
   }
 
   // ---- sessions ----------------------------------------------------------
@@ -847,7 +930,11 @@ export class SqliteStore implements Store {
     if (hint) {
       relatedDocs = await this.recall(hint, { sources: ["doc"], limit: 5 });
     }
-    return assembleBrief({ recentSessions, facts, relatedDocs }, o);
+    const vision = {
+      global: await this.visionGet("global"),
+      project: o.project ? await this.visionGet(`project:${o.project}`) : null,
+    };
+    return assembleBrief({ vision, recentSessions, facts, relatedDocs }, o);
   }
 
   async health(): Promise<HealthReport> {

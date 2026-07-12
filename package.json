@@ -14,7 +14,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "clean": "pnpm -r exec rm -rf dist node_modules/.cache",
-    "ground": "pnpm --filter @grounded/cli exec ground",
+    "grounded": "pnpm --filter @grounded/cli exec grounded",
     "smoke": "bash scripts/smoke.sh"
   },
   "devDependencies": {

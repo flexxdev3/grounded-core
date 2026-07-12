@@ -42,9 +42,6 @@ importers:
 
   packages/cli:
     dependencies:
-      '@grounded/api':
-        specifier: workspace:*
-        version: link:../api
       '@grounded/core':
         specifier: workspace:*
         version: link:../core

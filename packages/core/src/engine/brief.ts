@@ -4,6 +4,7 @@ import type {
   Fact,
   RecallResult,
   Session,
+  Vision,
 } from "../contract.js";
 
 const STARTUP_NOTE =
@@ -28,7 +29,12 @@ export function deriveFactScopes(opts: BriefOptions): string[] {
   return [...new Set(scopes)];
 }
 
+/** The fixed line that makes vision applied, not just present. */
+const VISION_APPLY_NOTE =
+  "Apply this: flag any plan, play, or design that conflicts with the vision before executing it.";
+
 export interface BriefParts {
+  vision?: { global: Vision | null; project: Vision | null };
   recentSessions: Session[];
   facts: Fact[];
   relatedDocs: RecallResult[];
@@ -37,6 +43,7 @@ export interface BriefParts {
 export function assembleBrief(parts: BriefParts, opts: BriefOptions): BriefResult {
   const result: BriefResult = {
     startupNote: STARTUP_NOTE,
+    vision: parts.vision ?? { global: null, project: null },
     recentSessions: parts.recentSessions,
     facts: parts.facts,
     relatedDocs: parts.relatedDocs,
@@ -56,6 +63,21 @@ export function renderMarkdown(brief: BriefResult, opts: BriefOptions): string {
   lines.push("=== STARTUP CONTEXT ===");
   lines.push(brief.startupNote);
   lines.push("");
+
+  // Vision: always injected when set, omitted entirely when empty.
+  const gv = brief.vision?.global ?? null;
+  const pv = brief.vision?.project ?? null;
+  if (gv || pv) {
+    const scopeBits = [gv ? "global" : null, pv ? pv.scope : null].filter(Boolean);
+    lines.push(`=== VISION (${scopeBits.join(" · ")}) ===`);
+    if (gv) lines.push(gv.content.trim());
+    if (pv) {
+      if (gv) lines.push(`--- ${pv.scope} ---`);
+      lines.push(pv.content.trim());
+    }
+    lines.push(VISION_APPLY_NOTE);
+    lines.push("");
+  }
 
   lines.push("=== MOST RECENT WORK (newest first) ===");
   if (brief.recentSessions.length === 0) {

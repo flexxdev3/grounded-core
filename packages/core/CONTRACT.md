@@ -1,7 +1,7 @@
 # @grounded/core — behavior contract
 
 The frozen type surface is [`src/contract.ts`](src/contract.ts). This file specifies the **behavior**
-every implementation must honor. CLI / API / MCP depend only on the `Store` interface + these rules.
+every implementation must honor. API / MCP / installer depend only on the `Store` interface + these rules.
 
 ## Source-of-truth references
 - Live recall mechanics, real schemas, embedding flow → repo [`AGENTS.md`](../../AGENTS.md) "live system" section.
@@ -10,6 +10,20 @@ every implementation must honor. CLI / API / MCP depend only on the `Store` inte
 ## Records
 Generalized from the live StuntLabs schemas: `facts` → `Fact`, `labwork` → `Session`,
 `notes_corpus` → `Doc`. Keep semantics identical; only names are productized.
+
+## Vision (the direction lane)
+`Vision` holds what the work is FOR — one narrative markdown record per scope:
+- **Global Vision** (`scope="global"`) — what the whole operation is and where it's going.
+- **Project Vision** (`scope="project:<name>"`) — where one project is going and why it exists.
+
+Rules every adapter must honor:
+- **One active record per scope.** `visionSet` inserts the new record as `active` and marks the prior
+  active record for that scope `superseded` with `superseded_by` → new id (lineage kept, same as facts).
+  There is no separate supersede call — set IS the supersede. Enforced by a partial unique index on
+  `(scope) where status='active'`.
+- **Always injected, never ranked.** Vision renders in every brief (see below) but is **excluded from
+  recall** — `SourceType` stays `fact | session | doc`. No embedding, no FTS row.
+- `visionGet(scope)` returns the active record or null. `visionList` supports `scope`/`status` history.
 
 ## Embedding providers
 - `ollama` (default): `POST {baseUrl}/api/embeddings { model, prompt }` → `.embedding` (768 floats for
@@ -58,6 +72,11 @@ Assemble scoped startup context, mirroring the live `labwork-hook.sh` shape:
 ```
 === STARTUP CONTEXT ===
 <startupNote>
+=== VISION (global · project:<p>) ===
+<Global Vision content>
+--- project:<p> ---
+<Project Vision content>
+Apply this: flag any plan, play, or design that conflicts with the vision before executing it.
 === MOST RECENT WORK (newest first) ===
 <recent sessions, scoped by project if given>
 === FACTS BRAIN (curated · scope: global + agent:<a> + project:<p>) ===
@@ -65,6 +84,8 @@ Assemble scoped startup context, mirroring the live `labwork-hook.sh` shape:
 === RELATED DOCS ===
 <top recall docs for the query/cwd hint, optional>
 ```
+The VISION section is omitted entirely when no vision records exist (zero cost to non-adopters). The
+`Apply this:` line is fixed — it is the instruction that makes vision *applied*, not just present.
 `format=json` returns the structured `BriefResult`; `format=markdown` also fills `.text`.
 
 ## Citations
