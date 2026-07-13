@@ -15,7 +15,8 @@ Frozen type surface: [`packages/core/src/contract.ts`](packages/core/src/contrac
 
 ## 1. Package layout
 
-pnpm workspace, TypeScript + ESM. Five packages; everything depends on `@grounded/core`.
+pnpm workspace, TypeScript + ESM. Everything depends on `@grounded/core`. Six **open-core** packages
+below; a private **hosted layer** (§14) is documented separately.
 
 | Package | Role | Key dirs |
 |---|---|---|
@@ -24,8 +25,9 @@ pnpm workspace, TypeScript + ESM. Five packages; everything depends on `@grounde
 | `@grounded/api` | Hono REST + OpenAPI | `src/{app,bin,openapi}.ts` |
 | `@grounded/mcp` | MCP server (stdio + streamable HTTP) | `src/{server,bin,installConfig}.ts` |
 | `@grounded/client` | thin typed `fetch` wrapper over the API (types-only core dep) | `src/index.ts` |
+| `@grounded/ui` | the console — small Preact web UI over the API (Recall · Facts · Sessions · Docs · Vision · Brief · Health) | `src/{views,components,styles}` |
 
-Consumers (cli/api/mcp/client) depend only on the `Store` interface + the record/option types in
+Consumers (cli/api/mcp/client/ui) depend only on the `Store` interface + the record/option types in
 `contract.ts`. The dependency-free install-snippet helpers live in `core` so the CLI can offer
 `grounded mcp install` without pulling in the MCP SDK; `@grounded/mcp` re-exports them for back-compat.
 
@@ -233,8 +235,10 @@ Embeddings off/unavailable → lexical-only, `matchedBy="lexical"`, no error.
 
 ## 7. Brief assembly — `engine/brief.ts`
 
-`assembleBrief` (`brief.ts:22-33`) returns `BriefResult`. Scope label built from
-`["global", agent:{a}?, project:{p}?]` (`brief.ts:35-40`). Related docs come from
+`assembleBrief` (`brief.ts:22-33`) returns `BriefResult`. Fact scopes derived from
+`["global", agent:{a}?, project:{p}?, machine:{m}?]` (`deriveFactScopes`) — a fact scoped
+`machine:arch1` only surfaces in briefs on arch1 (the `machine` field already flows through
+`BriefOptions` from the API/MCP/hook). An explicit `factScopes` array overrides the derivation. Related docs come from
 `recall(query ?? cwd, {sources:["doc"], limit:5})` when a hint exists (`sqlite.ts:834-836`).
 Default recent-session count 8 (`contract.ts:209`).
 
@@ -433,6 +437,22 @@ hooks → grounded-mcp `tools/list`.
 
 ---
 
+## 14. Hosted layer — `@grounded/cloud` (commercial, private)
+
+The managed-cabinet business layer lives in two **private, never-published** packages on the `accounts`
+branch. It **consumes** open-core unchanged — `@grounded/core` never learns what a "user" is.
+
+| Package | Role | Docs |
+|---|---|---|
+| `@grounded/cloud` | Hono gateway on OVH: `/auth/*` (better-auth) · `/account/*` (control plane) · `/api/*` (per-tenant proxy → `createApp(store)`) · serves the UI at `/`. Schema-per-tenant isolation, control-plane `accounts` schema, bounded Store LRU. | [`packages/cloud/DESIGN.md`](packages/cloud/DESIGN.md) |
+| `@grounded/cloud-web` | the hosted-cabinet **account UI** (8 surfaces: Auth · Onboarding · Dashboard · Connect · API tokens · Cabinet · Settings · Billing). Preact + Vite, served by the gateway. | [`packages/cloud/web/TECH-SPECS.md`](packages/cloud/web/TECH-SPECS.md) |
+
+Open-core boundary: everything account/multi-tenant is in `@grounded/cloud` (`private: true`), out of
+`pnpm publish -r`. The per-tenant `/api/*` exposes the **same** routes a self-hoster runs — only base
+URL + token differ.
+
+---
+
 *Reflects the implementation as of Phases 0–5 (engine + cli/api/mcp/client, hooks, install wiring; tests
-green; locally installable). Behavioral guarantees live in [`CONTRACT.md`](packages/core/CONTRACT.md);
-roadmap in [`../CLAUDE.md`](../CLAUDE.md).*
+green; locally installable) plus the hosted layer §14 (2026-07-13, `accounts` branch). Behavioral
+guarantees live in [`CONTRACT.md`](packages/core/CONTRACT.md); roadmap in [`../CLAUDE.md`](../CLAUDE.md).*
