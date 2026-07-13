@@ -7,6 +7,9 @@ import type { BriefLine } from "../components/ui.js";
 export const HERO_BRIEF: BriefLine[] = [
   { kind: "rule", text: "=== STARTUP CONTEXT ===" },
   { kind: "blank" },
+  { kind: "head", text: "VISION" },
+  { kind: "text", text: "self-hosted continuity every agent wakes up sharing — the direction, not just the history" },
+  { kind: "blank" },
   { kind: "head", text: "MOST RECENT WORK" },
   { kind: "kv", key: "2 days ago", value: "shipped hosted cabinets — schema-per-tenant isolation" },
   { kind: "kv", key: "5 days ago", value: "vision lane: Global + Project direction, injected into every brief" },
@@ -27,6 +30,6 @@ export function cabinetBrief(counts: { facts: number; sessions: number; document
     { kind: "kv", key: "sessions", value: `${counts.sessions} · what shipped, what broke, what you decided` },
     { kind: "kv", key: "docs", value: `${counts.documents} indexed · every result cited` },
     { kind: "blank" },
-    { kind: "text", text: "Any agent, any repo, any machine — already knowing the work." },
+    { kind: "text", text: "Any agent, any repo, any machine — already sharing your vision." },
   ];
 }

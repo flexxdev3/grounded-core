@@ -49,8 +49,8 @@ export function Auth({ onAuthed }: { onAuthed: () => void | Promise<void> }) {
             Grounded doesn't.
           </h1>
           <p class="lede mt-md" style={{ maxWidth: "42ch" }}>
-            A hosted cabinet your agents point at — facts, work history, and a startup brief, cited and
-            inspectable. Start any agent already knowing the work.
+            A hosted cabinet your agents point at — facts, work history, a shared vision, and a startup
+            brief, cited and inspectable. Start any agent already sharing your vision.
           </p>
         </div>
 
