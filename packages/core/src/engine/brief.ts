@@ -16,8 +16,10 @@ export function startupNote(): string {
 
 /**
  * The scope set a brief loads facts from: an explicit `factScopes` override, or
- * the default `global` + `agent:<agent>` + `project:<project>` derivation. This
- * is what keeps off-agent scopes (e.g. another project's facts) out of startup.
+ * the default `global` + `agent:<agent>` + `project:<project>` + `machine:<machine>`
+ * derivation. This is what keeps off-agent/off-machine scopes (e.g. another project's
+ * or another box's facts) out of startup — a fact scoped `machine:arch1` only surfaces
+ * on arch1.
  */
 export function deriveFactScopes(opts: BriefOptions): string[] {
   if (opts.factScopes && opts.factScopes.length > 0) {
@@ -26,6 +28,7 @@ export function deriveFactScopes(opts: BriefOptions): string[] {
   const scopes = ["global"];
   if (opts.agent) scopes.push(`agent:${opts.agent}`);
   if (opts.project) scopes.push(`project:${opts.project}`);
+  if (opts.machine) scopes.push(`machine:${opts.machine}`);
   return [...new Set(scopes)];
 }
 

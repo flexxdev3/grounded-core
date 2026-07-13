@@ -190,6 +190,19 @@ describe("Store lifecycle (sqlite, embeddings=none)", () => {
     expect(brief.text).toContain("scope: global + project:alpha");
   });
 
+  it("facts: machine scope is derived per-machine and does not leak across boxes", async () => {
+    await store.factsAdd({ fact: "arch1-only fact", scope: "machine:arch1" });
+
+    // a brief on arch1 derives machine:arch1 and surfaces the fact
+    const onArch1 = await store.brief({ machine: "arch1", format: "markdown" });
+    expect(onArch1.text).toContain("machine:arch1");
+    expect(onArch1.text).toContain("arch1-only fact");
+
+    // the same fact stays hidden from a brief on a different box
+    const onOther = await store.brief({ machine: "gpuserv1", format: "markdown" });
+    expect(onOther.text).not.toContain("arch1-only fact");
+  });
+
   it("docsPrune marks missing nothing when files present", async () => {
     const res = await store.docsPrune();
     expect(res.missing).toBe(0);
