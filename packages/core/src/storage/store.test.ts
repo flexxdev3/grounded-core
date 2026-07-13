@@ -42,7 +42,7 @@ describe("Store lifecycle (sqlite, embeddings=none)", () => {
     expect(h.embeddings.dims).toBe(0);
   });
 
-  it("facts: add / get / list / supersede / delete", async () => {
+  it("facts: add / get / list / update / delete", async () => {
     const f = await store.factsAdd({
       fact: "never push to GitHub without explicit instruction",
       detail: "gh is authed to a public account",
@@ -60,19 +60,22 @@ describe("Store lifecycle (sqlite, embeddings=none)", () => {
     const list = await store.factsList({ status: "active" });
     expect(list.some((x) => x.id === f.id)).toBe(true);
 
-    const replacement = await store.factsSupersede(f.id, {
+    const updated = await store.factsUpdate(f.id, {
       fact: "never push to any remote without explicit instruction",
-      pinned: true,
-      importance: 1,
     });
-    expect(replacement.id).not.toBe(f.id);
-    const oldFact = await store.factsGet(f.id);
-    expect(oldFact?.status).toBe("superseded");
-    expect(oldFact?.supersededBy).toBe(replacement.id);
+    expect(updated.id).toBe(f.id);
+    expect(updated.fact).toBe("never push to any remote without explicit instruction");
+    expect(updated.status).toBe("active");
+    // untouched fields are preserved
+    expect(updated.pinned).toBe(true);
+    expect(updated.category).toBe("commit-rule");
+    // exactly one row, still active
+    const stillActive = await store.factsList({ status: "active" });
+    expect(stillActive.filter((x) => x.id === f.id).length).toBe(1);
 
-    const deleted = await store.factsDelete(replacement.id);
+    const deleted = await store.factsDelete(f.id);
     expect(deleted).toBe(true);
-    expect(await store.factsGet(replacement.id)).toBeNull();
+    expect(await store.factsGet(f.id)).toBeNull();
   });
 
   it("sessions: add / list / timeline", async () => {
@@ -202,18 +205,15 @@ describe("Store lifecycle (sqlite, embeddings=none)", () => {
     const got = await store.visionGet("global");
     expect(got?.id).toBe(v1.id);
 
-    // set again → v1 superseded with lineage, exactly one active
+    // set again → edits v1 in place, still exactly one active, same id
     const v2 = await store.visionSet({
       content: "Ship taste at scale. Design out front, engineering underneath.",
     });
-    expect(v2.id).not.toBe(v1.id);
-    const old = (await store.visionList({ scope: "global", status: "superseded" })).find(
-      (v) => v.id === v1.id,
-    );
-    expect(old?.supersededBy).toBe(v2.id);
+    expect(v2.id).toBe(v1.id);
+    expect(v2.content).toBe("Ship taste at scale. Design out front, engineering underneath.");
     const active = await store.visionList({ scope: "global", status: "active" });
     expect(active.length).toBe(1);
-    expect(active[0]!.id).toBe(v2.id);
+    expect(active[0]!.id).toBe(v1.id);
 
     // project vision is independent of global
     const pv = await store.visionSet({

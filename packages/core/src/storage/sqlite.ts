@@ -141,7 +141,6 @@ export class SqliteStore implements Store {
       pinned: Number(r.pinned) === 1,
       importance: Number(r.importance),
       status: String(r.status) as FactStatus,
-      supersededBy: r.superseded_by == null ? null : Number(r.superseded_by),
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: String(r.created_at),
@@ -222,25 +221,57 @@ export class SqliteStore implements Store {
     return false;
   }
 
-  async factsSupersede(oldId: number, replacement: FactInput): Promise<Fact> {
-    const existing = await this.factsGet(oldId);
-    if (!existing) throw new StoreError(`fact ${oldId} not found`);
-    const created = await this.factsAdd({
-      ...replacement,
-      scope: replacement.scope ?? existing.scope,
-      category: replacement.category ?? existing.category,
-      topicKey: replacement.topicKey ?? existing.topicKey ?? undefined,
-    });
+  async factsUpdate(id: number, patch: Partial<FactInput>): Promise<Fact> {
+    const existing = await this.factsGet(id);
+    if (!existing) throw new StoreError(`fact ${id} not found`);
+    const next = {
+      scope: patch.scope ?? existing.scope,
+      category: patch.category ?? existing.category,
+      fact: patch.fact ?? existing.fact,
+      detail: patch.detail !== undefined ? patch.detail : existing.detail,
+      topicKey: patch.topicKey !== undefined ? patch.topicKey : existing.topicKey,
+      pinned: patch.pinned !== undefined ? patch.pinned : existing.pinned,
+      importance: patch.importance !== undefined ? patch.importance : existing.importance,
+      source: patch.source !== undefined ? patch.source : existing.source,
+    };
+    const textChanged = next.fact !== existing.fact || (next.detail ?? "") !== (existing.detail ?? "");
+    if (textChanged) {
+      // External-content FTS5: retire the old index entry using the OLD values
+      // (the 'delete' command) BEFORE the base row changes, then insert the new one.
+      this.db
+        .prepare(`insert into fts_facts(fts_facts, rowid, fact, detail) values ('delete', ?, ?, ?)`)
+        .run(id, existing.fact, existing.detail ?? null);
+    }
     this.db
       .prepare(
-        `update facts set status = 'superseded', superseded_by = ?, updated_at = ? where id = ?`,
+        `update facts set scope = ?, category = ?, fact = ?, detail = ?, topic_key = ?, pinned = ?, importance = ?, source = ?, updated_at = ? where id = ?`,
       )
-      .run(created.id, nowIso(), oldId);
-    return created;
+      .run(
+        next.scope,
+        next.category,
+        next.fact,
+        next.detail ?? null,
+        next.topicKey ?? null,
+        next.pinned ? 1 : 0,
+        next.importance,
+        next.source ?? null,
+        nowIso(),
+        id,
+      );
+    if (textChanged) {
+      this.db
+        .prepare(`insert into fts_facts(rowid, fact, detail) values (?, ?, ?)`)
+        .run(id, next.fact, next.detail ?? null);
+      const vec = await this.embedOne(`${next.fact}\n${next.detail ?? ""}`.trim());
+      if (vec) this.upsertVector("vec_facts", id, vec);
+    }
+    const fact = await this.factsGet(id);
+    if (!fact) throw new StoreError("failed to read updated fact");
+    return fact;
   }
 
   // ---- vision --------------------------------------------------------------
-  // One active record per scope; set supersedes; excluded from recall (no FTS/vec rows).
+  // One active record per scope; edited in place; excluded from recall (no FTS/vec rows).
 
   private rowToVision(r: Row): Vision {
     return {
@@ -248,7 +279,6 @@ export class SqliteStore implements Store {
       scope: String(r.scope),
       content: String(r.content),
       status: String(r.status) as VisionStatus,
-      supersededBy: r.superseded_by == null ? null : Number(r.superseded_by),
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: String(r.created_at),
@@ -288,11 +318,12 @@ export class SqliteStore implements Store {
       const prior = this.db
         .prepare(`select id from vision where scope = ? and status = 'active'`)
         .get(scope) as Row | undefined;
-      // retire first — the partial unique index forbids two active rows per scope.
+      // one active record per scope — edit it in place, or insert if none exists.
       if (prior) {
         this.db
-          .prepare(`update vision set status = 'superseded', updated_at = ? where id = ?`)
-          .run(ts, Number(prior.id));
+          .prepare(`update vision set content = ?, source = ?, updated_at = ? where id = ?`)
+          .run(input.content, input.source ?? null, ts, Number(prior.id));
+        return Number(prior.id);
       }
       const info = this.db
         .prepare(
@@ -300,13 +331,7 @@ export class SqliteStore implements Store {
            values (?, ?, 'active', ?, ?, ?, ?)`,
         )
         .run(scope, input.content, input.createdBy ?? null, input.source ?? null, ts, ts);
-      const id = Number(info.lastInsertRowid);
-      if (prior) {
-        this.db
-          .prepare(`update vision set superseded_by = ? where id = ?`)
-          .run(id, Number(prior.id));
-      }
-      return id;
+      return Number(info.lastInsertRowid);
     });
     const id = run();
     const r = this.db.prepare(`select * from vision where id = ?`).get(id) as Row | undefined;

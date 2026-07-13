@@ -54,9 +54,8 @@ export interface GroundedClient {
   /** Fetch a full record by typed id, e.g. "fact:27" / "session:274" / "doc:1091". */
   get(typedId: TypedId): Promise<FullRecord>;
   vision: {
-    /** Set the vision for a scope; supersedes the prior active record (lineage kept). */
+    /** Set the vision for a scope; edits the active record in place (one per scope). */
     set(input: VisionInput): Promise<Vision>;
-    /** Default lists active records; pass status "superseded" or "all" for history. */
     list(opts?: ListOptions): Promise<Vision[]>;
     delete(id: number): Promise<{ deleted: boolean; id: number }>;
   };
@@ -64,8 +63,8 @@ export interface GroundedClient {
     add(input: FactInput): Promise<Fact>;
     list(opts?: ListOptions): Promise<Fact[]>;
     delete(id: number): Promise<{ deleted: boolean; id: number }>;
-    /** Retire fact `id` and create its replacement in one call. */
-    supersede(id: number, input: FactInput): Promise<Fact>;
+    /** Edit fact `id` in place (partial patch). */
+    update(id: number, patch: Partial<FactInput>): Promise<Fact>;
   };
   sessions: {
     add(input: SessionInput): Promise<Session>;
@@ -135,7 +134,7 @@ export function createClient(options: ClientOptions): GroundedClient {
           `/facts${qs({ scope: opts.scope, limit: opts.limit, offset: opts.offset })}`,
         ),
       delete: (id) => request<{ deleted: boolean; id: number }>("DELETE", `/facts/${id}`),
-      supersede: (id, input) => request<Fact>("POST", `/facts/${id}/supersede`, input),
+      update: (id, patch) => request<Fact>("PATCH", `/facts/${id}`, patch),
     },
     sessions: {
       add: (input) => request<Session>("POST", "/sessions", input),

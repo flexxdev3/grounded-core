@@ -46,8 +46,7 @@ export const openApiDocument = {
           topicKey: { type: ["string", "null"] },
           pinned: { type: "boolean" },
           importance: { type: "number" },
-          status: { type: "string", enum: ["active", "superseded", "archived"] },
-          supersededBy: { type: ["integer", "null"] },
+          status: { type: "string", enum: ["active", "archived"] },
           createdBy: { type: ["string", "null"] },
           source: { type: ["string", "null"] },
           createdAt: { type: "string" },
@@ -76,8 +75,7 @@ export const openApiDocument = {
           id: { type: "integer" },
           scope: { type: "string", description: '"global" or "project:<name>"' },
           content: { type: "string", description: "narrative markdown" },
-          status: { type: "string", enum: ["active", "superseded"] },
-          supersededBy: { type: ["integer", "null"] },
+          status: { type: "string", enum: ["active"] },
           createdBy: { type: ["string", "null"] },
           source: { type: ["string", "null"] },
           createdAt: { type: "string" },
@@ -298,6 +296,24 @@ export const openApiDocument = {
       },
     },
     "/facts/{id}": {
+      patch: {
+        summary: "Edit a fact in place (partial; re-embeds when text changes)",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/FactInput" } } },
+        },
+        responses: {
+          "200": {
+            description: "Updated fact",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Fact" } } },
+          },
+          "404": {
+            description: "Not found",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+        },
+      },
       delete: {
         summary: "Delete a fact",
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
@@ -306,22 +322,6 @@ export const openApiDocument = {
           "404": {
             description: "Not found",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
-          },
-        },
-      },
-    },
-    "/facts/{id}/supersede": {
-      post: {
-        summary: "Supersede a fact with a replacement",
-        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
-        requestBody: {
-          required: true,
-          content: { "application/json": { schema: { $ref: "#/components/schemas/FactInput" } } },
-        },
-        responses: {
-          "201": {
-            description: "Replacement fact",
-            content: { "application/json": { schema: { $ref: "#/components/schemas/Fact" } } },
           },
         },
       },
@@ -347,7 +347,7 @@ export const openApiDocument = {
         },
       },
       post: {
-        summary: "Set the vision for a scope (supersedes the prior active record)",
+        summary: "Set the vision for a scope (edits the active record in place)",
         requestBody: {
           required: true,
           content: { "application/json": { schema: { $ref: "#/components/schemas/VisionInput" } } },

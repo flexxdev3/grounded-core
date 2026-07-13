@@ -65,26 +65,17 @@ export function RecordDrawer(props: { typedId: TypedId; onClose: () => void }) {
     props.onClose();
   };
 
-  const supersedeFact = async (fact: Fact, input: FactInput) => {
+  const updateFact = async (fact: Fact, patch: Partial<FactInput>) => {
     try {
-      await api.facts.supersede(fact.id, input);
-      afterMutation("Fact superseded");
+      await api.facts.update(fact.id, patch);
+      afterMutation("Fact updated");
     } catch (e) {
       toast(errMessage(e));
     }
   };
 
   const togglePin = async (fact: Fact) => {
-    const input: FactInput = {
-      fact: fact.fact,
-      scope: fact.scope,
-      pinned: !fact.pinned,
-      importance: fact.importance,
-    };
-    if (fact.category) input.category = fact.category;
-    if (fact.detail) input.detail = fact.detail;
-    if (fact.topicKey) input.topicKey = fact.topicKey;
-    await supersedeFact(fact, input);
+    await updateFact(fact, { pinned: !fact.pinned });
   };
 
   const del = async () => {
@@ -145,16 +136,15 @@ export function RecordDrawer(props: { typedId: TypedId; onClose: () => void }) {
       </aside>
 
       {editing && data?.sourceType === "fact" && (
-        <Modal title="Supersede fact" onClose={() => setEditing(false)}>
+        <Modal title="Edit fact" onClose={() => setEditing(false)}>
           <p class="mono" style={{ fontSize: "0.68rem", color: "rgba(236,230,216,0.5)", margin: "0 0 1rem" }}>
-            Facts are explicit — editing retires <span class="accent">fact:{data.record.id}</span> and inserts the
-            replacement. Recall reflects only the new one.
+            Edits <span class="accent">fact:{data.record.id}</span> in place. Recall re-embeds when the text changes.
           </p>
           <FactForm
             initial={data.record}
-            submitLabel="Supersede"
+            submitLabel="Save"
             onCancel={() => setEditing(false)}
-            onSubmit={(input) => supersedeFact(data.record, input)}
+            onSubmit={(input) => updateFact(data.record, input)}
           />
         </Modal>
       )}

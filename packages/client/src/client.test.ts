@@ -64,13 +64,10 @@ describe("@grounded/client against in-process createApp", () => {
     expect(got.summary).toBe("Fetch me by id");
   });
 
-  it("facts supersede then delete", async () => {
+  it("facts update then delete", async () => {
     const orig = await client.facts.add({ fact: "Recall budget is 500ms", topicKey: "recall-budget" });
-    const next = await client.facts.supersede(orig.id, {
-      fact: "Recall budget is 200ms",
-      topicKey: "recall-budget",
-    });
-    expect(next.id).not.toBe(orig.id);
+    const next = await client.facts.update(orig.id, { fact: "Recall budget is 200ms" });
+    expect(next.id).toBe(orig.id);
     expect(next.fact).toContain("200ms");
     const del = await client.facts.delete(next.id);
     expect(del.deleted).toBe(true);
@@ -96,23 +93,19 @@ describe("@grounded/client against in-process createApp", () => {
     expect(Array.isArray(b.facts)).toBe(true);
   });
 
-  it("vision set supersedes prior active + brief carries it", async () => {
+  it("vision set edits the active record in place + brief carries it", async () => {
     const v1 = await client.vision.set({ content: "First direction." });
     expect(v1.scope).toBe("global");
     const v2 = await client.vision.set({ content: "Second direction.", scope: "global" });
-    expect(v2.id).not.toBe(v1.id);
+    expect(v2.id).toBe(v1.id);
+    expect(v2.content).toBe("Second direction.");
 
     const active = await client.vision.list({ scope: "global" });
     expect(active.length).toBe(1);
-    expect(active[0]!.id).toBe(v2.id);
-
-    const history = await client.vision.list({ scope: "global", status: "all" });
-    const old = history.find((v) => v.id === v1.id);
-    expect(old?.status).toBe("superseded");
-    expect(old?.supersededBy).toBe(v2.id);
+    expect(active[0]!.id).toBe(v1.id);
 
     const b = await client.brief({ format: "markdown" });
-    expect(b.vision.global?.id).toBe(v2.id);
+    expect(b.vision.global?.id).toBe(v1.id);
     expect(b.text).toContain("=== VISION (global) ===");
     expect(b.text).toContain("Second direction.");
 

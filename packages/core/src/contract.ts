@@ -10,7 +10,7 @@
 // Records (generalized from the live StuntLabs schemas: facts / labwork / notes_corpus)
 // ---------------------------------------------------------------------------
 
-export type FactStatus = "active" | "superseded" | "archived";
+export type FactStatus = "active" | "archived";
 
 /** A durable hard rule / operator truth. Explicit memory. */
 export interface Fact {
@@ -23,20 +23,19 @@ export interface Fact {
   fact: string;
   /** optional elaboration / when-to-apply. */
   detail?: string | null;
-  /** stable dedupe/supersede key, e.g. "commit-no-ai-trailer". */
+  /** stable dedupe key, e.g. "commit-no-ai-trailer". */
   topicKey?: string | null;
   pinned: boolean;
   /** 0..1 ranking boost. */
   importance: number;
   status: FactStatus;
-  supersededBy?: number | null;
   createdBy?: string | null;
   source?: string | null;
   createdAt: string; // ISO-8601
   updatedAt: string; // ISO-8601
 }
 
-export type VisionStatus = "active" | "superseded";
+export type VisionStatus = "active";
 
 /**
  * The direction record — what all the work is FOR. One active record per scope:
@@ -50,7 +49,6 @@ export interface Vision {
   /** the vision itself — narrative markdown. */
   content: string;
   status: VisionStatus;
-  supersededBy?: number | null;
   createdBy?: string | null;
   source?: string | null;
   createdAt: string; // ISO-8601
@@ -338,13 +336,13 @@ export interface Store {
   factsList(opts?: ListOptions): Promise<Fact[]>;
   factsGet(id: number): Promise<Fact | null>;
   factsDelete(id: number): Promise<boolean>;
-  /** mark old fact superseded and insert the replacement; returns the new fact. */
-  factsSupersede(oldId: number, replacement: FactInput): Promise<Fact>;
+  /** edit a fact in place; re-embeds when the text changes. Returns the updated fact. */
+  factsUpdate(id: number, patch: Partial<FactInput>): Promise<Fact>;
 
-  // vision — one active record per scope; set supersedes; excluded from recall.
+  // vision — one active record per scope; edited in place; excluded from recall.
   visionGet(scope: string): Promise<Vision | null>;
   visionList(opts?: ListOptions): Promise<Vision[]>;
-  /** insert the new active record and supersede the prior active one for that scope (lineage kept). */
+  /** upsert the active record for that scope in place (no lineage rows). */
   visionSet(input: VisionInput): Promise<Vision>;
   visionDelete(id: number): Promise<boolean>;
 

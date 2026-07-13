@@ -189,7 +189,7 @@ export function createServer(store: Store): McpServer {
     {
       title: "Set vision",
       description:
-        "Set the vision for a scope (narrative markdown). Supersedes the prior active record for that scope; lineage is kept.",
+        "Set the vision for a scope (narrative markdown). Edits the one active record for that scope in place.",
       inputSchema: {
         content: z.string().describe("the vision — narrative markdown"),
         scope: z.string().optional().describe('"global" (default) or "project:<name>"'),
@@ -215,7 +215,7 @@ export function createServer(store: Store): McpServer {
         scope: z.string().optional().describe('e.g. "global", "project:x", "agent:y"'),
         category: z.string().optional(),
         detail: z.string().optional().describe("elaboration / when-to-apply"),
-        topicKey: z.string().optional().describe("stable dedupe/supersede key"),
+        topicKey: z.string().optional().describe("stable dedupe key"),
         pinned: z.boolean().optional(),
         importance: z.number().min(0).max(1).optional().describe("0..1 ranking boost"),
       },
@@ -231,6 +231,36 @@ export function createServer(store: Store): McpServer {
         ...(importance !== undefined ? { importance } : {}),
       });
       return json(created);
+    }),
+  );
+
+  server.registerTool(
+    "ground_facts_update",
+    {
+      title: "Update fact",
+      description: "Edit a fact in place by id. Only provided fields change; re-embeds when text changes.",
+      inputSchema: {
+        id: z.number().int().describe("fact id"),
+        fact: z.string().optional().describe("the sharp one-liner rule"),
+        scope: z.string().optional(),
+        category: z.string().optional(),
+        detail: z.string().optional(),
+        topicKey: z.string().optional(),
+        pinned: z.boolean().optional(),
+        importance: z.number().min(0).max(1).optional(),
+      },
+    },
+    guard(async ({ id, fact, scope, category, detail, topicKey, pinned, importance }) => {
+      const updated = await store.factsUpdate(id, {
+        ...(fact !== undefined ? { fact } : {}),
+        ...(scope !== undefined ? { scope } : {}),
+        ...(category !== undefined ? { category } : {}),
+        ...(detail !== undefined ? { detail } : {}),
+        ...(topicKey !== undefined ? { topicKey } : {}),
+        ...(pinned !== undefined ? { pinned } : {}),
+        ...(importance !== undefined ? { importance } : {}),
+      });
+      return json(updated);
     }),
   );
 

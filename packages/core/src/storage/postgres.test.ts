@@ -65,10 +65,8 @@ suite("Store lifecycle (postgres, embeddings=none)", () => {
   it("vision: one-active-per-scope + brief renders VISION", async () => {
     const v1 = await store.visionSet({ content: "first direction" });
     const v2 = await store.visionSet({ content: "second direction" });
-    const old = (await store.visionList({ scope: "global", status: "superseded" })).find(
-      (v) => v.id === v1.id,
-    );
-    expect(old?.supersededBy).toBe(v2.id);
+    expect(v2.id).toBe(v1.id);
+    expect(v2.content).toBe("second direction");
     const active = await store.visionList({ scope: "global", status: "active" });
     expect(active.length).toBe(1);
 

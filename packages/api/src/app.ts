@@ -117,6 +117,20 @@ function factInput(body: unknown): FactInput {
   };
 }
 
+function factPatch(body: unknown): Partial<FactInput> {
+  if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+  const patch: Partial<FactInput> = {};
+  if (body.fact !== undefined) patch.fact = asString(body.fact, "fact");
+  if (body.scope !== undefined) patch.scope = optString(body.scope, "scope");
+  if (body.category !== undefined) patch.category = optString(body.category, "category");
+  if (body.detail !== undefined) patch.detail = optString(body.detail, "detail");
+  if (body.topicKey !== undefined) patch.topicKey = optString(body.topicKey, "topicKey");
+  if (body.pinned !== undefined) patch.pinned = optBool(body.pinned, "pinned");
+  if (body.importance !== undefined) patch.importance = optNumber(body.importance, "importance");
+  if (body.source !== undefined) patch.source = optString(body.source, "source");
+  return patch;
+}
+
 function visionInput(body: unknown): VisionInput {
   if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
   return {
@@ -197,10 +211,10 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
     return c.json({ deleted: true, id });
   });
 
-  app.post("/facts/:id/supersede", async (c) => {
+  app.patch("/facts/:id", async (c) => {
     const id = parseId(c.req.param("id"));
-    const input = factInput(await readJson(c));
-    return c.json(await store.factsSupersede(id, input), 201);
+    const patch = factPatch(await readJson(c));
+    return c.json(await store.factsUpdate(id, patch));
   });
 
   // ---- vision ----

@@ -6,16 +6,14 @@ import { useApp } from "../app.js";
 import { Modal } from "../components/Modal.js";
 import { Markdown } from "../components/Markdown.js";
 
-/** One vision card: active record + edit-via-set + collapsible history. */
+/** One vision card: the single active record for a scope, edited in place. */
 function VisionCard(props: {
   title: string;
   scope: string;
   active: Vision | null;
-  history: Vision[];
   emptyHint: string;
 }) {
   const [editing, setEditing] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
   const [draft, setDraft] = useState("");
 
   const openEdit = () => {
@@ -31,7 +29,7 @@ function VisionCard(props: {
     }
     try {
       await api.vision.set({ scope: props.scope, content, source: "console" });
-      toast(props.active ? "Vision updated (prior version kept in history)" : "Vision set");
+      toast(props.active ? "Vision updated" : "Vision set");
       bumpData();
       setEditing(false);
     } catch (e) {
@@ -60,32 +58,6 @@ function VisionCard(props: {
         <div class="empty">{props.emptyHint}</div>
       )}
 
-      {props.history.length > 0 && (
-        <div style={{ marginTop: "1rem" }}>
-          <button class="chip" onClick={() => setShowHistory(!showHistory)}>
-            {showHistory ? "hide" : "show"} history ({props.history.length})
-          </button>
-          {showHistory &&
-            props.history.map((v) => (
-              <div
-                key={v.id}
-                style={{
-                  marginTop: "0.8rem",
-                  paddingLeft: "0.9rem",
-                  borderLeft: "2px solid var(--line, rgba(127,127,127,0.25))",
-                  opacity: 0.72,
-                }}
-              >
-                <div class="mono" style={{ fontSize: "0.66rem", color: "var(--paper-faint)", marginBottom: "0.3rem" }}>
-                  superseded · {v.updatedAt.slice(0, 10)}
-                  {v.supersededBy ? ` · replaced by #${v.supersededBy}` : ""}
-                </div>
-                <Markdown source={v.content} />
-              </div>
-            ))}
-        </div>
-      )}
-
       {editing && (
         <Modal
           title={props.active ? `Update ${props.title}` : `Set ${props.title}`}
@@ -101,7 +73,7 @@ function VisionCard(props: {
         >
           <p class="mono" style={{ fontSize: "0.7rem", color: "var(--paper-faint)", marginTop: 0 }}>
             {props.active
-              ? "Saving retires the current version into history and makes this the active vision."
+              ? "Saving edits the active vision for this scope in place."
               : "This becomes the active vision, injected into every brief for this scope."}
           </p>
           <textarea
@@ -121,16 +93,13 @@ export function VisionView() {
   const { project } = useApp();
   const version = useDataVersion();
   const { data, loading, error } = useAsync<Vision[]>(
-    () => api.vision.list({ status: "all", limit: 200 }),
+    () => api.vision.list({ limit: 200 }),
     [version],
   );
 
   const all = data ?? [];
   const byScope = (scope: string) => ({
     active: all.find((v) => v.scope === scope && v.status === "active") ?? null,
-    history: all
-      .filter((v) => v.scope === scope && v.status !== "active")
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
   });
 
   const global = byScope("global");
@@ -143,7 +112,7 @@ export function VisionView() {
         <div class="eyebrow">&gt;_ vision · the direction</div>
         <h1 class="h-serif" style={{ fontSize: "1.7rem", margin: 0 }}>Vision</h1>
         <p style={{ color: "var(--paper-faint)", margin: "0.4rem 0 0", fontSize: "0.85rem" }}>
-          What the work is for. Injected into every brief — one active record per scope, history kept.
+          What the work is for. Injected into every brief — one active record per scope, edited in place.
         </p>
       </div>
 
@@ -156,7 +125,6 @@ export function VisionView() {
             title="Global Vision"
             scope="global"
             active={global.active}
-            history={global.history}
             emptyHint="No Global Vision yet. Write the one that tells every agent what all of this is for."
           />
           {proj && projScope ? (
@@ -164,7 +132,6 @@ export function VisionView() {
               title="Project Vision"
               scope={projScope}
               active={proj.active}
-              history={proj.history}
               emptyHint={`No vision for ${project} yet. One paragraph: where this project is going and why it exists.`}
             />
           ) : (

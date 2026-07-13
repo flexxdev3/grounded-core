@@ -1,8 +1,8 @@
 import { useState } from "preact/hooks";
 import type { Fact, FactInput } from "@grounded/core/contract";
 
-/** Shared add/supersede form. On supersede the CLI model applies: submitting
- *  produces a FactInput that the caller feeds to add() or supersede(). */
+/** Shared add/edit form. Submitting produces a FactInput that the caller
+ *  feeds to add() (new) or update() (edit in place). */
 export function FactForm(props: {
   initial?: Fact;
   submitLabel: string;

@@ -110,7 +110,6 @@ export class PostgresStore implements Store {
       pinned: Boolean(r.pinned),
       importance: Number(r.importance),
       status: String(r.status) as FactStatus,
-      supersededBy: r.superseded_by == null ? null : Number(r.superseded_by),
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: new Date(r.created_at as string).toISOString(),
@@ -182,24 +181,45 @@ export class PostgresStore implements Store {
     return (res.rowCount ?? 0) > 0;
   }
 
-  async factsSupersede(oldId: number, replacement: FactInput): Promise<Fact> {
-    const existing = await this.factsGet(oldId);
-    if (!existing) throw new StoreError(`fact ${oldId} not found`);
-    const created = await this.factsAdd({
-      ...replacement,
-      scope: replacement.scope ?? existing.scope,
-      category: replacement.category ?? existing.category,
-      topicKey: replacement.topicKey ?? existing.topicKey ?? undefined,
-    });
-    await this.pool.query(
-      `update ${this.q("facts")} set status='superseded', superseded_by=$1, updated_at=now() where id=$2`,
-      [created.id, oldId],
+  async factsUpdate(id: number, patch: Partial<FactInput>): Promise<Fact> {
+    const existing = await this.factsGet(id);
+    if (!existing) throw new StoreError(`fact ${id} not found`);
+    const next = {
+      scope: patch.scope ?? existing.scope,
+      category: patch.category ?? existing.category,
+      fact: patch.fact ?? existing.fact,
+      detail: patch.detail !== undefined ? patch.detail : existing.detail,
+      topicKey: patch.topicKey !== undefined ? patch.topicKey : existing.topicKey,
+      pinned: patch.pinned !== undefined ? patch.pinned : existing.pinned,
+      importance: patch.importance !== undefined ? patch.importance : existing.importance,
+      source: patch.source !== undefined ? patch.source : existing.source,
+    };
+    const textChanged = next.fact !== existing.fact || (next.detail ?? "") !== (existing.detail ?? "");
+    const emb = textChanged
+      ? await this.embedOne(`${next.fact}\n${next.detail ?? ""}`.trim())
+      : null;
+    const res = await this.pool.query(
+      `update ${this.q("facts")} set scope=$1, category=$2, fact=$3, detail=$4, topic_key=$5, pinned=$6, importance=$7, source=$8, updated_at=now()${
+        textChanged ? ", embedding=$10" : ""
+      } where id=$9 returning *`,
+      [
+        next.scope,
+        next.category,
+        next.fact,
+        next.detail ?? null,
+        next.topicKey ?? null,
+        next.pinned,
+        next.importance,
+        next.source ?? null,
+        id,
+        ...(textChanged ? [emb ? pgvector.toSql(emb) : null] : []),
+      ],
     );
-    return created;
+    return this.rowToFact(res.rows[0] as Row);
   }
 
   // ---- vision --------------------------------------------------------------
-  // One active record per scope; set supersedes; excluded from recall (no embedding/tsv).
+  // One active record per scope; edited in place; excluded from recall (no embedding/tsv).
 
   private rowToVision(r: Row): Vision {
     return {
@@ -207,7 +227,6 @@ export class PostgresStore implements Store {
       scope: String(r.scope),
       content: String(r.content),
       status: String(r.status) as VisionStatus,
-      supersededBy: r.superseded_by == null ? null : Number(r.superseded_by),
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: new Date(r.created_at as string).toISOString(),
@@ -257,25 +276,21 @@ export class PostgresStore implements Store {
         [scope],
       );
       const priorId = prior.rows[0] ? Number((prior.rows[0] as Row).id) : null;
-      // retire first — the partial unique index forbids two active rows per scope.
+      // one active record per scope — edit it in place, or insert if none exists.
+      let res;
       if (priorId != null) {
-        await client.query(
-          `update ${this.q("vision")} set status = 'superseded', updated_at = now() where id = $1`,
-          [priorId],
+        res = await client.query(
+          `update ${this.q("vision")} set content = $1, source = $2, updated_at = now() where id = $3 returning *`,
+          [input.content, input.source ?? null, priorId],
+        );
+      } else {
+        res = await client.query(
+          `insert into ${this.q("vision")}(scope, content, status, created_by, source)
+           values ($1, $2, 'active', $3, $4) returning *`,
+          [scope, input.content, input.createdBy ?? null, input.source ?? null],
         );
       }
-      const res = await client.query(
-        `insert into ${this.q("vision")}(scope, content, status, created_by, source)
-         values ($1, $2, 'active', $3, $4) returning *`,
-        [scope, input.content, input.createdBy ?? null, input.source ?? null],
-      );
       const created = this.rowToVision(res.rows[0] as Row);
-      if (priorId != null) {
-        await client.query(
-          `update ${this.q("vision")} set superseded_by = $1 where id = $2`,
-          [created.id, priorId],
-        );
-      }
       await client.query("commit");
       return created;
     } catch (err) {
