@@ -252,7 +252,7 @@ Markdown render mirrors the live `labwork-hook.sh`, plus the vision section:
 <Project Vision content>
 Apply this: flag any plan, play, or design that conflicts with the vision before executing it.
 === MOST RECENT WORK (newest first) ===
-=== FACTS BRAIN (curated · scope: global + agent:X + project:Y) ===
+=== DYNAMIC FACTS (curated · scope: global + agent:X + project:Y) ===
 === RELATED DOCS ===   (omitted when empty)
 ```
 Both adapters' `brief()` fetch `visionGet("global")` + `visionGet("project:<p>")` (when project set).

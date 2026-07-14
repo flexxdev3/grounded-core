@@ -77,7 +77,7 @@ export function BriefView() {
             ))}
           </Section>
 
-          <Section title={`Facts brain · ${data.facts.length}`}>
+          <Section title={`Dynamic facts · ${data.facts.length}`}>
             {data.facts.length === 0 && <Muted>No facts in scope.</Muted>}
             {data.facts.map((f) => (
               <div key={f.id} class="row" onClick={() => openRecord(`fact:${f.id}`)}>

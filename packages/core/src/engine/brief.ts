@@ -8,7 +8,7 @@ import type {
 } from "../contract.js";
 
 const STARTUP_NOTE =
-  "Lead from MOST RECENT WORK below. The FACTS BRAIN under it is curated standing knowledge — treat as authoritative.";
+  "Lead from MOST RECENT WORK below. The DYNAMIC FACTS under it are curated standing knowledge — treat as authoritative.";
 
 export function startupNote(): string {
   return STARTUP_NOTE;
@@ -94,7 +94,7 @@ export function renderMarkdown(brief: BriefResult, opts: BriefOptions): string {
   }
   lines.push("");
 
-  lines.push(`=== FACTS BRAIN (curated · scope: ${factsScopeLabel(opts)}) ===`);
+  lines.push(`=== DYNAMIC FACTS (curated · scope: ${factsScopeLabel(opts)}) ===`);
   if (brief.facts.length === 0) {
     lines.push("(none)");
   } else {

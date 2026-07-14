@@ -159,7 +159,7 @@ describe("Store lifecycle (sqlite, embeddings=none)", () => {
     expect(brief.startupNote).toBeTruthy();
     expect(brief.text).toContain("=== STARTUP CONTEXT ===");
     expect(brief.text).toContain("=== MOST RECENT WORK");
-    expect(brief.text).toContain("=== FACTS BRAIN");
+    expect(brief.text).toContain("=== DYNAMIC FACTS");
     expect(brief.recentSessions.length).toBeGreaterThan(0);
     // no vision set yet → section omitted entirely
     expect(brief.text).not.toContain("=== VISION");

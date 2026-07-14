@@ -79,7 +79,7 @@ Assemble scoped startup context, mirroring the live `labwork-hook.sh` shape:
 Apply this: flag any plan, play, or design that conflicts with the vision before executing it.
 === MOST RECENT WORK (newest first) ===
 <recent sessions, scoped by project if given>
-=== FACTS BRAIN (curated · scope: global + agent:<a> + project:<p>) ===
+=== DYNAMIC FACTS (curated · scope: global + agent:<a> + project:<p>) ===
 <active facts, pinned/importance first>
 === RELATED DOCS ===
 <top recall docs for the query/cwd hint, optional>
