@@ -94,7 +94,7 @@ export function FactsView() {
       {!loading && !error && shown.length === 0 && (
         <div class="empty">
           {facts.length === 0
-            ? "No facts yet. Add the first hard rule."
+            ? "No facts yet. Agents write them as they work — or add the first rule yourself."
             : "No facts match this filter."}
         </div>
       )}
