@@ -306,8 +306,11 @@ export interface HealthReport {
   ok: boolean;
   storage: { adapter: StorageAdapter; ok: boolean; detail?: string; location?: string };
   embeddings: { provider: string; ok: boolean; dims: number; detail?: string; model?: string };
-  /** `docs` counts chunks; `documents` counts distinct source files (chunk_idx = 0). */
-  counts: { facts: number; sessions: number; docs: number; documents: number };
+  /**
+   * `docs` counts chunks; `documents` counts distinct source files (chunk_idx = 0).
+   * `bytes` is the on-disk size of the grounded tables+indexes (0 when unavailable).
+   */
+  counts: { facts: number; sessions: number; docs: number; documents: number; bytes: number };
 }
 
 export interface ListOptions {

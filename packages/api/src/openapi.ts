@@ -228,6 +228,8 @@ export const openApiDocument = {
               facts: { type: "integer" },
               sessions: { type: "integer" },
               docs: { type: "integer" },
+              documents: { type: "integer" },
+              bytes: { type: "integer", description: "on-disk size of grounded tables+indexes" },
             },
           },
         },

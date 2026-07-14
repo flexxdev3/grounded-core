@@ -828,7 +828,7 @@ export class PostgresStore implements Store {
   async health(): Promise<HealthReport> {
     let storageOk = true;
     let storageDetail = "postgres + pgvector + tsvector";
-    let counts = { facts: 0, sessions: 0, docs: 0, documents: 0 };
+    let counts = { facts: 0, sessions: 0, docs: 0, documents: 0, bytes: 0 };
     try {
       const f = await this.pool.query(`select count(*)::int c from ${this.q("facts")}`);
       const s = await this.pool.query(`select count(*)::int c from ${this.q("sessions")}`);
@@ -836,11 +836,19 @@ export class PostgresStore implements Store {
       const dd = await this.pool.query(
         `select count(*)::int c from ${this.q("docs")} where chunk_idx = 0`,
       );
+      // on-disk size (table + indexes + toast) of the grounded tables
+      const b = await this.pool.query(
+        `select coalesce(sum(pg_total_relation_size(c.oid)),0)::bigint b
+           from pg_class c join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = $1 and c.relname in ('facts','sessions','docs')`,
+        [this.schema],
+      );
       counts = {
         facts: Number((f.rows[0] as Row).c),
         sessions: Number((s.rows[0] as Row).c),
         docs: Number((d.rows[0] as Row).c),
         documents: Number((dd.rows[0] as Row).c),
+        bytes: Number((b.rows[0] as Row).b),
       };
     } catch (err) {
       storageOk = false;

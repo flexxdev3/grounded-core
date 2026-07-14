@@ -970,6 +970,12 @@ export class SqliteStore implements Store {
       docs: (this.db.prepare(`select count(*) c from docs`).get() as Row).c as number,
       documents: (this.db.prepare(`select count(*) c from docs where chunk_idx = 0`).get() as Row)
         .c as number,
+      // whole-DB file size (page_count * page_size) — closest analog to pg_total_relation_size
+      bytes: (() => {
+        const pc = (this.db.prepare(`pragma page_count`).get() as Row).page_count as number;
+        const ps = (this.db.prepare(`pragma page_size`).get() as Row).page_size as number;
+        return Number(pc) * Number(ps);
+      })(),
     };
     const embHealth = await this.embedder.health();
     return {
@@ -992,6 +998,7 @@ export class SqliteStore implements Store {
         sessions: Number(counts.sessions),
         docs: Number(counts.docs),
         documents: Number(counts.documents),
+        bytes: Number(counts.bytes),
       },
     };
   }
