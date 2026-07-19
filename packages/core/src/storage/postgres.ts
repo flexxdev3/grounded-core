@@ -26,7 +26,6 @@ import type {
   TypedId,
   Vision,
   VisionInput,
-  VisionStatus,
 } from "../contract.js";
 import {
   fuseLane,
@@ -226,7 +225,6 @@ export class PostgresStore implements Store {
       id: Number(r.id),
       scope: String(r.scope),
       content: String(r.content),
-      status: String(r.status) as VisionStatus,
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: new Date(r.created_at as string).toISOString(),
@@ -236,7 +234,7 @@ export class PostgresStore implements Store {
 
   async visionGet(scope: string): Promise<Vision | null> {
     const res = await this.pool.query(
-      `select * from ${this.q("vision")} where scope = $1 and status = 'active'`,
+      `select * from ${this.q("vision")} where scope = $1`,
       [scope],
     );
     const r = res.rows[0] as Row | undefined;
@@ -246,10 +244,6 @@ export class PostgresStore implements Store {
   async visionList(opts?: ListOptions): Promise<Vision[]> {
     const where: string[] = [];
     const params: unknown[] = [];
-    if (opts?.status) {
-      params.push(opts.status);
-      where.push(`status = $${params.length}`);
-    }
     if (opts?.scope) {
       params.push(opts.scope);
       where.push(`scope = $${params.length}`);
@@ -272,11 +266,11 @@ export class PostgresStore implements Store {
     try {
       await client.query("begin");
       const prior = await client.query(
-        `select id from ${this.q("vision")} where scope = $1 and status = 'active' for update`,
+        `select id from ${this.q("vision")} where scope = $1 for update`,
         [scope],
       );
       const priorId = prior.rows[0] ? Number((prior.rows[0] as Row).id) : null;
-      // one active record per scope — edit it in place, or insert if none exists.
+      // exactly one record per scope — edit it in place, or insert if none exists.
       let res;
       if (priorId != null) {
         res = await client.query(
@@ -285,8 +279,8 @@ export class PostgresStore implements Store {
         );
       } else {
         res = await client.query(
-          `insert into ${this.q("vision")}(scope, content, status, created_by, source)
-           values ($1, $2, 'active', $3, $4) returning *`,
+          `insert into ${this.q("vision")}(scope, content, created_by, source)
+           values ($1, $2, $3, $4) returning *`,
           [scope, input.content, input.createdBy ?? null, input.source ?? null],
         );
       }

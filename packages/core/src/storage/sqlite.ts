@@ -29,7 +29,6 @@ import type {
   TypedId,
   Vision,
   VisionInput,
-  VisionStatus,
 } from "../contract.js";
 import {
   fuseLane,
@@ -85,6 +84,7 @@ export class SqliteStore implements Store {
     );
     this.db.exec(SQLITE_BASE);
     this.db.exec(SQLITE_FTS);
+    this.migrateDropVisionStatus();
 
     if (this.embedder.enabled) {
       try {
@@ -97,6 +97,22 @@ export class SqliteStore implements Store {
     } else {
       this.vectorEnabled = false;
     }
+  }
+
+  /**
+   * One-shot migration for cabinets created before vision went in-place-only:
+   * drop the vestigial `status` column (SQLite has no DROP COLUMN IF EXISTS).
+   */
+  private migrateDropVisionStatus(): void {
+    const hasStatus = this.db
+      .prepare(`select 1 from pragma_table_info('vision') where name = 'status'`)
+      .get();
+    if (!hasStatus) return;
+    this.db.exec(
+      `drop index if exists idx_vision_active;
+       alter table vision drop column status;
+       create unique index if not exists idx_vision_scope on vision(scope);`,
+    );
   }
 
   private vectorActive(): boolean {
@@ -278,7 +294,6 @@ export class SqliteStore implements Store {
       id: Number(r.id),
       scope: String(r.scope),
       content: String(r.content),
-      status: String(r.status) as VisionStatus,
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: String(r.created_at),
@@ -288,7 +303,7 @@ export class SqliteStore implements Store {
 
   async visionGet(scope: string): Promise<Vision | null> {
     const r = this.db
-      .prepare(`select * from vision where scope = ? and status = 'active'`)
+      .prepare(`select * from vision where scope = ?`)
       .get(scope) as Row | undefined;
     return r ? this.rowToVision(r) : null;
   }
@@ -296,10 +311,6 @@ export class SqliteStore implements Store {
   async visionList(opts?: ListOptions): Promise<Vision[]> {
     const where: string[] = [];
     const params: unknown[] = [];
-    if (opts?.status) {
-      where.push("status = ?");
-      params.push(opts.status);
-    }
     if (opts?.scope) {
       where.push("scope = ?");
       params.push(opts.scope);
@@ -316,9 +327,9 @@ export class SqliteStore implements Store {
     const ts = nowIso();
     const run = this.db.transaction(() => {
       const prior = this.db
-        .prepare(`select id from vision where scope = ? and status = 'active'`)
+        .prepare(`select id from vision where scope = ?`)
         .get(scope) as Row | undefined;
-      // one active record per scope — edit it in place, or insert if none exists.
+      // exactly one record per scope — edit it in place, or insert if none exists.
       if (prior) {
         this.db
           .prepare(`update vision set content = ?, source = ?, updated_at = ? where id = ?`)
@@ -327,8 +338,8 @@ export class SqliteStore implements Store {
       }
       const info = this.db
         .prepare(
-          `insert into vision(scope, content, status, created_by, source, created_at, updated_at)
-           values (?, ?, 'active', ?, ?, ?, ?)`,
+          `insert into vision(scope, content, created_by, source, created_at, updated_at)
+           values (?, ?, ?, ?, ?, ?)`,
         )
         .run(scope, input.content, input.createdBy ?? null, input.source ?? null, ts, ts);
       return Number(info.lastInsertRowid);

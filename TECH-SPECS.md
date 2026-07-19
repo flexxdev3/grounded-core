@@ -97,10 +97,10 @@ e.g. `fact:2`, `session:274`, `doc:1091`.
 **Fact** (`contract.ts:16-37`): `id, scope, category, fact, detail?, topicKey?, pinned, importance(0..1),
 status("active"|"superseded"|"archived"), supersededBy?, createdBy?, source?, createdAt, updatedAt`.
 
-**Vision**: `id, scope("global"|"project:<name>"), content(markdown), status("active"|"superseded"),
-supersededBy?, createdBy?, source?, createdAt, updatedAt`. One active record per scope (partial unique
-index); `visionSet` supersedes the prior active record for that scope with lineage. **Excluded from
-recall** — no embedding, no FTS row, not a `SourceType`. Always injected into the brief.
+**Vision**: `id, scope("global"|"project:<name>"), content(markdown), createdBy?, source?, createdAt,
+updatedAt`. Exactly one record per scope (`unique(scope)`); `visionSet` edits it in place, inserting only
+when none exists — no status, no supersede, no history. **Excluded from recall** — no embedding, no FTS
+row, not a `SourceType`. Always injected into the brief.
 
 **Session** (`contract.ts:40-54`): `id, machine?, project?, workspace?, agent?, summary, details?,
 tags?(string[]), source("manual"|"hook"|"import"|…), createdAt`.
@@ -138,7 +138,7 @@ One file. Four base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts`.
 **Base tables** (column names are snake_case; mapped to camelCase records):
 - `facts(id INTEGER PK AUTOINCREMENT, scope, category, fact, detail, topic_key, pinned INT, importance REAL,
   status, superseded_by, created_by, source, created_at, updated_at)`
-- `vision(id, scope, content, status, superseded_by, created_by, source, created_at, updated_at)`
+- `vision(id, scope, content, created_by, source, created_at, updated_at)`
   — no FTS/vec rows (vision is injected, never searched).
 - `sessions(id, machine, project, workspace, agent, summary, details, tags, source, created_at)`
   — `tags` stored as serialized text.
@@ -147,7 +147,7 @@ One file. Four base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts`.
 
 **Indexes**: `facts(status)`, `facts(scope)`, `facts(topic_key)`,
 `sessions(project)`, `sessions(created_at)`, `docs(path)`, `docs(status)`, **`docs(path, chunk_idx)` UNIQUE**,
-**`vision(scope) where status='active'` UNIQUE** (the one-active-per-scope invariant).
+**`vision(scope)` UNIQUE** (the one-record-per-scope invariant).
 
 **Lexical — FTS5 external-content** (`migrations/sqlite.ts:60-70`), `tokenize='porter unicode61'`:
 - `fts_facts(fact, detail)` content=`facts`
@@ -327,8 +327,8 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 |---|---|---|
 | GET | `/health` | `health` |
 | GET | `/openapi.json` | static OpenAPI 3.1 doc (`openapi.ts`) |
-| GET | `/vision` `?scope&status&limit&offset` (default `status=active`; `status=all` for history) | `visionList` |
-| POST | `/vision` | `visionSet` (201, supersedes prior active for the scope) |
+| GET | `/vision` `?scope&limit&offset` | `visionList` |
+| POST | `/vision` | `visionSet` (201, edits the one record for the scope in place) |
 | DELETE | `/vision/:id` | `visionDelete` |
 | GET | `/facts` `?scope&limit&offset` | `factsList` |
 | POST | `/facts` | `factsAdd` (201) |

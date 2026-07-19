@@ -208,25 +208,24 @@ describe("Store lifecycle (sqlite, embeddings=none)", () => {
     expect(res.missing).toBe(0);
   });
 
-  it("vision: set / get / one-active-per-scope with lineage", async () => {
+  it("vision: set / get / one record per scope, edited in place", async () => {
     const v1 = await store.visionSet({
       content: "Ship taste at scale without diluting the standard.",
     });
     expect(v1.scope).toBe("global");
-    expect(v1.status).toBe("active");
 
     const got = await store.visionGet("global");
     expect(got?.id).toBe(v1.id);
 
-    // set again → edits v1 in place, still exactly one active, same id
+    // set again → edits v1 in place, still exactly one row, same id
     const v2 = await store.visionSet({
       content: "Ship taste at scale. Design out front, engineering underneath.",
     });
     expect(v2.id).toBe(v1.id);
     expect(v2.content).toBe("Ship taste at scale. Design out front, engineering underneath.");
-    const active = await store.visionList({ scope: "global", status: "active" });
-    expect(active.length).toBe(1);
-    expect(active[0]!.id).toBe(v1.id);
+    const list = await store.visionList({ scope: "global" });
+    expect(list.length).toBe(1);
+    expect(list[0]!.id).toBe(v1.id);
 
     // project vision is independent of global
     const pv = await store.visionSet({

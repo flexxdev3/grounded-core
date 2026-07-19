@@ -99,7 +99,7 @@ export function VisionView() {
 
   const all = data ?? [];
   const byScope = (scope: string) => ({
-    active: all.find((v) => v.scope === scope && v.status === "active") ?? null,
+    active: all.find((v) => v.scope === scope) ?? null,
   });
 
   const global = byScope("global");

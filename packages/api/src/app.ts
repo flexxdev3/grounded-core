@@ -221,11 +221,9 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
   app.get("/vision", async (c) => {
     const opts: ListOptions = {
       scope: c.req.query("scope"),
-      status: c.req.query("status") ?? "active",
       limit: parseIntQuery(c.req.query("limit"), "limit"),
       offset: parseIntQuery(c.req.query("offset"), "offset"),
     };
-    if (opts.status === "all") opts.status = undefined;
     return c.json(await store.visionList(opts));
   });
 

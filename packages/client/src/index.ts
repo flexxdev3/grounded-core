@@ -122,7 +122,7 @@ export function createClient(options: ClientOptions): GroundedClient {
       list: (opts = {}) =>
         request<Vision[]>(
           "GET",
-          `/vision${qs({ scope: opts.scope, status: opts.status, limit: opts.limit, offset: opts.offset })}`,
+          `/vision${qs({ scope: opts.scope, limit: opts.limit, offset: opts.offset })}`,
         ),
       delete: (id) => request<{ deleted: boolean; id: number }>("DELETE", `/vision/${id}`),
     },

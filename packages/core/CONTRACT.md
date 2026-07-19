@@ -23,7 +23,8 @@ Rules every adapter must honor:
   `(scope) where status='active'`.
 - **Always injected, never ranked.** Vision renders in every brief (see below) but is **excluded from
   recall** — `SourceType` stays `fact | session | doc`. No embedding, no FTS row.
-- `visionGet(scope)` returns the active record or null. `visionList` supports `scope`/`status` history.
+- `visionGet(scope)` returns the one record for the scope or null; `visionSet` edits it in place
+  (`unique(scope)`, no status/supersede/history). `visionList` supports a `scope` filter.
 
 ## Embedding providers
 - `ollama` (default): `POST {baseUrl}/api/embeddings { model, prompt }` → `.embedding` (768 floats for

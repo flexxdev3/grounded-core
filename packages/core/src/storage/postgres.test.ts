@@ -62,13 +62,13 @@ suite("Store lifecycle (postgres, embeddings=none)", () => {
     expect(h.storage.adapter).toBe("postgres");
   });
 
-  it("vision: one-active-per-scope + brief renders VISION", async () => {
+  it("vision: one record per scope, edited in place + brief renders VISION", async () => {
     const v1 = await store.visionSet({ content: "first direction" });
     const v2 = await store.visionSet({ content: "second direction" });
     expect(v2.id).toBe(v1.id);
     expect(v2.content).toBe("second direction");
-    const active = await store.visionList({ scope: "global", status: "active" });
-    expect(active.length).toBe(1);
+    const list = await store.visionList({ scope: "global" });
+    expect(list.length).toBe(1);
 
     const brief = await store.brief({ format: "markdown" });
     expect(brief.text).toContain("=== VISION (global) ===");

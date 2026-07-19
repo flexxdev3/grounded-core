@@ -50,7 +50,6 @@ create table if not exists vision (
   id integer primary key autoincrement,
   scope text not null default 'global',
   content text not null,
-  status text not null default 'active',
   created_by text,
   source text,
   created_at text not null,
@@ -65,7 +64,7 @@ create index if not exists idx_sessions_created on sessions(created_at);
 create index if not exists idx_docs_path on docs(path);
 create index if not exists idx_docs_status on docs(status);
 create unique index if not exists idx_docs_path_chunk on docs(path, chunk_idx);
-create unique index if not exists idx_vision_active on vision(scope) where status = 'active';
+create unique index if not exists idx_vision_scope on vision(scope);
 `;
 
 export const SQLITE_FTS = `

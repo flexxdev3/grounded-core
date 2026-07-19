@@ -67,15 +67,19 @@ create table if not exists "${s}".vision (
   id bigint generated always as identity primary key,
   scope text not null default 'global',
   content text not null,
-  status text not null default 'active',
   created_by text,
   source text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
+-- vision went in-place-only: drop the vestigial status column + partial index
+-- from cabinets created earlier (idempotent; no-op on fresh cabinets).
+drop index if exists "${s}".idx_vision_active;
+alter table "${s}".vision drop column if exists status;
+
 create unique index if not exists idx_docs_path_chunk on "${s}".docs(path, chunk_idx);
-create unique index if not exists idx_vision_active on "${s}".vision(scope) where status = 'active';
+create unique index if not exists idx_vision_scope on "${s}".vision(scope);
 create index if not exists idx_facts_status on "${s}".facts(status);
 create index if not exists idx_facts_scope on "${s}".facts(scope);
 create index if not exists idx_sessions_project on "${s}".sessions(project);

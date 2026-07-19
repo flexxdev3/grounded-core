@@ -70,12 +70,11 @@ export const openApiDocument = {
       },
       Vision: {
         type: "object",
-        required: ["id", "scope", "content", "status", "createdAt", "updatedAt"],
+        required: ["id", "scope", "content", "createdAt", "updatedAt"],
         properties: {
           id: { type: "integer" },
           scope: { type: "string", description: '"global" or "project:<name>"' },
           content: { type: "string", description: "narrative markdown" },
-          status: { type: "string", enum: ["active"] },
           createdBy: { type: ["string", "null"] },
           source: { type: ["string", "null"] },
           createdAt: { type: "string" },
@@ -330,10 +329,9 @@ export const openApiDocument = {
     },
     "/vision": {
       get: {
-        summary: "List vision records (default active only; status=all for history)",
+        summary: "List vision records (one per scope, edited in place)",
         parameters: [
           { name: "scope", in: "query", schema: { type: "string" } },
-          { name: "status", in: "query", schema: { type: "string" } },
           { name: "limit", in: "query", schema: { type: "integer" } },
           { name: "offset", in: "query", schema: { type: "integer" } },
         ],
@@ -349,7 +347,7 @@ export const openApiDocument = {
         },
       },
       post: {
-        summary: "Set the vision for a scope (edits the active record in place)",
+        summary: "Set the vision for a scope (edits the one record in place)",
         requestBody: {
           required: true,
           content: { "application/json": { schema: { $ref: "#/components/schemas/VisionInput" } } },

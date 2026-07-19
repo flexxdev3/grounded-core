@@ -35,12 +35,11 @@ export interface Fact {
   updatedAt: string; // ISO-8601
 }
 
-export type VisionStatus = "active";
-
 /**
- * The direction record — what all the work is FOR. One active record per scope:
- * "global" (Global Vision) or "project:<name>" (Project Vision). Always injected
- * into the brief; never ranked by recall.
+ * The direction record — what all the work is FOR. Exactly one record per scope:
+ * "global" (Global Vision) or "project:<name>" (Project Vision), edited in place
+ * (unique on scope — no history, no supersede). Always injected into the brief;
+ * never ranked by recall.
  */
 export interface Vision {
   id: number;
@@ -48,7 +47,6 @@ export interface Vision {
   scope: string;
   /** the vision itself — narrative markdown. */
   content: string;
-  status: VisionStatus;
   createdBy?: string | null;
   source?: string | null;
   createdAt: string; // ISO-8601
