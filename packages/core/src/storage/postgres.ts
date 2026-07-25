@@ -120,7 +120,7 @@ export class PostgresStore implements Store {
     const emb = await this.embedOne(`${input.fact}\n${input.detail ?? ""}`.trim());
     const res = await this.pool.query(
       `insert into ${this.q("facts")}(scope, category, fact, detail, topic_key, pinned, importance, status, created_by, source, embedding)
-       values ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10) returning *`,
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *`,
       [
         input.scope ?? "global",
         input.category ?? "",
@@ -128,7 +128,12 @@ export class PostgresStore implements Store {
         input.detail ?? null,
         input.topicKey ?? null,
         input.pinned ?? false,
-        input.importance ?? 0,
+        // default 0.6, not the column's DDL default of 0: feeds `pinned desc,
+        // importance desc, updated_at desc` ordering in factsList — a fact
+        // written with no explicit importance should tie the unpinned cluster,
+        // not sort dead last.
+        input.importance ?? 0.6,
+        input.status ?? "active",
         input.createdBy ?? null,
         input.source ?? null,
         emb ? pgvector.toSql(emb) : null,
@@ -191,6 +196,7 @@ export class PostgresStore implements Store {
       topicKey: patch.topicKey !== undefined ? patch.topicKey : existing.topicKey,
       pinned: patch.pinned !== undefined ? patch.pinned : existing.pinned,
       importance: patch.importance !== undefined ? patch.importance : existing.importance,
+      status: patch.status !== undefined ? patch.status : existing.status,
       source: patch.source !== undefined ? patch.source : existing.source,
     };
     const textChanged = next.fact !== existing.fact || (next.detail ?? "") !== (existing.detail ?? "");
@@ -198,9 +204,9 @@ export class PostgresStore implements Store {
       ? await this.embedOne(`${next.fact}\n${next.detail ?? ""}`.trim())
       : null;
     const res = await this.pool.query(
-      `update ${this.q("facts")} set scope=$1, category=$2, fact=$3, detail=$4, topic_key=$5, pinned=$6, importance=$7, source=$8, updated_at=now()${
-        textChanged ? ", embedding=$10" : ""
-      } where id=$9 returning *`,
+      `update ${this.q("facts")} set scope=$1, category=$2, fact=$3, detail=$4, topic_key=$5, pinned=$6, importance=$7, status=$8, source=$9, updated_at=now()${
+        textChanged ? ", embedding=$11" : ""
+      } where id=$10 returning *`,
       [
         next.scope,
         next.category,
@@ -209,6 +215,7 @@ export class PostgresStore implements Store {
         next.topicKey ?? null,
         next.pinned,
         next.importance,
+        next.status,
         next.source ?? null,
         id,
         ...(textChanged ? [emb ? pgvector.toSql(emb) : null] : []),
@@ -636,8 +643,11 @@ export class PostgresStore implements Store {
     const map = new Map<number, CandidateMeta>();
     if (ids.length === 0) return map;
     if (sourceType === "fact") {
+      // active only: an archived fact is a retracted rule and must not
+      // survive recall — filtering here (not just demoting) means a lane
+      // hit with no meta entry can be dropped by the caller. See recall().
       const res = await this.pool.query(
-        `select id, pinned, importance from ${this.q("facts")} where id = any($1)`,
+        `select id, pinned, importance, status from ${this.q("facts")} where id = any($1) and status = 'active'`,
         [ids],
       );
       for (const r of res.rows as Row[]) {
@@ -696,12 +706,19 @@ export class PostgresStore implements Store {
     for (const st of sources) {
       const table = tableFor[st];
       const proj = st === "session" ? opts?.project : undefined;
-      const vec = await this.vectorLane(table, queryVec, proj, laneN);
-      const lex = await this.lexicalLane(table, query, proj, laneN);
+      let vec = await this.vectorLane(table, queryVec, proj, laneN);
+      let lex = await this.lexicalLane(table, query, proj, laneN);
       const ids = new Set<number>();
       for (const h of vec) ids.add(h.id);
       for (const h of lex) ids.add(h.id);
       const meta = await this.metaFor(st, [...ids]);
+      if (st === "fact") {
+        // metaFor already filtered to status='active'; drop any lane hit whose
+        // id has no meta entry (archived) and re-rank so RRF ranks stay dense —
+        // filterSessionVecByProject below is the same idiom for the project filter.
+        vec = vec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
+        lex = lex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
+      }
       const out = fuseLane(st, vec, lex, meta, this.cfg).slice(0, limit);
       for (const f of out) {
         fused.push(f);

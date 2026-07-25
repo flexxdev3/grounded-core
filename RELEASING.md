@@ -42,6 +42,9 @@ claim a free unscoped launcher name (e.g. publish a tiny wrapper package) — ot
    ```sh
    pnpm -r build && pnpm -r test && pnpm smoke
    ```
+   Set `GROUNDED_TEST_PG_URL` (scratch database) before running the gate on any release that touches
+   migrations — without it, `packages/core`'s Postgres storage-lifecycle suite silently skips and the
+   gate isn't actually gating the Postgres adapter.
 
 ## Publish the npm packages
 

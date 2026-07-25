@@ -64,6 +64,7 @@ export const openApiDocument = {
           topicKey: { type: "string" },
           pinned: { type: "boolean" },
           importance: { type: "number" },
+          status: { type: "string", enum: ["active", "archived"] },
           createdBy: { type: "string" },
           source: { type: "string" },
         },
@@ -266,8 +267,16 @@ export const openApiDocument = {
     "/facts": {
       get: {
         summary: "List facts",
+        description:
+          'Defaults to status=active. Pass status=archived for archived facts, or status=all for every status regardless of archival ("all" is not forwarded to storage as a literal status value).',
         parameters: [
           { name: "scope", in: "query", schema: { type: "string" } },
+          {
+            name: "status",
+            in: "query",
+            description: 'Defaults to "active". One of "active", "archived", "all".',
+            schema: { type: "string", enum: ["active", "archived", "all"], default: "active" },
+          },
           { name: "limit", in: "query", schema: { type: "integer" } },
           { name: "offset", in: "query", schema: { type: "integer" } },
         ],

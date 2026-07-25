@@ -14,6 +14,8 @@ create table if not exists "${s}".facts (
   detail text,
   topic_key text,
   pinned boolean not null default false,
+  -- column default stays 0 (existing rows must not shift); the app-level
+  -- default of 0.6 is applied in factsAdd (postgres.ts), not here.
   importance real not null default 0,
   status text not null default 'active',
   created_by text,

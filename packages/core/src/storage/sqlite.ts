@@ -169,7 +169,7 @@ export class SqliteStore implements Store {
     const info = this.db
       .prepare(
         `insert into facts(scope, category, fact, detail, topic_key, pinned, importance, status, created_by, source, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.scope ?? "global",
@@ -178,7 +178,12 @@ export class SqliteStore implements Store {
         input.detail ?? null,
         input.topicKey ?? null,
         input.pinned ? 1 : 0,
-        input.importance ?? 0,
+        // default 0.6, not the column's DDL default of 0: feeds `pinned desc,
+        // importance desc, updated_at desc` ordering in factsList — a fact
+        // written with no explicit importance should tie the unpinned cluster,
+        // not sort dead last.
+        input.importance ?? 0.6,
+        input.status ?? "active",
         input.createdBy ?? null,
         input.source ?? null,
         ts,
@@ -248,6 +253,7 @@ export class SqliteStore implements Store {
       topicKey: patch.topicKey !== undefined ? patch.topicKey : existing.topicKey,
       pinned: patch.pinned !== undefined ? patch.pinned : existing.pinned,
       importance: patch.importance !== undefined ? patch.importance : existing.importance,
+      status: patch.status !== undefined ? patch.status : existing.status,
       source: patch.source !== undefined ? patch.source : existing.source,
     };
     const textChanged = next.fact !== existing.fact || (next.detail ?? "") !== (existing.detail ?? "");
@@ -260,7 +266,7 @@ export class SqliteStore implements Store {
     }
     this.db
       .prepare(
-        `update facts set scope = ?, category = ?, fact = ?, detail = ?, topic_key = ?, pinned = ?, importance = ?, source = ?, updated_at = ? where id = ?`,
+        `update facts set scope = ?, category = ?, fact = ?, detail = ?, topic_key = ?, pinned = ?, importance = ?, status = ?, source = ?, updated_at = ? where id = ?`,
       )
       .run(
         next.scope,
@@ -270,6 +276,7 @@ export class SqliteStore implements Store {
         next.topicKey ?? null,
         next.pinned ? 1 : 0,
         next.importance,
+        next.status,
         next.source ?? null,
         nowIso(),
         id,
@@ -731,9 +738,12 @@ export class SqliteStore implements Store {
     const map = new Map<number, CandidateMeta>();
     if (ids.length === 0) return map;
     const placeholders = ids.map(() => "?").join(",");
+    // active only: an archived fact is a retracted rule and must not survive
+    // recall — filtering here (not just demoting) means a lane hit with no
+    // meta entry can be dropped by the caller. See recall().
     const rows = this.db
       .prepare(
-        `select id, pinned, importance from facts where id in (${placeholders})`,
+        `select id, pinned, importance, status from facts where id in (${placeholders}) and status = 'active'`,
       )
       .all(...ids) as Row[];
     for (const r of rows) {
@@ -797,16 +807,21 @@ export class SqliteStore implements Store {
     const orderMeta = new Map<string, CandidateMeta>();
 
     if (sources.includes("fact")) {
-      const vec = this.vectorLane("vec_facts", queryVec, laneN);
-      const lex = this.lexicalLane(
+      const rawVec = this.vectorLane("vec_facts", queryVec, laneN);
+      const rawLex = this.lexicalLane(
         "fts_facts",
         "facts",
         matchExpr,
         undefined,
         laneN,
       );
-      const ids = unionIds(vec, lex);
+      const ids = unionIds(rawVec, rawLex);
       const meta = this.factsMeta(ids);
+      // meta is already filtered to status='active'; drop any lane hit whose
+      // id has no meta entry (archived) and re-rank so RRF ranks stay dense —
+      // mirrors filterSessionVecByProject below.
+      const vec = rawVec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
+      const lex = rawLex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       const out = fuseLane("fact", vec, lex, meta, this.cfg).slice(0, limit);
       for (const f of out) {
         fused.push(f);

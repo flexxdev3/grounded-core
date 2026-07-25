@@ -107,6 +107,16 @@ pnpm build
 pnpm test
 ```
 
+`packages/core` runs the storage lifecycle suite against both adapters (`store.suite.ts`). The Postgres
+leg only runs when `GROUNDED_TEST_PG_URL` is set — otherwise it reports skipped, not failed:
+
+```sh
+GROUNDED_TEST_PG_URL='postgres://user:pass@host:5432/db' pnpm --filter @grounded/core test
+```
+
+Point it at a **scratch database**, never a live one — the suite drops and recreates a hardcoded
+`grounded_test` schema at the start of every run (no teardown, so it's inspectable after a failed run).
+
 See [`CLAUDE.md`](CLAUDE.md) for the phased roadmap and [`AGENTS.md`](AGENTS.md) for the engine reference.
 
 ## License

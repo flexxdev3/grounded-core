@@ -248,6 +248,7 @@ export interface FactInput {
   topicKey?: string;
   pinned?: boolean;
   importance?: number;
+  status?: FactStatus;
   createdBy?: string;
   source?: string;
 }

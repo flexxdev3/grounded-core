@@ -8,6 +8,7 @@ import {
 import type {
   BriefOptions,
   FactInput,
+  FactStatus,
   IngestOptions,
   ListOptions,
   RecallOptions,
@@ -68,6 +69,16 @@ function optNumber(v: unknown, field: string): number | undefined {
   return v;
 }
 
+const FACT_STATUSES = ["active", "archived"] as const;
+
+function optFactStatus(v: unknown, field: string): FactStatus | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string" || !FACT_STATUSES.includes(v as (typeof FACT_STATUSES)[number])) {
+    throw new ValidationError(`"${field}" must be one of ${FACT_STATUSES.join(", ")}`);
+  }
+  return v as FactStatus;
+}
+
 function optStringArray(v: unknown, field: string): string[] | undefined {
   if (v === undefined || v === null) return undefined;
   if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) {
@@ -112,6 +123,7 @@ function factInput(body: unknown): FactInput {
     topicKey: optString(body.topicKey, "topicKey"),
     pinned: optBool(body.pinned, "pinned"),
     importance: optNumber(body.importance, "importance"),
+    status: optFactStatus(body.status, "status"),
     createdBy: optString(body.createdBy, "createdBy"),
     source: optString(body.source, "source"),
   };
@@ -127,6 +139,7 @@ function factPatch(body: unknown): Partial<FactInput> {
   if (body.topicKey !== undefined) patch.topicKey = optString(body.topicKey, "topicKey");
   if (body.pinned !== undefined) patch.pinned = optBool(body.pinned, "pinned");
   if (body.importance !== undefined) patch.importance = optNumber(body.importance, "importance");
+  if (body.status !== undefined) patch.status = optFactStatus(body.status, "status");
   if (body.source !== undefined) patch.source = optString(body.source, "source");
   return patch;
 }
@@ -187,12 +200,17 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
   // ---- facts ----
   app.get("/facts", async (c) => {
     const scopesRaw = c.req.query("scopes");
+    const statusRaw = c.req.query("status") ?? "active";
+    if (statusRaw !== "active" && statusRaw !== "archived" && statusRaw !== "all") {
+      throw new ValidationError('"status" must be one of active, archived, all');
+    }
     const opts: ListOptions = {
       scope: c.req.query("scope"),
       scopes: scopesRaw
         ? scopesRaw.split(",").map((s) => s.trim()).filter(Boolean)
         : undefined,
-      status: c.req.query("status"),
+      // "all" means "every status" — do not forward it to the store as a literal status value.
+      status: statusRaw === "all" ? undefined : statusRaw,
       limit: parseIntQuery(c.req.query("limit"), "limit"),
       offset: parseIntQuery(c.req.query("offset"), "offset"),
     };

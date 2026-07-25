@@ -78,6 +78,10 @@ export function RecordDrawer(props: { typedId: TypedId; onClose: () => void }) {
     await updateFact(fact, { pinned: !fact.pinned });
   };
 
+  const toggleArchive = async (fact: Fact) => {
+    await updateFact(fact, { status: fact.status === "active" ? "archived" : "active" });
+  };
+
   const del = async () => {
     if (!data || data.sourceType !== "fact") return;
     try {
@@ -124,6 +128,9 @@ export function RecordDrawer(props: { typedId: TypedId; onClose: () => void }) {
               <>
                 <button class="btn btn-sm" onClick={() => togglePin(data.record)}>
                   {data.record.pinned ? "Unpin" : "Pin"}
+                </button>
+                <button class="btn btn-sm" onClick={() => toggleArchive(data.record)}>
+                  {data.record.status === "active" ? "Archive" : "Restore"}
                 </button>
                 <button class="btn btn-sm" onClick={() => setEditing(true)}>Edit</button>
                 <button class="btn btn-danger btn-sm" onClick={del} style={{ marginLeft: "auto" }}>

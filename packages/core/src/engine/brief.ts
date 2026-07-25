@@ -36,6 +36,12 @@ export function deriveFactScopes(opts: BriefOptions): string[] {
 const VISION_APPLY_NOTE =
   "Apply this: flag any plan, play, or design that conflicts with the vision before executing it.";
 
+/** Collapse runs of whitespace (incl. newlines) to a single space, mirroring the
+ * `gsub("\\s+"; " ")` normalization the shell brief hook applies to body text. */
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 export interface BriefParts {
   vision?: { global: Vision | null; project: Vision | null };
   recentSessions: Session[];
@@ -89,7 +95,8 @@ export function renderMarkdown(brief: BriefResult, opts: BriefOptions): string {
     for (const s of brief.recentSessions) {
       const when = s.createdAt ? s.createdAt.slice(0, 10) : "";
       const proj = s.project ? ` [${s.project}]` : "";
-      lines.push(`- ${when}${proj} ${s.summary} (session:${s.id})`);
+      const details = s.details && s.details.trim() ? ` — ${collapseWhitespace(s.details)}` : "";
+      lines.push(`- ${when}${proj} ${s.summary}${details} (session:${s.id})`);
     }
   }
   lines.push("");
@@ -100,7 +107,8 @@ export function renderMarkdown(brief: BriefResult, opts: BriefOptions): string {
   } else {
     for (const f of brief.facts) {
       const pin = f.pinned ? "* " : "- ";
-      lines.push(`${pin}${f.fact} (fact:${f.id})`);
+      const detail = f.detail && f.detail.trim() ? ` — ${collapseWhitespace(f.detail)}` : "";
+      lines.push(`${pin}${f.fact}${detail} (fact:${f.id})`);
     }
   }
 
@@ -108,7 +116,8 @@ export function renderMarkdown(brief: BriefResult, opts: BriefOptions): string {
     lines.push("");
     lines.push("=== RELATED DOCS ===");
     for (const d of brief.relatedDocs) {
-      lines.push(`- ${d.title} (${d.citation})`);
+      const snippet = d.snippet && d.snippet.trim() ? ` — ${collapseWhitespace(d.snippet)}` : "";
+      lines.push(`- ${d.title}${snippet} (${d.citation})`);
     }
   }
 

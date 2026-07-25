@@ -131,7 +131,13 @@ export function createClient(options: ClientOptions): GroundedClient {
       list: (opts = {}) =>
         request<Fact[]>(
           "GET",
-          `/facts${qs({ scope: opts.scope, limit: opts.limit, offset: opts.offset })}`,
+          `/facts${qs({
+            scope: opts.scope,
+            scopes: opts.scopes?.length ? opts.scopes.join(",") : undefined,
+            status: opts.status,
+            limit: opts.limit,
+            offset: opts.offset,
+          })}`,
         ),
       delete: (id) => request<{ deleted: boolean; id: number }>("DELETE", `/facts/${id}`),
       update: (id, patch) => request<Fact>("PATCH", `/facts/${id}`, patch),

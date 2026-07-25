@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import type { Fact, FactInput } from "@grounded/core/contract";
+import type { Fact, FactInput, ListOptions } from "@grounded/core/contract";
 import { api, errMessage } from "../api.js";
 import { useAsync, useDataVersion, toast, bumpData } from "../hooks.js";
 import { useApp } from "../app.js";
@@ -10,6 +10,14 @@ import { IconPlus } from "../icons.js";
 
 const FOCUS = "__focus";
 
+const STATUS_COLOR: Record<Fact["status"], string> = {
+  active: "var(--verdigris)",
+  archived: "rgba(236,230,216,0.4)",
+};
+
+type StatusFilter = "active" | "archived" | "all";
+const STATUS_FILTERS: StatusFilter[] = ["active", "archived", "all"];
+
 export function FactsView() {
   const { openRecord, project } = useApp();
   const version = useDataVersion();
@@ -17,7 +25,11 @@ export function FactsView() {
   // null = auto: focus the project (global + project scope) when one is active.
   const [scope, setScope] = useState<string | null>(null);
   const [q, setQ] = useState("");
-  const { data, loading, error } = useAsync<Fact[]>(() => api.facts.list({ limit: 500 }), [version]);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
+  const { data, loading, error } = useAsync<Fact[]>(
+    () => api.facts.list({ limit: 500, status: statusFilter } satisfies ListOptions),
+    [version, statusFilter],
+  );
 
   const facts = data ?? [];
   const effScope = scope ?? (project ? FOCUS : "all");
@@ -89,6 +101,14 @@ export function FactsView() {
         ))}
       </div>
 
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.2rem" }}>
+        {STATUS_FILTERS.map((s) => (
+          <button key={s} class={`chip${statusFilter === s ? " active" : ""}`} onClick={() => setStatusFilter(s)}>
+            {s}
+          </button>
+        ))}
+      </div>
+
       {loading && <div class="empty">Loading facts…</div>}
       {error && <div class="empty" style={{ color: "var(--copper-bright)" }}>{error}</div>}
       {!loading && !error && shown.length === 0 && (
@@ -104,6 +124,8 @@ export function FactsView() {
           type="fact"
           title={f.fact}
           pinned={f.pinned}
+          status={f.status}
+          statusColor={STATUS_COLOR[f.status]}
           meta={`${f.scope}${f.importance ? ` · ${f.importance.toFixed(2)}` : ""}`}
           onClick={() => openRecord(`fact:${f.id}`)}
         />

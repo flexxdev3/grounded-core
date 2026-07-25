@@ -218,9 +218,10 @@ export function createServer(store: Store): McpServer {
         topicKey: z.string().optional().describe("stable dedupe key"),
         pinned: z.boolean().optional(),
         importance: z.number().min(0).max(1).optional().describe("0..1 ranking boost"),
+        status: z.enum(["active", "archived"]).optional().describe('defaults to "active"'),
       },
     },
-    guard(async ({ fact, scope, category, detail, topicKey, pinned, importance }) => {
+    guard(async ({ fact, scope, category, detail, topicKey, pinned, importance, status }) => {
       const created = await store.factsAdd({
         fact,
         ...(scope !== undefined ? { scope } : {}),
@@ -229,6 +230,7 @@ export function createServer(store: Store): McpServer {
         ...(topicKey !== undefined ? { topicKey } : {}),
         ...(pinned !== undefined ? { pinned } : {}),
         ...(importance !== undefined ? { importance } : {}),
+        ...(status !== undefined ? { status } : {}),
       });
       return json(created);
     }),
@@ -248,9 +250,10 @@ export function createServer(store: Store): McpServer {
         topicKey: z.string().optional(),
         pinned: z.boolean().optional(),
         importance: z.number().min(0).max(1).optional(),
+        status: z.enum(["active", "archived"]).optional().describe("archive/restore a fact"),
       },
     },
-    guard(async ({ id, fact, scope, category, detail, topicKey, pinned, importance }) => {
+    guard(async ({ id, fact, scope, category, detail, topicKey, pinned, importance, status }) => {
       const updated = await store.factsUpdate(id, {
         ...(fact !== undefined ? { fact } : {}),
         ...(scope !== undefined ? { scope } : {}),
@@ -259,6 +262,7 @@ export function createServer(store: Store): McpServer {
         ...(topicKey !== undefined ? { topicKey } : {}),
         ...(pinned !== undefined ? { pinned } : {}),
         ...(importance !== undefined ? { importance } : {}),
+        ...(status !== undefined ? { status } : {}),
       });
       return json(updated);
     }),
@@ -268,16 +272,21 @@ export function createServer(store: Store): McpServer {
     "ground_facts_list",
     {
       title: "List facts",
-      description: "List active facts, pinned/importance first.",
+      description: "List facts, pinned/importance first. Defaults to active facts only.",
       inputSchema: {
         scope: z.string().optional(),
         limit: z.number().int().positive().optional(),
+        status: z
+          .enum(["active", "archived", "all"])
+          .optional()
+          .describe('defaults to "active"; "all" returns every status'),
       },
     },
-    guard(async ({ scope, limit }) => {
+    guard(async ({ scope, limit, status }) => {
       const facts = await store.factsList({
         ...(scope !== undefined ? { scope } : {}),
         ...(limit !== undefined ? { limit } : {}),
+        status: status === undefined || status === "active" ? "active" : status === "all" ? undefined : status,
       });
       return json(facts);
     }),
