@@ -167,11 +167,21 @@ function renderFactLine(f: Fact): string {
   return `${pin}${f.fact}${detail} (fact:${f.id})`;
 }
 
+/**
+ * Sessions render SUMMARY ONLY in the brief. `details` is a full session log —
+ * eight of them cost ~7k tokens, 3.5x the entire startup budget, and the length
+ * is unbounded by construction. Progressive disclosure is the product's own
+ * model for exactly this: recall cards carry a 200-char snippet and `ground_get`
+ * hydrates. A budgeted startup lane is the last place to inline a full body.
+ *
+ * Contrast `renderFactLine`, which DOES inline `fact.detail` — a fact's detail
+ * is a single short retrieval trigger, not a document. The asymmetry is the
+ * point: short field inline, long field behind an id.
+ */
 function renderSessionLine(s: Session): string {
   const when = s.createdAt ? s.createdAt.slice(0, 10) : "";
   const proj = s.project ? ` [${s.project}]` : "";
-  const details = s.details && s.details.trim() ? ` — ${collapseWhitespace(s.details)}` : "";
-  return `- ${when}${proj} ${s.summary}${details} (session:${s.id})`;
+  return `- ${when}${proj} ${s.summary} (session:${s.id})`;
 }
 
 /** The short form injected for a vision row: `summary`, falling back to
