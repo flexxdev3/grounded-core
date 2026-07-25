@@ -95,7 +95,10 @@ Defined in `contract.ts`. All timestamps are ISO-8601 strings. Typed-id format:
 e.g. `fact:2`, `session:274`, `doc:1091`.
 
 **Fact** (`contract.ts:16-37`): `id, scope, category, fact, detail?, topicKey?, pinned, importance(0..1),
-status("active"|"superseded"|"archived"), supersededBy?, createdBy?, source?, createdAt, updatedAt`.
+status("active"|"archived"), createdBy?, source?, createdAt, updatedAt`. `importance` defaults to `0.6`
+on insert (both adapters) — it feeds `factsList` ordering (`pinned desc, importance desc, updated_at
+desc`); at `0` a defaulted fact sorted dead last. `status` is writable via `factsAdd`/`factsUpdate`
+(`FactInput.status?: FactStatus`) — archiving is not deleting; `factsDelete` remains a hard delete.
 
 **Vision**: `id, scope("global"|"project:<name>"), content(markdown), createdBy?, source?, createdAt,
 updatedAt`. Exactly one record per scope (`unique(scope)`); `visionSet` edits it in place, inserting only
@@ -117,8 +120,10 @@ facts(Fact[]), relatedDocs(RecallResult[]), text?` (`text` filled when `format !
 
 **Store interface** — 23 methods:
 `init · visionGet · visionList · visionSet · visionDelete · factsAdd · factsList · factsGet ·
-factsDelete · factsSupersede · sessionsAdd · sessionsList · sessionsGet · sessionsTimeline ·
+factsDelete · factsUpdate · sessionsAdd · sessionsList · sessionsGet · sessionsTimeline ·
 docsIngest · docsList · docsGet · docsPrune · recall · get · brief · health · close`.
+`factsUpdate(id, patch: Partial<FactInput>)` edits a fact in place (re-embeds when the text changes) —
+there is no separate supersede call.
 
 **Errors** (`contract.ts:332-358`): `GroundedError` (base, `code="GROUNDED_ERROR"`) →
 `EmbedError("EMBED_ERROR")`, `StoreError("STORE_ERROR")`, `ConfigError("CONFIG_ERROR")`.
@@ -137,7 +142,7 @@ One file. Four base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts`.
 
 **Base tables** (column names are snake_case; mapped to camelCase records):
 - `facts(id INTEGER PK AUTOINCREMENT, scope, category, fact, detail, topic_key, pinned INT, importance REAL,
-  status, superseded_by, created_by, source, created_at, updated_at)`
+  status, created_by, source, created_at, updated_at)`
 - `vision(id, scope, content, created_by, source, created_at, updated_at)`
   — no FTS/vec rows (vision is injected, never searched).
 - `sessions(id, machine, project, workspace, agent, summary, details, tags, source, created_at)`
@@ -228,6 +233,12 @@ Concrete code path. Semantics/ordering rationale → CONTRACT.md §"Hybrid recal
 - **Source caps** (`recall.ts:90-91`): `fused.slice(0, sourceCaps[type])`.
 - **Final order** (`orderResults`, `recall.ts:111-127`): tier 0 facts → 1 sessions → 2 active docs →
   3 archived/missing docs; within a tier, score desc.
+- **Archived facts are excluded from recall entirely**, not demoted — both adapters filter fact
+  candidates to `status='active'` before fusion/ranking. `archived` means *no longer true*, so it must
+  not surface as truth; an archived fact stays reachable via `ground_get` / `factsGet` /
+  `GET /facts?status=archived`. This is deliberately asymmetric with docs, which are *demoted* by the
+  active-doc boost/tiering rather than excluded — an archived doc is history, an archived fact is a
+  retracted rule.
 
 Embeddings off/unavailable → lexical-only, `matchedBy="lexical"`, no error.
 
@@ -257,6 +268,11 @@ Apply this: flag any plan, play, or design that conflicts with the vision before
 ```
 Both adapters' `brief()` fetch `visionGet("global")` + `visionGet("project:<p>")` (when project set).
 `format=json` returns the structured object; `format=markdown` also fills `.text`.
+
+Bodies are rendered, not just titles: fact `detail`, session `details`, and the related-doc `snippet`
+are each whitespace-collapsed (`collapseWhitespace`, `brief.ts:39-41`) and appended after an em dash,
+with the `(fact:N)` / `(session:N)` / doc citation suffix intact — see the `<Global Vision content>` block
+above and the `- ${when}… ${summary}${details} (session:${s.id})` line shape.
 
 ---
 
@@ -330,10 +346,10 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 | GET | `/vision` `?scope&limit&offset` | `visionList` |
 | POST | `/vision` | `visionSet` (201, edits the one record for the scope in place) |
 | DELETE | `/vision/:id` | `visionDelete` |
-| GET | `/facts` `?scope&limit&offset` | `factsList` |
+| GET | `/facts` `?scope&limit&offset&status` | `factsList` |
 | POST | `/facts` | `factsAdd` (201) |
 | DELETE | `/facts/:id` | `factsDelete` |
-| POST | `/facts/:id/supersede` | `factsSupersede` (201) |
+| PATCH | `/facts/:id` | `factsUpdate` |
 | GET | `/sessions` `?project&limit` | `sessionsList` |
 | POST | `/sessions` | `sessionsAdd` (201) |
 | GET | `/sessions/:id` | `sessionsGet` |
@@ -346,6 +362,11 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 
 **Error mapping** (`app.ts:294-312`): `ValidationError`→400, `NotFoundError`→404, `EmbedError`→503,
 `StoreError`/`ConfigError`/`GroundedError`→500. Unknown path → 404 `{code:"NOT_FOUND"}`.
+
+**`GET /facts` status default** (`app.ts:203-213`): `?status` defaults to `active` when omitted.
+`archived` and `all` are the explicit filters; `all` is handled in the route and never forwarded to the
+store as a literal status value. Any other value → 400. `POST /facts` and `PATCH /facts/:id` validate
+`status` the same way (`app.ts:126,142`) — 400 on anything other than `active`/`archived`.
 
 ---
 
@@ -365,8 +386,9 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 | `ground_brief` | `agent?, project?, machine?, cwd?, query?, format?` | `brief` |
 | `ground_vision_get` | `project?` | `visionGet` ×2 → `{global, project}` |
 | `ground_vision_set` | `content, scope?` | `visionSet` |
-| `ground_facts_add` | `fact, scope?, category?, detail?, topicKey?, pinned?, importance?` | `factsAdd` |
-| `ground_facts_list` | `scope?, limit?` | `factsList` |
+| `ground_facts_add` | `fact, scope?, category?, detail?, topicKey?, pinned?, importance?, status?` | `factsAdd` |
+| `ground_facts_update` | `id, fact?, scope?, category?, detail?, topicKey?, pinned?, importance?, status?` | `factsUpdate` |
+| `ground_facts_list` | `scope?, limit?, status?` (defaults to `"active"`; `"all"` returns every status) | `factsList` |
 | `ground_facts_delete` | `id` | `factsDelete` |
 | `ground_session_add` | `summary, details?, project?, agent?, machine?, tags?` | `sessionsAdd` |
 | `ground_docs_ingest` | `paths[]≥1, source?, kind?, dryRun?` | `docsIngest` |
