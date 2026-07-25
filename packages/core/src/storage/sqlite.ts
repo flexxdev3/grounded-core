@@ -37,7 +37,7 @@ import {
   type FusedItem,
   type LaneHit,
 } from "../engine/recall.js";
-import { assembleBrief, deriveFactScopes } from "../engine/brief.js";
+import { assembleBrief, deriveFactScopes, deriveDocScopes } from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
 import { splitFrontmatter } from "../ingest/frontmatter.js";
@@ -86,6 +86,7 @@ export class SqliteStore implements Store {
     this.db.exec(SQLITE_BASE);
     this.db.exec(SQLITE_FTS);
     this.migrateDropVisionStatus();
+    this.migrateAddDocsScope();
 
     if (this.embedder.enabled) {
       try {
@@ -113,6 +114,21 @@ export class SqliteStore implements Store {
       `drop index if exists idx_vision_active;
        alter table vision drop column status;
        create unique index if not exists idx_vision_scope on vision(scope);`,
+    );
+  }
+
+  /**
+   * One-shot migration for cabinets created before docs.scope existed (stage 3).
+   * SQLite has no ADD COLUMN IF NOT EXISTS, so probe pragma_table_info first.
+   */
+  private migrateAddDocsScope(): void {
+    const hasScope = this.db
+      .prepare(`select 1 from pragma_table_info('docs') where name = 'scope'`)
+      .get();
+    if (hasScope) return;
+    this.db.exec(
+      `alter table docs add column scope text not null default 'global';
+       create index if not exists idx_docs_scope on docs(scope);`,
     );
   }
 
@@ -493,6 +509,7 @@ export class SqliteStore implements Store {
       status: String(r.status) as DocStatus,
       kind: (r.kind as string | null) ?? null,
       machine: (r.machine as string | null) ?? null,
+      scope: String(r.scope),
       ingestedAt: String(r.ingested_at),
     };
   }
@@ -503,12 +520,14 @@ export class SqliteStore implements Store {
       added: 0,
       updated: 0,
       skipped: 0,
+      retagged: 0,
       removed: 0,
       paths: [],
     };
     const source = opts?.source ?? "default";
     const kind = opts?.kind ?? "markdown";
     const machine = opts?.machine ?? null;
+    const scope = opts?.scope ?? "global";
     const dryRun = opts?.dryRun ?? false;
     const stripPrivate = this.cfg.ingest.stripPrivate;
     const stripFrontmatterFlag = this.cfg.ingest.stripFrontmatter;
@@ -537,7 +556,7 @@ export class SqliteStore implements Store {
         const docPath = file.absPath;
 
         const existing = this.db
-          .prepare(`select id, chunk_idx, body_hash from docs where path = ?`)
+          .prepare(`select id, chunk_idx, body_hash, source, kind, machine, scope from docs where path = ?`)
           .all(docPath) as Row[];
         const existingByIdx = new Map<number, Row>();
         for (const e of existing) existingByIdx.set(Number(e.chunk_idx), e);
@@ -546,7 +565,28 @@ export class SqliteStore implements Store {
         for (const chunk of chunks) {
           const prev = existingByIdx.get(chunk.idx);
           if (prev && String(prev.body_hash) === chunk.bodyHash) {
-            report.skipped++;
+            // body unchanged — but the batch tags (source/kind/machine/scope) may
+            // have shifted (e.g. a re-tag ingest to move a tree into a new lane).
+            // Compare and, if any differ, run a tag-only UPDATE (no body/hash/
+            // total_chunks/embedding touched) so retagging an unchanged file is
+            // not a silent no-op.
+            const tagsChanged =
+              String(prev.source) !== source ||
+              String(prev.kind ?? "") !== (kind ?? "") ||
+              String(prev.machine ?? "") !== (machine ?? "") ||
+              String(prev.scope) !== scope;
+            if (tagsChanged) {
+              if (!dryRun) {
+                this.db
+                  .prepare(
+                    `update docs set source=?, kind=?, machine=?, scope=?, ingested_at=? where id=?`,
+                  )
+                  .run(source, kind, machine, scope, nowIso(), Number(prev.id));
+              }
+              report.retagged++;
+            } else {
+              report.skipped++;
+            }
             existingByIdx.delete(chunk.idx);
             continue;
           }
@@ -562,7 +602,7 @@ export class SqliteStore implements Store {
             const id = Number(prev.id);
             this.db
               .prepare(
-                `update docs set source=?, title=?, body=?, total_chunks=?, body_hash=?, mtime=?, status='active', kind=?, machine=?, ingested_at=? where id=?`,
+                `update docs set source=?, title=?, body=?, total_chunks=?, body_hash=?, mtime=?, status='active', kind=?, machine=?, scope=?, ingested_at=? where id=?`,
               )
               .run(
                 source,
@@ -573,6 +613,7 @@ export class SqliteStore implements Store {
                 mtime,
                 kind,
                 machine,
+                scope,
                 ingestedAt,
                 id,
               );
@@ -586,8 +627,8 @@ export class SqliteStore implements Store {
           } else {
             const info = this.db
               .prepare(
-                `insert into docs(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, ingested_at)
-                 values (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+                `insert into docs(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, scope, ingested_at)
+                 values (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
               )
               .run(
                 source,
@@ -600,6 +641,7 @@ export class SqliteStore implements Store {
                 mtime,
                 kind,
                 machine,
+                scope,
                 ingestedAt,
               );
             const id = Number(info.lastInsertRowid);
@@ -637,6 +679,17 @@ export class SqliteStore implements Store {
     if (opts?.status) {
       where.push("status = ?");
       params.push(opts.status);
+    }
+    if (opts?.source) {
+      where.push("source = ?");
+      params.push(opts.source);
+    }
+    if (opts?.scopes && opts.scopes.length > 0) {
+      where.push(`scope in (${opts.scopes.map(() => "?").join(", ")})`);
+      params.push(...opts.scopes);
+    } else if (opts?.scope) {
+      where.push("scope = ?");
+      params.push(opts.scope);
     }
     if (opts?.documents) where.push("chunk_idx = 0");
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
@@ -779,13 +832,19 @@ export class SqliteStore implements Store {
     return map;
   }
 
-  private docsMeta(ids: number[]): Map<number, CandidateMeta> {
+  private docsMeta(ids: number[], scopes: string[]): Map<number, CandidateMeta> {
     const map = new Map<number, CandidateMeta>();
     if (ids.length === 0) return map;
     const placeholders = ids.map(() => "?").join(",");
+    // scope-filtered: a lane hit outside the caller's declared scopes must not
+    // survive recall — filtering here (not just demoting) means a lane hit with
+    // no meta entry can be dropped by the caller. Mirrors the facts active-only filter.
+    const scopePlaceholders = scopes.map(() => "?").join(",");
     const rows = this.db
-      .prepare(`select id, status from docs where id in (${placeholders})`)
-      .all(...ids) as Row[];
+      .prepare(
+        `select id, status from docs where id in (${placeholders}) and scope in (${scopePlaceholders})`,
+      )
+      .all(...ids, ...scopes) as Row[];
     for (const r of rows) {
       map.set(Number(r.id), {
         sourceType: "doc",
@@ -857,10 +916,20 @@ export class SqliteStore implements Store {
     }
 
     if (sources.includes("doc")) {
-      const vec = this.vectorLane("vec_docs", queryVec, laneN);
-      const lex = this.lexicalLane("fts_docs", "docs", matchExpr, undefined, laneN);
-      const ids = unionIds(vec, lex);
-      const meta = this.docsMeta(ids);
+      // default doc-lane read-set is ['global'] when the caller declares nothing —
+      // this is the leak fix that keeps e.g. an "administration" lane out of the
+      // default engineering recall pool.
+      const docScopes = opts?.scopes && opts.scopes.length > 0 ? opts.scopes : ["global"];
+      const rawVec = this.vectorLane("vec_docs", queryVec, laneN);
+      const rawLex = this.lexicalLane("fts_docs", "docs", matchExpr, undefined, laneN);
+      const ids = unionIds(rawVec, rawLex);
+      const meta = this.docsMeta(ids, docScopes);
+      // meta is already filtered to the declared scopes; drop any lane hit whose
+      // id has no meta entry (out-of-scope) and re-rank so RRF ranks stay dense.
+      // Known/accepted: lanes fetch laneN candidates before this filter, so a query
+      // dominated by out-of-scope docs can return fewer than `limit` in-scope hits.
+      const vec = rawVec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
+      const lex = rawLex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       const out = fuseLane("doc", vec, lex, meta, this.cfg).slice(0, limit);
       for (const f of out) {
         fused.push(f);
@@ -982,7 +1051,11 @@ export class SqliteStore implements Store {
     let relatedDocs: RecallResult[] = [];
     const hint = o.query ?? o.cwd;
     if (hint) {
-      relatedDocs = await this.recall(hint, { sources: ["doc"], limit: 5 });
+      relatedDocs = await this.recall(hint, {
+        sources: ["doc"],
+        limit: 5,
+        scopes: deriveDocScopes(o),
+      });
     }
     const vision = {
       global: await this.visionGet("global"),

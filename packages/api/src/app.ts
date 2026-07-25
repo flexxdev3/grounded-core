@@ -176,6 +176,25 @@ async function readJson(c: { req: { json: () => Promise<unknown> } }): Promise<u
   }
 }
 
+/**
+ * Body parser for routes where the body is optional (`/brief`, `/docs/prune`).
+ * Reads the text and treats empty as `{}`. Deliberately does NOT sniff
+ * `content-length`: that header is absent on chunked transfer-encoding requests,
+ * which would silently discard a real body — dropping `docScopes` on /brief or
+ * `remove` on /docs/prune with a 200 and no signal.
+ */
+async function readJsonOptional(c: {
+  req: { text: () => Promise<string> };
+}): Promise<unknown> {
+  const raw = await c.req.text();
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new ValidationError("invalid JSON body");
+  }
+}
+
 export function createApp(store: Store, opts: { token?: string } = {}): Hono {
   const app = new Hono();
   const token = opts.token;
@@ -289,18 +308,31 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
     const ingestOpts: IngestOptions = {
       source: optString(body.source, "source"),
       kind: optString(body.kind, "kind"),
+      machine: optString(body.machine, "machine"),
+      scope: optString(body.scope, "scope"),
       dryRun: optBool(body.dryRun, "dryRun"),
     };
     return c.json(await store.docsIngest(paths, ingestOpts));
   });
 
+  app.post("/docs/prune", async (c) => {
+    const body = await readJsonOptional(c);
+    if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+    const remove = optBool(body.remove, "remove") ?? false;
+    return c.json(await store.docsPrune({ remove }));
+  });
+
   app.get("/docs", async (c) => {
+    const scopesRaw = c.req.query("scopes");
     const opts: ListOptions = {
       limit: parseIntQuery(c.req.query("limit"), "limit"),
       offset: parseIntQuery(c.req.query("offset"), "offset"),
+      source: c.req.query("source"),
+      scope: c.req.query("scope"),
+      scopes: scopesRaw
+        ? scopesRaw.split(",").map((s) => s.trim()).filter(Boolean)
+        : undefined,
     };
-    const source = c.req.query("source");
-    if (source !== undefined) opts.scope = source;
     if (c.req.query("documents") === "true") opts.documents = true;
     return c.json(await store.docsList(opts));
   });
@@ -326,13 +358,13 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
       project: optString(body.project, "project"),
       sources: sources as SourceType[] | undefined,
       lexicalOnly: optBool(body.lexicalOnly, "lexicalOnly"),
+      scopes: optStringArray(body.scopes, "scopes"),
     };
     return c.json(await store.recall(query, recallOpts));
   });
 
   app.post("/brief", async (c) => {
-    const raw = c.req.header("content-length");
-    const body = raw && raw !== "0" ? await readJson(c) : {};
+    const body = await readJsonOptional(c);
     if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
     const briefOpts: BriefOptions = {
       agent: optString(body.agent, "agent"),
@@ -342,6 +374,7 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
       query: optString(body.query, "query"),
       recentSessions: optNumber(body.recentSessions, "recentSessions"),
       factScopes: optStringArray(body.factScopes, "factScopes"),
+      docScopes: optStringArray(body.docScopes, "docScopes"),
       format: ((): BriefOptions["format"] => {
         const f = optString(body.format, "format");
         if (f === undefined) return undefined;

@@ -78,14 +78,21 @@ export function createServer(store: Store): McpServer {
         project: z.string().optional().describe("scope filter for facts/sessions"),
         sources: z.array(z.enum(SOURCE_TYPES)).optional().describe("restrict to these source types"),
         lexicalOnly: z.boolean().optional().describe("force lexical-only (skip embeddings)"),
+        scopes: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'filters the doc lane; defaults to ["global"] — pass e.g. ["global","administration"] to also include another lane, not just the other lane alone',
+          ),
       },
     },
-    guard(async ({ query, limit, project, sources, lexicalOnly }) => {
+    guard(async ({ query, limit, project, sources, lexicalOnly, scopes }) => {
       const results = await store.recall(query, {
         ...(limit !== undefined ? { limit } : {}),
         ...(project !== undefined ? { project } : {}),
         ...(sources !== undefined ? { sources: sources as SourceType[] } : {}),
         ...(lexicalOnly !== undefined ? { lexicalOnly } : {}),
+        ...(scopes !== undefined ? { scopes } : {}),
       });
       if (results.length === 0) {
         return { content: [{ type: "text", text: "No results.\n\n[]" }] };
@@ -150,9 +157,15 @@ export function createServer(store: Store): McpServer {
         cwd: z.string().optional(),
         query: z.string().optional().describe("bias related-docs selection"),
         format: z.enum(["markdown", "json"]).optional().describe("default markdown"),
+        docScopes: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'filters the related-docs lane; defaults to ["global"] — pass e.g. ["global","administration"] to also include another lane, not just the other lane alone',
+          ),
       },
     },
-    guard(async ({ agent, project, machine, cwd, query, format }) => {
+    guard(async ({ agent, project, machine, cwd, query, format, docScopes }) => {
       const opts: BriefOptions = {
         format: format ?? "markdown",
         ...(agent !== undefined ? { agent } : {}),
@@ -160,6 +173,7 @@ export function createServer(store: Store): McpServer {
         ...(machine !== undefined ? { machine } : {}),
         ...(cwd !== undefined ? { cwd } : {}),
         ...(query !== undefined ? { query } : {}),
+        ...(docScopes !== undefined ? { docScopes } : {}),
       };
       const brief = await store.brief(opts);
       if (opts.format === "json") return json(brief);
@@ -341,14 +355,38 @@ export function createServer(store: Store): McpServer {
         paths: z.array(z.string()).min(1).describe("file or directory paths"),
         source: z.string().optional().describe("logical source label"),
         kind: z.string().optional(),
+        machine: z.string().optional().describe("machine label to tag ingested rows with"),
+        scope: z.string().optional().describe('lane to tag ingested rows with (default "global")'),
         dryRun: z.boolean().optional().describe("report changes without writing"),
       },
     },
-    guard(async ({ paths, source, kind, dryRun }) => {
+    guard(async ({ paths, source, kind, machine, scope, dryRun }) => {
       const report = await store.docsIngest(paths, {
         ...(source !== undefined ? { source } : {}),
         ...(kind !== undefined ? { kind } : {}),
+        ...(machine !== undefined ? { machine } : {}),
+        ...(scope !== undefined ? { scope } : {}),
         ...(dryRun !== undefined ? { dryRun } : {}),
+      });
+      return json(report);
+    }),
+  );
+
+  server.registerTool(
+    "ground_docs_prune",
+    {
+      title: "Prune docs",
+      description:
+        "Reconcile doc rows against files on disk: mark rows missing, or delete them with remove:true. " +
+        "Distinct from IngestReport.removed (stale chunk indexes inside re-chunked files, not orphan detection) — " +
+        "use this tool, not that field, to detect orphaned rows.",
+      inputSchema: {
+        remove: z.boolean().optional().describe("delete orphaned rows instead of marking them missing (default false)"),
+      },
+    },
+    guard(async ({ remove }) => {
+      const report = await store.docsPrune({
+        ...(remove !== undefined ? { remove } : {}),
       });
       return json(report);
     }),

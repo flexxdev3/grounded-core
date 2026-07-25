@@ -58,12 +58,16 @@ create table if not exists "${s}".docs (
   status text not null default 'active',
   kind text,
   machine text,
+  scope text not null default 'global',
   ingested_at timestamptz not null default now(),
   embedding vector(${dims}),
   search_tsv tsvector generated always as (
     to_tsvector('english', coalesce(title,'') || ' ' || coalesce(body,''))
   ) stored
 );
+
+-- docs scope lane (stage 3): idempotent add for cabinets created before this column existed.
+alter table "${s}".docs add column if not exists scope text not null default 'global';
 
 create table if not exists "${s}".vision (
   id bigint generated always as identity primary key,
@@ -87,6 +91,7 @@ create index if not exists idx_facts_scope on "${s}".facts(scope);
 create index if not exists idx_sessions_project on "${s}".sessions(project);
 create index if not exists idx_sessions_created on "${s}".sessions(created_at);
 create index if not exists idx_docs_status on "${s}".docs(status);
+create index if not exists idx_docs_scope on "${s}".docs(scope);
 
 create index if not exists idx_facts_tsv on "${s}".facts using gin(search_tsv);
 create index if not exists idx_sessions_tsv on "${s}".sessions using gin(search_tsv);

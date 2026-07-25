@@ -223,6 +223,7 @@ function RecordBody({ rec }: { rec: FullRecord }) {
         <Row label="Status">{d.status}</Row>
         <Row label="Chunk">{d.chunkIdx + 1} / {d.totalChunks}</Row>
         <Row label="Ingested">{fmtDate(d.ingestedAt)}</Row>
+        <Row label="Scope">{d.scope}</Row>
       </div>
       <Row label="Body">
         <div style={{ maxHeight: "22rem", overflowY: "auto", paddingRight: "0.4rem" }}>

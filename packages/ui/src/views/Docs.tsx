@@ -124,6 +124,9 @@ export function DocsView() {
                 <span>{d.title || fileOf(d.path)}</span>
                 <span class="mono" style={{ fontSize: "0.66rem", color: "rgba(236,230,216,0.4)" }}>{fileOf(d.path)}</span>
               </div>
+              {d.scope !== "global" && (
+                <span class="chip" style={{ cursor: "default" }}>{d.scope}</span>
+              )}
               <span class="row-meta" style={{ color: STATUS_COLOR[d.status] }}>{d.status}</span>
               <span class="row-meta">{d.totalChunks > 1 ? `${d.totalChunks} chunks` : fmtDate(d.ingestedAt).slice(0, 10)}</span>
             </div>
@@ -139,6 +142,7 @@ export function DocsView() {
 function IngestModal({ onClose }: { onClose: () => void }) {
   const [paths, setPaths] = useState("");
   const [src, setSrc] = useState("");
+  const [scope, setScope] = useState("");
   const [dryRun, setDryRun] = useState(true);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<IngestReport | null>(null);
@@ -149,9 +153,9 @@ function IngestModal({ onClose }: { onClose: () => void }) {
     if (!list.length || busy) return;
     setBusy(true);
     try {
-      const rep = await api.docs.ingest(list, { source: src.trim() || undefined, dryRun });
+      const rep = await api.docs.ingest(list, { source: src.trim() || undefined, scope: scope.trim() || undefined, dryRun });
       setReport(rep);
-      toast(dryRun ? "Dry run complete" : `Ingested — +${rep.added} ~${rep.updated}`);
+      toast(dryRun ? "Dry run complete" : `Ingested — +${rep.added} ~${rep.updated} ↻${rep.retagged}`);
       if (!dryRun) bumpData();
     } catch (err) {
       toast(errMessage(err));
@@ -169,10 +173,17 @@ function IngestModal({ onClose }: { onClose: () => void }) {
             style={{ fontSize: "0.8rem" }}
             onInput={(e) => setPaths((e.target as HTMLTextAreaElement).value)} />
         </div>
-        <div>
-          <label class="field-label">Source label (optional)</label>
-          <input class="input" value={src} placeholder="repo:grounded"
-            onInput={(e) => setSrc((e.target as HTMLInputElement).value)} />
+        <div style={{ display: "flex", gap: "0.9rem" }}>
+          <div style={{ flex: 1 }}>
+            <label class="field-label">Source label (optional)</label>
+            <input class="input" value={src} placeholder="repo:grounded"
+              onInput={(e) => setSrc((e.target as HTMLInputElement).value)} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label class="field-label">Scope (optional)</label>
+            <input class="input" value={scope} placeholder="global"
+              onInput={(e) => setScope((e.target as HTMLInputElement).value)} />
+          </div>
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
           <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun((e.target as HTMLInputElement).checked)} />
@@ -181,7 +192,7 @@ function IngestModal({ onClose }: { onClose: () => void }) {
 
         {report && (
           <div class="terminal" style={{ fontSize: "0.74rem" }}>
-            scanned {report.scanned} · <span class="kw">+{report.added}</span> added · ~{report.updated} updated · {report.skipped} skipped · -{report.removed} removed
+            scanned {report.scanned} · <span class="kw">+{report.added}</span> added · ~{report.updated} updated · ↻{report.retagged} retagged · {report.skipped} skipped · -{report.removed} removed
           </div>
         )}
 

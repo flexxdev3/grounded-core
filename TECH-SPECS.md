@@ -109,8 +109,10 @@ row, not a `SourceType`. Always injected into the brief.
 **Session** (`contract.ts:40-54`): `id, machine?, project?, workspace?, agent?, summary, details?,
 tags?(string[]), source("manual"|"hook"|"import"|…), createdAt`.
 
-**Doc** (`contract.ts:59-76`): `id, source, path, title, body, chunkIdx, totalChunks, bodyHash, mtime?,
-status("active"|"archived"|"missing"), kind?, machine?, ingestedAt`.
+**Doc** (`contract.ts:76-95`): `id, source, path, title, body, chunkIdx, totalChunks, bodyHash, mtime?,
+status("active"|"archived"|"missing"), kind?, machine?, scope, ingestedAt`. `scope` is the doc **lane**
+(default `"global"`), batch-level — every chunk from one `docsIngest` call carries the same scope
+(`IngestOptions.scope`, §8). See §6.1 for how lanes interact with recall/brief defaults.
 
 **RecallResult** (`contract.ts:89-107`): compact card — `sourceType, id, typedId, title, score,
 matchedBy("vector"|"lexical"|"both"), createdAt?, updatedAt?, path?, source?, citation, snippet`
@@ -149,11 +151,17 @@ One file. Four base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts`.
 - `sessions(id, machine, project, workspace, agent, summary, details, tags, source, created_at)`
   — `tags` stored as serialized text.
 - `docs(id, source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine,
-  ingested_at)`
+  scope, ingested_at)` — `scope text not null default 'global'` (stage 3, `migrations/sqlite.ts:48`).
+  Cabinets created before stage 3 get it via a one-shot guarded migration
+  (`sqlite.ts:migrateAddDocsScope`): probe `pragma_table_info('docs')` for a `scope` column, and if
+  absent, `alter table docs add column scope text not null default 'global'` + create the index. SQLite
+  has no `ADD COLUMN IF NOT EXISTS`, hence the probe — the base `create table` above already includes the
+  column for fresh cabinets, this path is only for pre-stage-3 ones.
 
 **Indexes**: `facts(status)`, `facts(scope)`, `facts(topic_key)`,
-`sessions(project)`, `sessions(created_at)`, `docs(path)`, `docs(status)`, **`docs(path, chunk_idx)` UNIQUE**,
-**`vision(scope)` UNIQUE** (the one-record-per-scope invariant).
+`sessions(project)`, `sessions(created_at)`, `docs(path)`, `docs(status)`, `docs(scope)`
+(`idx_docs_scope`), **`docs(path, chunk_idx)` UNIQUE**, **`vision(scope)` UNIQUE** (the one-record-per-scope
+invariant).
 
 **Lexical — FTS5 external-content** (`migrations/sqlite.ts:60-70`), `tokenize='porter unicode61'`:
 - `fts_facts(fact, detail)` content=`facts`
@@ -186,8 +194,13 @@ Same logical columns as SQLite, plus per-table:
 - `tags text[]` (native array, vs SQLite's serialized text), timestamps `timestamptz default now()`.
 - `vision` mirrors the SQLite table (no embedding/tsv columns) with the same partial unique active index.
 
-**Indexes** (`migrations/postgres.ts:67-76`): same b-tree set as SQLite + **`docs(path,chunk_idx)` UNIQUE** +
-GIN on each `search_tsv` (`idx_facts_tsv`, `idx_sessions_tsv`, `idx_docs_tsv`).
+**Indexes** (`migrations/postgres.ts:67-76`): same b-tree set as SQLite + `docs(scope)` (`idx_docs_scope`)
++ **`docs(path,chunk_idx)` UNIQUE** + GIN on each `search_tsv` (`idx_facts_tsv`, `idx_sessions_tsv`,
+`idx_docs_tsv`).
+
+**`docs.scope` migration** (`migrations/postgres.ts:69-70`, stage 3): Postgres has native
+`add column if not exists`, so it's a plain idempotent statement — no probe needed, unlike SQLite:
+`alter table "{{SCHEMA}}".docs add column if not exists scope text not null default 'global'`.
 
 **Recall SQL:**
 - Lexical (`postgres.ts:492-495`): `ts_rank_cd(search_tsv, websearch_to_tsquery('english', $1))`,
@@ -196,7 +209,9 @@ GIN on each `search_tsv` (`idx_facts_tsv`, `idx_sessions_tsv`, `idx_docs_tsv`).
 
 ### 4.3 Ingest idempotency
 Skip a chunk whose `body_hash` is unchanged → re-ingest is cheap. `docs(path, chunk_idx)` UNIQUE is the
-upsert key on both adapters.
+upsert key on both adapters. A body-unchanged chunk whose batch tags (`source`/`kind`/`machine`/`scope`)
+*did* change still gets a tag-only `UPDATE` (no re-embed) — this is `IngestReport.retagged` (§8), the cheap
+path for moving a tree between lanes.
 
 ---
 
@@ -242,6 +257,26 @@ Concrete code path. Semantics/ordering rationale → CONTRACT.md §"Hybrid recal
   retracted rule.
 
 Embeddings off/unavailable → lexical-only, `matchedBy="lexical"`, no error.
+
+### 6.1 Doc-lane scoping (stage 3)
+
+Every doc row carries a `scope` (lane), e.g. `"global"` (default) or `"administration"`. Scoping is
+**routing, not enforcement**: self-host runs one static `GROUNDED_API_TOKEN` and `agent`/`scope` are
+self-declared by the caller, not authenticated. Per-token scope gating (`api_tokens.scopes`, hosted layer
+§14) is not armed on the open-core surface — nothing stops a caller from passing any scope string it wants.
+
+- **`recall()`** (`RecallOptions.scopes`) and **`brief()`** (`BriefOptions.docScopes`) filter the doc lane
+  and both default to `['global']` when the caller passes nothing (sqlite.ts:922, mirrored in postgres.ts).
+  A caller that wants an extra lane must declare **both**: `["global","administration"]`. Declaring only
+  `["administration"]` drops the default engineering corpus out of recall/brief entirely — this is the
+  single most likely caller mistake.
+- **`docsList()`** (`ListOptions.scope`/`scopes`) is **unfiltered by default** — omit both and every lane
+  comes back. This is deliberate: the console's doc browser has to show every lane, not just `global`.
+  Only `recall`/`brief` apply the `['global']` default; `docsList` never does.
+- **`ListOptions.scope`/`scopes` now mean lane uniformly** across facts and docs. Breaking change from the
+  pre-stage-3 shape, where `GET /docs?source=` was aliased onto `ListOptions.scope` — "scope" meant
+  "source" for docs. `ListOptions` now carries an explicit `source?: string` (docs-only, logical
+  source/collection) separate from `scope`/`scopes` (lane, facts and docs both).
 
 ---
 
@@ -307,6 +342,25 @@ Why it matters: without it every doc's chunk 0 opens with ~15–25 tokens of nea
 space and dilutes each document's actual opening. Landed 2026-07-25 after a 250-doc frontmatter sweep
 made the effect measurable.
 
+**`IngestOptions`** (`contract.ts:289-300`): `source?, kind?, machine?, scope?, dryRun?`. `scope` tags
+every chunk from this call with a lane (default `"global"`) — batch-level, not per-file. `machine` was
+already on `Doc` and persisted by both adapters, but stage 3 is the first release to expose it at the
+API/MCP surfaces (`POST /docs/ingest`, `ground_docs_ingest` — §10, §11).
+
+**`IngestReport`** (`contract.ts:302-312`): `scanned, added, updated, skipped, retagged, removed, paths`.
+`retagged` counts chunks whose body was unchanged but whose batch tags (`source`/`kind`/`machine`/`scope`)
+were rewritten via a tag-only UPDATE — no re-embed, no body/body_hash/total_chunks touch. Retagged chunks
+do **not** appear in `paths`. `removed` is unrelated to disk state: it's stale chunk indexes inside a
+file that shrank on re-chunk (e.g. a file that used to produce 5 chunks now produces 3 — the old chunks
+3–4 rows are deleted). `removed: 0` is not a signal that no rows are orphaned on disk — reconciling against
+disk is `docsPrune`, not `IngestReport`.
+
+**`docsPrune`** (`Store.docsPrune(opts?: {remove?: boolean})`, `contract.ts:385`): reconciles doc rows
+against files on disk — a path previously ingested but now missing from disk is marked `status:"missing"`
+(default), or hard-deleted when `remove:true`. Returns `{missing, removed}`. Surfaced at `POST
+/docs/prune` (§10) and `ground_docs_prune` (§11) — before stage 3 this method existed on the contract and
+both adapters but had no caller.
+
 ---
 
 ## 9. Installer CLI surface — `@grounded/cli`
@@ -353,6 +407,8 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 (`GROUNDED_API_TOKEN`, `bin.ts:10`); off by default. `/health` always exempt. Mismatch → 401
 `{error:"unauthorized", code:"UNAUTHORIZED"}`.
 
+**19 routes** (9 GET / 7 POST / 1 PATCH / 2 DELETE):
+
 | Method | Path | Store call |
 |---|---|---|
 | GET | `/health` | `health` |
@@ -360,19 +416,26 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 | GET | `/vision` `?scope&limit&offset` | `visionList` |
 | POST | `/vision` | `visionSet` (201, edits the one record for the scope in place) |
 | DELETE | `/vision/:id` | `visionDelete` |
-| GET | `/facts` `?scope&limit&offset&status` | `factsList` |
+| GET | `/facts` `?scope&scopes&limit&offset&status` | `factsList` (`scopes` comma-separated, takes precedence over `scope`) |
 | POST | `/facts` | `factsAdd` (201) |
 | DELETE | `/facts/:id` | `factsDelete` |
 | PATCH | `/facts/:id` | `factsUpdate` |
 | GET | `/sessions` `?project&limit` | `sessionsList` |
 | POST | `/sessions` | `sessionsAdd` (201) |
 | GET | `/sessions/:id` | `sessionsGet` |
-| POST | `/docs/ingest` | `docsIngest` |
-| GET | `/docs` `?source&limit&offset` | `docsList` |
+| POST | `/docs/ingest` | `docsIngest` — body `{paths[], source?, kind?, machine?, scope?, dryRun?}` |
+| POST | `/docs/prune` | `docsPrune` — body `{remove?}` (optional; empty body → `{remove:false}`) |
+| GET | `/docs` `?source&scope&scopes&limit&offset&documents` | `docsList` — `source` filters logical source/collection, `scope`/`scopes` filter lane; **unfiltered by default on both axes** (§6.1) |
 | GET | `/docs/:id` | `docsGet` |
-| POST | `/recall` | `recall` |
-| POST | `/brief` | `brief` |
+| POST | `/recall` | `recall` — body may include `scopes` (doc-lane filter, defaults `["global"]`) |
+| POST | `/brief` | `brief` — body may include `docScopes` (defaults `["global"]`) |
 | GET | `/get/:typedId` | `get` |
+
+`/brief` and `/docs/prune` parse the body with `readJsonOptional` (`app.ts:186-196`), which reads the raw
+text instead of gating on `content-length` — that header is absent on chunked transfer-encoding requests,
+which previously made the body parse silently short-circuit to `{}` (200 OK, `docScopes`/`remove`
+discarded). Every other POST route still uses the strict `readJson`, which throws `ValidationError` on
+unparseable JSON.
 
 **Error mapping** (`app.ts:294-312`): `ValidationError`→400, `NotFoundError`→404, `EmbedError`→503,
 `StoreError`/`ConfigError`/`GroundedError`→500. Unknown path → 404 `{code:"NOT_FOUND"}`.
@@ -392,12 +455,14 @@ store as a literal status value. Any other value → 400. `POST /facts` and `PAT
 **Transports** (`bin.ts:13-18`): stdio default (`StdioServerTransport`); if `GROUNDED_MCP_HTTP_PORT` set →
 `StreamableHTTPServerTransport` (stateless, `sessionIdGenerator: undefined`) on `127.0.0.1`.
 
+**14 tools:**
+
 | Tool | Key inputs | Store call |
 |---|---|---|
-| `ground_recall` | `query, limit?, project?, sources?, lexicalOnly?` | `recall` → cited cards + JSON |
+| `ground_recall` | `query, limit?, project?, sources?, lexicalOnly?, scopes?` | `recall` → cited cards + JSON (`scopes` filters the doc lane, defaults `["global"]`, §6.1) |
 | `ground_timeline` | `around?, query?, project?, window?` | `sessionsTimeline` |
 | `ground_get` | `typedId` (`^(fact\|session\|doc):\d+$`) | `get` |
-| `ground_brief` | `agent?, project?, machine?, cwd?, query?, format?` | `brief` |
+| `ground_brief` | `agent?, project?, machine?, cwd?, query?, format?, docScopes?` | `brief` (`docScopes` filters related-docs lane, defaults `["global"]`, §6.1) |
 | `ground_vision_get` | `project?` | `visionGet` ×2 → `{global, project}` |
 | `ground_vision_set` | `content, scope?` | `visionSet` |
 | `ground_facts_add` | `fact, scope?, category?, detail?, topicKey?, pinned?, importance?, status?` | `factsAdd` |
@@ -405,7 +470,8 @@ store as a literal status value. Any other value → 400. `POST /facts` and `PAT
 | `ground_facts_list` | `scope?, limit?, status?` (defaults to `"active"`; `"all"` returns every status) | `factsList` |
 | `ground_facts_delete` | `id` | `factsDelete` |
 | `ground_session_add` | `summary, details?, project?, agent?, machine?, tags?` | `sessionsAdd` |
-| `ground_docs_ingest` | `paths[]≥1, source?, kind?, dryRun?` | `docsIngest` |
+| `ground_docs_ingest` | `paths[]≥1, source?, kind?, machine?, scope?, dryRun?` | `docsIngest` (`scope` tags the batch's lane, default `"global"`; `machine` newly exposed at this surface in stage 3) |
+| `ground_docs_prune` | `remove?` (default false) | `docsPrune` → `{missing, removed}` — reconciles rows against disk; distinct from `IngestReport.removed` (§8) |
 | `ground_health` | `{}` | `health` |
 
 **Install snippets** (`installConfig.ts`): `installSnippet(target, env?)` /
@@ -435,9 +501,12 @@ Surfaced by `grounded hooks print [target]` (resolves the shipped script via `im
 `../../hooks/`, prints script + per-target wiring). Env knobs: `GROUNDED_BIN`, `GROUNDED_AGENT`.
 
 **Client lib** — `@grounded/client` `createClient({baseUrl, token?, fetch?, headers?}) → GroundedClient`
-with `health · recall · brief · facts.{add,list} · sessions.{add,list} · docs.list`; each is one `fetch`
-against the API, JSON in/out, throws `GroundedHttpError(status, code, message)` on non-2xx. Types-only dep
-on `@grounded/core/contract` (nothing from core loaded at runtime).
+with `health · recall · brief · get · vision.{set,list,delete} · facts.{add,list,update,delete} ·
+sessions.{add,list,get} · docs.{list,get,ingest,prune}` (`packages/client/src/index.ts:49-106`); each is one
+`fetch` against the API, JSON in/out, throws `GroundedHttpError(status, code, message)` on non-2xx. Doc-lane
+scoping mirrors the engine: `docs.list` stays unfiltered by default (`opts.scope`/`scopes` optional),
+`recall`/`brief` default `scopes`/`docScopes` to `['global']` (§6.1). Types-only dep on
+`@grounded/core/contract` (nothing from core loaded at runtime).
 
 **Local install** — `pnpm pack` each package (rewrites `workspace:*` → version) then
 `npm i -g <all tarballs together>` puts `ground`/`grounded-api`/`grounded-mcp` on PATH (inter-deps resolve
@@ -466,6 +535,8 @@ hooks → grounded-mcp `tools/list`.
 | ollama default | `nomic-embed-text` / 768 | `embedding/ollama.ts:5-7` |
 | openai default | `text-embedding-3-small` / 1536 | `embedding/openai.ts:5-7` |
 | indexable exts | `.md .markdown .mdx .txt` | `ingest/walker.ts:15` |
+| default doc scope (lane) | `"global"` | `contract.ts:297`, `migrations/{sqlite,postgres}.ts` |
+| default recall/brief doc scopes | `["global"]` | `sqlite.ts:922` (mirrored postgres.ts), §6.1 |
 | API port | `7437` | `api/bin.ts` |
 | RRF formula | `1 / (k + rank)` | `recall.ts:32` |
 | recency formula | `0.5 ^ (ageDays / halfLife)` | `recall.ts:104` |
@@ -490,5 +561,6 @@ URL + token differ.
 ---
 
 *Reflects the implementation as of Phases 0–5 (engine + cli/api/mcp/client, hooks, install wiring; tests
-green; locally installable) plus the hosted layer §14 (2026-07-13, `accounts` branch). Behavioral
-guarantees live in [`CONTRACT.md`](packages/core/CONTRACT.md); roadmap in [`../CLAUDE.md`](../CLAUDE.md).*
+green; locally installable) plus the hosted layer §14 (2026-07-13, `accounts` branch) and doc-lane scoping
+stage 3 (§6.1, 2026-07-25). Behavioral guarantees live in [`CONTRACT.md`](packages/core/CONTRACT.md);
+roadmap in [`../CLAUDE.md`](../CLAUDE.md).*

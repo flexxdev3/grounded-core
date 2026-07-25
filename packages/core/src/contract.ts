@@ -89,6 +89,8 @@ export interface Doc {
   status: DocStatus;
   kind?: string | null; // "markdown" | "note" | ...
   machine?: string | null;
+  /** lane, e.g. "global" | "administration". Batch-level only (see IngestOptions.scope). */
+  scope: string;
   ingestedAt: string; // ISO-8601
 }
 
@@ -215,6 +217,12 @@ export interface RecallOptions {
   project?: string;
   /** force lexical-only even if embeddings are enabled. */
   lexicalOnly?: boolean;
+  /**
+   * Doc-lane scope filter: match any of these lanes (OR). Defaults to
+   * `['global']` when omitted, so callers that declare nothing never see
+   * non-global lanes (e.g. "administration") in recall results.
+   */
+  scopes?: string[];
 }
 
 export interface BriefOptions {
@@ -228,6 +236,9 @@ export interface BriefOptions {
   recentSessions?: number;
   /** explicit fact scope set; overrides the default global+agent+project derivation. */
   factScopes?: string[];
+  /** explicit doc-lane scope set for the related-docs recall call. Explicit-only — no
+   * agent/project/machine derivation. Defaults to `['global']` when omitted/empty. */
+  docScopes?: string[];
   format?: "markdown" | "json";
 }
 
@@ -281,6 +292,9 @@ export interface IngestOptions {
   /** kind override. */
   kind?: string;
   machine?: string;
+  /** lane, e.g. "global" (default) | "administration". Batch-level only — applies to
+   * every chunk in this ingest call, not per-file. */
+  scope?: string;
   /** dry-run: report what would change, write nothing. */
   dryRun?: boolean;
 }
@@ -290,6 +304,9 @@ export interface IngestReport {
   added: number;
   updated: number;
   skipped: number;
+  /** batch tags (source/kind/machine/scope) changed on an otherwise-unchanged chunk:
+   * a tag-only UPDATE ran, touching neither body, body_hash, total_chunks, nor embedding. */
+  retagged: number;
   removed: number;
   paths: string[];
 }
@@ -318,9 +335,13 @@ export interface ListOptions {
   limit?: number;
   offset?: number;
   project?: string;
+  /** lane filter (facts and docs): match this scope. */
   scope?: string;
-  /** facts only: match any of these scopes (OR). Takes precedence over `scope`. */
+  /** lane filter (facts and docs): match any of these scopes (OR). Takes precedence over `scope`. */
   scopes?: string[];
+  /** docs only: filter by logical source/collection (e.g. "homelab" | "repo:grounded").
+   * Distinct from `scope`/`scopes`, which mean lane. */
+  source?: string;
   status?: string;
   /** docs only: return one row per document (chunk 0) instead of every chunk. */
   documents?: boolean;

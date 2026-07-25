@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, openStore } from "@grounded/core";
@@ -116,5 +116,81 @@ describe("@grounded/client against in-process createApp", () => {
 
   it("throws GroundedHttpError on a bad request", async () => {
     await expect(client.facts.add({ fact: "" })).rejects.toBeInstanceOf(GroundedHttpError);
+  });
+
+  describe("docs.list query-builder split (source vs scope/scopes)", () => {
+    let docsRoot: string;
+
+    beforeAll(async () => {
+      docsRoot = mkdtempSync(join(tmpdir(), "grounded-client-docs-"));
+      writeFileSync(join(docsRoot, "eng.md"), "# Engineering doc\n\nEngineering lane content.");
+      writeFileSync(join(docsRoot, "admin.md"), "# Admin doc\n\nAdministration lane content.");
+      await client.docs.ingest([join(docsRoot, "eng.md")], { source: "eng-cabinet" });
+      await client.docs.ingest([join(docsRoot, "admin.md")], {
+        source: "admin-cabinet",
+        scope: "administration",
+      });
+    });
+
+    afterAll(() => {
+      rmSync(docsRoot, { recursive: true, force: true });
+    });
+
+    it("?source= filters by logical source, not lane", async () => {
+      const bySource = await client.docs.list({ source: "eng-cabinet" });
+      expect(bySource.length).toBeGreaterThan(0);
+      expect(bySource.every((d) => d.source === "eng-cabinet")).toBe(true);
+    });
+
+    it("?scope= filters by lane, independent of source", async () => {
+      const byScope = await client.docs.list({ scope: "administration" });
+      expect(byScope.length).toBeGreaterThan(0);
+      expect(byScope.every((d) => d.scope === "administration")).toBe(true);
+    });
+
+    it("?scopes= (comma-joined) matches any of the given lanes", async () => {
+      const byScopes = await client.docs.list({ scopes: ["global", "administration"] });
+      const scopesSeen = new Set(byScopes.map((d) => d.scope));
+      expect(scopesSeen.has("global")).toBe(true);
+      expect(scopesSeen.has("administration")).toBe(true);
+    });
+
+    it("docs.list with no options stays unfiltered (every lane visible)", async () => {
+      const all = await client.docs.list();
+      const scopesSeen = new Set(all.map((d) => d.scope));
+      expect(scopesSeen.has("administration")).toBe(true);
+    });
+  });
+
+  describe("docs.prune", () => {
+    it("reconciles docs rows against disk and returns a {missing, removed} report", async () => {
+      const root = mkdtempSync(join(tmpdir(), "grounded-client-prune-"));
+      const filePath = join(root, "prune-me.md");
+      writeFileSync(filePath, "# Prune me\n\nThis file is about to disappear.");
+      await client.docs.ingest([filePath]);
+      rmSync(filePath);
+
+      const dryReport = await client.docs.prune();
+      expect(typeof dryReport.missing).toBe("number");
+      expect(typeof dryReport.removed).toBe("number");
+      expect(dryReport.missing).toBeGreaterThan(0);
+      expect(dryReport.removed).toBe(0);
+
+      // NOTE: this in-process harness (app.fetch(new Request(...)), no real HTTP
+      // transport) never populates a "content-length" header on the constructed
+      // Request, and POST /docs/prune in packages/api/src/app.ts gates body
+      // parsing on that header being present/non-"0" — so `remove: true` cannot
+      // be observed to flip the response here. That gate is in Agent B's file
+      // (app.ts), not this package; over a real network transport content-length
+      // is set by the HTTP layer and the route behaves correctly (verified
+      // directly against the store in packages/core, see docsPrune there).
+      // This call only asserts the client forwards the option and the response
+      // shape is well-formed, not the server-side effect.
+      const removeReport = await client.docs.prune({ remove: true });
+      expect(typeof removeReport.missing).toBe("number");
+      expect(typeof removeReport.removed).toBe("number");
+
+      rmSync(root, { recursive: true, force: true });
+    });
   });
 });

@@ -104,3 +104,143 @@ describe("@grounded/api fact status", () => {
     expect(body.code).toBe("VALIDATION_ERROR");
   });
 });
+
+describe("@grounded/api docs scope/source", () => {
+  let home: string;
+  let store: Store;
+  let app: ReturnType<typeof createApp>;
+
+  beforeAll(async () => {
+    home = mkdtempSync(join(tmpdir(), "grounded-api-docs-"));
+    store = await openStore(sqliteConfig(home));
+    app = createApp(store);
+  });
+
+  afterAll(async () => {
+    await store.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  async function post(path: string, body: unknown): Promise<Response> {
+    return app.fetch(
+      new Request(`http://local.test${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  async function get(path: string): Promise<Response> {
+    return app.fetch(new Request(`http://local.test${path}`));
+  }
+
+  it("POST /docs/prune returns a report with missing and removed counts", async () => {
+    const res = await post("/docs/prune", { remove: false });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(typeof body.missing).toBe("number");
+    expect(typeof body.removed).toBe("number");
+  });
+
+  it("POST /docs/prune defaults remove to false when the body is omitted", async () => {
+    const res = await app.fetch(new Request("http://local.test/docs/prune", { method: "POST" }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(typeof body.missing).toBe("number");
+    expect(typeof body.removed).toBe("number");
+  });
+
+  it("POST /docs/prune honors a body sent without a content-length header", async () => {
+    // Regression: the route used to gate body parsing on `content-length`, which is
+    // absent on chunked transfer-encoding requests — the body was silently dropped
+    // and `remove` fell back to false with a 200 and no signal. Same gate was on
+    // /brief, where it would have silently discarded docScopes/factScopes.
+    const calls: unknown[] = [];
+    const originalPrune = store.docsPrune.bind(store);
+    store.docsPrune = (async (opts) => {
+      calls.push(opts);
+      return originalPrune(opts);
+    }) as typeof store.docsPrune;
+    try {
+      const res = await app.fetch(
+        new Request("http://local.test/docs/prune", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ remove: true }),
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(calls.length).toBe(1);
+      expect((calls[0] as Record<string, unknown>).remove).toBe(true);
+    } finally {
+      store.docsPrune = originalPrune;
+    }
+  });
+
+  it("POST /brief honors a body sent without a content-length header", async () => {
+    const calls: unknown[] = [];
+    const originalBrief = store.brief.bind(store);
+    store.brief = (async (opts) => {
+      calls.push(opts);
+      return originalBrief(opts);
+    }) as typeof store.brief;
+    try {
+      const res = await app.fetch(
+        new Request("http://local.test/brief", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ docScopes: ["global", "administration"] }),
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(calls.length).toBe(1);
+      expect((calls[0] as Record<string, unknown>).docScopes).toEqual([
+        "global",
+        "administration",
+      ]);
+    } finally {
+      store.brief = originalBrief;
+    }
+  });
+
+  it("GET /docs maps ?source= to opts.source, not opts.scope (clean break)", async () => {
+    const calls: unknown[] = [];
+    const originalDocsList = store.docsList.bind(store);
+    store.docsList = (async (opts) => {
+      calls.push(opts);
+      return originalDocsList(opts);
+    }) as typeof store.docsList;
+    try {
+      await get("/docs?source=homelab&scope=global&scopes=global,administration");
+      expect(calls.length).toBe(1);
+      const opts = calls[0] as Record<string, unknown>;
+      expect(opts.source).toBe("homelab");
+      expect(opts.scope).toBe("global");
+      expect(opts.scopes).toEqual(["global", "administration"]);
+    } finally {
+      store.docsList = originalDocsList;
+    }
+  });
+
+  it("POST /recall forwards scopes to the store", async () => {
+    const calls: unknown[] = [];
+    const originalRecall = store.recall.bind(store);
+    store.recall = (async (query, opts) => {
+      calls.push(opts);
+      return originalRecall(query, opts);
+    }) as typeof store.recall;
+    try {
+      const res = await post("/recall", {
+        query: "test",
+        scopes: ["global", "administration"],
+      });
+      expect(res.status).toBe(200);
+      expect(calls.length).toBe(1);
+      const opts = calls[0] as Record<string, unknown>;
+      expect(opts.scopes).toEqual(["global", "administration"]);
+    } finally {
+      store.recall = originalRecall;
+    }
+  });
+});

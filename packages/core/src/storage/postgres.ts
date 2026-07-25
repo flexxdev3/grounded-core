@@ -34,7 +34,7 @@ import {
   type FusedItem,
   type LaneHit,
 } from "../engine/recall.js";
-import { assembleBrief, deriveFactScopes } from "../engine/brief.js";
+import { assembleBrief, deriveFactScopes, deriveDocScopes } from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
 import { splitFrontmatter } from "../ingest/frontmatter.js";
@@ -437,6 +437,7 @@ export class PostgresStore implements Store {
       status: String(r.status) as DocStatus,
       kind: (r.kind as string | null) ?? null,
       machine: (r.machine as string | null) ?? null,
+      scope: String(r.scope),
       ingestedAt: new Date(r.ingested_at as string).toISOString(),
     };
   }
@@ -447,12 +448,14 @@ export class PostgresStore implements Store {
       added: 0,
       updated: 0,
       skipped: 0,
+      retagged: 0,
       removed: 0,
       paths: [],
     };
     const source = opts?.source ?? "default";
     const kind = opts?.kind ?? "markdown";
     const machine = opts?.machine ?? null;
+    const scope = opts?.scope ?? "global";
     const dryRun = opts?.dryRun ?? false;
 
     for (const root of rootPaths) {
@@ -480,7 +483,7 @@ export class PostgresStore implements Store {
         const docPath = file.absPath;
 
         const existingRes = await this.pool.query(
-          `select id, chunk_idx, body_hash from ${this.q("docs")} where path = $1`,
+          `select id, chunk_idx, body_hash, source, kind, machine, scope from ${this.q("docs")} where path = $1`,
           [docPath],
         );
         const existingByIdx = new Map<number, Row>();
@@ -492,7 +495,27 @@ export class PostgresStore implements Store {
         for (const chunk of chunks) {
           const prev = existingByIdx.get(chunk.idx);
           if (prev && String(prev.body_hash) === chunk.bodyHash) {
-            report.skipped++;
+            // body unchanged — but the batch tags (source/kind/machine/scope) may
+            // have shifted (e.g. a re-tag ingest to move a tree into a new lane).
+            // Compare and, if any differ, run a tag-only UPDATE (no body/hash/
+            // total_chunks/embedding touched) so retagging an unchanged file is
+            // not a silent no-op.
+            const tagsChanged =
+              String(prev.source) !== source ||
+              String(prev.kind ?? "") !== (kind ?? "") ||
+              String(prev.machine ?? "") !== (machine ?? "") ||
+              String(prev.scope) !== scope;
+            if (tagsChanged) {
+              if (!dryRun) {
+                await this.pool.query(
+                  `update ${this.q("docs")} set source=$1, kind=$2, machine=$3, scope=$4, ingested_at=now() where id=$5`,
+                  [source, kind, machine, scope, Number(prev.id)],
+                );
+              }
+              report.retagged++;
+            } else {
+              report.skipped++;
+            }
             existingByIdx.delete(chunk.idx);
             continue;
           }
@@ -507,15 +530,15 @@ export class PostgresStore implements Store {
           const embSql = emb ? pgvector.toSql(emb) : null;
           if (prev) {
             await this.pool.query(
-              `update ${this.q("docs")} set source=$1, title=$2, body=$3, total_chunks=$4, body_hash=$5, mtime=$6, status='active', kind=$7, machine=$8, ingested_at=now(), embedding=$9 where id=$10`,
-              [source, title, chunk.body, chunks.length, chunk.bodyHash, mtime, kind, machine, embSql, Number(prev.id)],
+              `update ${this.q("docs")} set source=$1, title=$2, body=$3, total_chunks=$4, body_hash=$5, mtime=$6, status='active', kind=$7, machine=$8, scope=$9, ingested_at=now(), embedding=$10 where id=$11`,
+              [source, title, chunk.body, chunks.length, chunk.bodyHash, mtime, kind, machine, scope, embSql, Number(prev.id)],
             );
             report.updated++;
           } else {
             await this.pool.query(
-              `insert into ${this.q("docs")}(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, embedding)
-               values ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,$10,$11)`,
-              [source, docPath, title, chunk.body, chunk.idx, chunks.length, chunk.bodyHash, mtime, kind, machine, embSql],
+              `insert into ${this.q("docs")}(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, scope, embedding)
+               values ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,$10,$11,$12)`,
+              [source, docPath, title, chunk.body, chunk.idx, chunks.length, chunk.bodyHash, mtime, kind, machine, scope, embSql],
             );
             report.added++;
           }
@@ -544,6 +567,17 @@ export class PostgresStore implements Store {
     if (opts?.status) {
       params.push(opts.status);
       where.push(`status = $${params.length}`);
+    }
+    if (opts?.source) {
+      params.push(opts.source);
+      where.push(`source = $${params.length}`);
+    }
+    if (opts?.scopes && opts.scopes.length > 0) {
+      params.push(opts.scopes);
+      where.push(`scope = ANY($${params.length}::text[])`);
+    } else if (opts?.scope) {
+      params.push(opts.scope);
+      where.push(`scope = $${params.length}`);
     }
     if (opts?.documents) where.push("chunk_idx = 0");
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
@@ -643,6 +677,7 @@ export class PostgresStore implements Store {
   private async metaFor(
     sourceType: SourceType,
     ids: number[],
+    docScopes?: string[],
   ): Promise<Map<number, CandidateMeta>> {
     const map = new Map<number, CandidateMeta>();
     if (ids.length === 0) return map;
@@ -675,9 +710,13 @@ export class PostgresStore implements Store {
         });
       }
     } else {
+      // scope-filtered: a lane hit outside the caller's declared scopes must not
+      // survive recall — filtering here (not just demoting) means a lane hit with
+      // no meta entry can be dropped by the caller. Mirrors the facts active-only filter.
+      const scopes = docScopes && docScopes.length > 0 ? docScopes : ["global"];
       const res = await this.pool.query(
-        `select id, status from ${this.q("docs")} where id = any($1)`,
-        [ids],
+        `select id, status from ${this.q("docs")} where id = any($1) and scope = any($2::text[])`,
+        [ids, scopes],
       );
       for (const r of res.rows as Row[]) {
         map.set(Number(r.id), {
@@ -715,11 +754,18 @@ export class PostgresStore implements Store {
       const ids = new Set<number>();
       for (const h of vec) ids.add(h.id);
       for (const h of lex) ids.add(h.id);
-      const meta = await this.metaFor(st, [...ids]);
-      if (st === "fact") {
-        // metaFor already filtered to status='active'; drop any lane hit whose
-        // id has no meta entry (archived) and re-rank so RRF ranks stay dense —
-        // filterSessionVecByProject below is the same idiom for the project filter.
+      // default doc-lane read-set is ['global'] when the caller declares nothing —
+      // this is the leak fix that keeps e.g. an "administration" lane out of the
+      // default engineering recall pool.
+      const docScopes = opts?.scopes && opts.scopes.length > 0 ? opts.scopes : ["global"];
+      const meta = await this.metaFor(st, [...ids], docScopes);
+      if (st === "fact" || st === "doc") {
+        // metaFor already filtered (status='active' for facts, declared scopes for
+        // docs); drop any lane hit whose id has no meta entry and re-rank so RRF
+        // ranks stay dense — filterSessionVecByProject below is the same idiom for
+        // the project filter. Known/accepted: lanes fetch laneN candidates before
+        // this filter, so a query dominated by out-of-scope docs can return fewer
+        // than `limit` in-scope hits.
         vec = vec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
         lex = lex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       }
@@ -831,7 +877,11 @@ export class PostgresStore implements Store {
     let relatedDocs: RecallResult[] = [];
     const hint = o.query ?? o.cwd;
     if (hint) {
-      relatedDocs = await this.recall(hint, { sources: ["doc"], limit: 5 });
+      relatedDocs = await this.recall(hint, {
+        sources: ["doc"],
+        limit: 5,
+        scopes: deriveDocScopes(o),
+      });
     }
     const vision = {
       global: await this.visionGet("global"),

@@ -239,6 +239,214 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       expect(pruned.removed).toBeGreaterThan(0);
     });
 
+    it("docs: ingest with no scope lands rows at scope 'global'", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-scope-default-test-"));
+      writeFileSync(
+        join(dir, "default-scope-doc.md"),
+        "# Default Scope Doc\n\nzzqdefaultscopetoken prose with no explicit scope declared.\n",
+        "utf8",
+      );
+
+      const report = await store.docsIngest([dir], { source: "default-scope-test" });
+      expect(report.added).toBeGreaterThan(0);
+
+      const docs = await store.docsList({ source: "default-scope-test" });
+      expect(docs.length).toBeGreaterThan(0);
+      for (const d of docs) expect(d.scope).toBe("global");
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("docs: recall leak test — an administration-scoped doc is invisible to a caller declaring no scopes", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-scope-leak-test-"));
+      writeFileSync(
+        join(dir, "admin-lane-doc.md"),
+        "# Admin Lane Doc\n\nzzqadminlanetoken money lane pricing positioning client work.\n",
+        "utf8",
+      );
+
+      await store.docsIngest([dir], { source: "scope-leak-test", scope: "administration" });
+
+      // Positive control FIRST: prove the doc landed and is lexically reachable.
+      // Without this the negative assertion below passes just as happily when the
+      // ingest silently failed or the token never matched anything.
+      const scoped = await store.recall("zzqadminlanetoken", {
+        sources: ["doc"],
+        scopes: ["administration"],
+        limit: 10,
+      });
+      expect(scoped.some((r) => r.snippet.includes("zzqadminlanetoken"))).toBe(true);
+
+      const unscoped = await store.recall("zzqadminlanetoken", { sources: ["doc"], limit: 10 });
+      expect(unscoped.some((r) => r.snippet.includes("zzqadminlanetoken"))).toBe(false);
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("docs: recall({scopes}) reaches an off-default lane; declaring both lanes returns both", async () => {
+      const globalDir = mkdtempSync(join(tmpdir(), "grounded-scope-global-test-"));
+      const adminDir = mkdtempSync(join(tmpdir(), "grounded-scope-admin-test-"));
+      writeFileSync(
+        join(globalDir, "global-lane-doc.md"),
+        "# Global Lane Doc\n\nzzqscopematrixtoken engineering corpus prose.\n",
+        "utf8",
+      );
+      writeFileSync(
+        join(adminDir, "admin-lane-doc2.md"),
+        "# Admin Lane Doc Two\n\nzzqscopematrixtoken administration business prose.\n",
+        "utf8",
+      );
+
+      await store.docsIngest([globalDir], { source: "scope-matrix-test" });
+      await store.docsIngest([adminDir], { source: "scope-matrix-test", scope: "administration" });
+
+      const adminOnly = await store.recall("zzqscopematrixtoken", {
+        sources: ["doc"],
+        scopes: ["administration"],
+        limit: 10,
+      });
+      expect(adminOnly.some((r) => r.snippet.includes("zzqscopematrixtoken"))).toBe(true);
+
+      const both = await store.recall("zzqscopematrixtoken", {
+        sources: ["doc"],
+        scopes: ["global", "administration"],
+        limit: 10,
+      });
+      const bothPaths = new Set(
+        both.filter((r) => r.sourceType === "doc").map((r) => r.citation),
+      );
+      expect(both.length).toBeGreaterThanOrEqual(2);
+      expect(bothPaths.size).toBeGreaterThanOrEqual(2);
+
+      rmSync(globalDir, { recursive: true, force: true });
+      rmSync(adminDir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("docs: re-ingesting unchanged files with a different scope runs a tag-only retag, not an update", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-retag-test-"));
+      writeFileSync(
+        join(dir, "retag-doc.md"),
+        "# Retag Doc\n\nzzqretagtoken content that never changes across re-ingests.\n",
+        "utf8",
+      );
+
+      const first = await store.docsIngest([dir], { source: "retag-test" });
+      expect(first.added).toBeGreaterThan(0);
+
+      const before = await store.docsList({ source: "retag-test" });
+      const hashBefore = new Map(before.map((d) => [d.id, d.bodyHash]));
+
+      const second = await store.docsIngest([dir], {
+        source: "retag-test",
+        scope: "administration",
+      });
+      expect(second.retagged).toBeGreaterThan(0);
+      expect(second.updated).toBe(0);
+      expect(second.added).toBe(0);
+
+      const after = await store.docsList({ source: "retag-test" });
+      expect(after.length).toBe(before.length);
+      for (const d of after) {
+        expect(d.scope).toBe("administration");
+        expect(d.bodyHash).toBe(hashBefore.get(d.id));
+      }
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("docs: dryRun reports retagged without mutating any row", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-retag-dryrun-test-"));
+      writeFileSync(
+        join(dir, "retag-dryrun-doc.md"),
+        "# Retag Dryrun Doc\n\nzzqretagdryruntoken stable content for dry-run retag check.\n",
+        "utf8",
+      );
+
+      await store.docsIngest([dir], { source: "retag-dryrun-test" });
+      const before = await store.docsList({ source: "retag-dryrun-test" });
+      const scopeBefore = before.map((d) => d.scope);
+      expect(scopeBefore.every((s) => s === "global")).toBe(true);
+
+      const dry = await store.docsIngest([dir], {
+        source: "retag-dryrun-test",
+        scope: "administration",
+        dryRun: true,
+      });
+      expect(dry.retagged).toBeGreaterThan(0);
+
+      const after = await store.docsList({ source: "retag-dryrun-test" });
+      for (const d of after) expect(d.scope).toBe("global");
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("brief: related-docs excludes off-scope docs by default, includes them via docScopes", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-brief-scope-test-"));
+      writeFileSync(
+        join(dir, "brief-admin-doc.md"),
+        "# Brief Admin Doc\n\nzzqbriefscopetoken money lane pricing positioning client work.\n",
+        "utf8",
+      );
+      await store.docsIngest([dir], { source: "brief-scope-test", scope: "administration" });
+
+      const defaultBrief = await store.brief({
+        query: "zzqbriefscopetoken money lane pricing positioning client work",
+        format: "markdown",
+      });
+      expect(defaultBrief.text).not.toContain("zzqbriefscopetoken");
+
+      const scopedBrief = await store.brief({
+        query: "zzqbriefscopetoken money lane pricing positioning client work",
+        docScopes: ["global", "administration"],
+        format: "markdown",
+      });
+      expect(scopedBrief.text).toContain("zzqbriefscopetoken");
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("docsList: source and scope filter independently; no options returns every lane", async () => {
+      const dirA = mkdtempSync(join(tmpdir(), "grounded-list-a-test-"));
+      const dirB = mkdtempSync(join(tmpdir(), "grounded-list-b-test-"));
+      writeFileSync(
+        join(dirA, "list-a-doc.md"),
+        "# List A Doc\n\nzzqlistfiltertoken lane-a content.\n",
+        "utf8",
+      );
+      writeFileSync(
+        join(dirB, "list-b-doc.md"),
+        "# List B Doc\n\nzzqlistfiltertoken lane-b content.\n",
+        "utf8",
+      );
+
+      await store.docsIngest([dirA], { source: "list-source-a", scope: "global" });
+      await store.docsIngest([dirB], { source: "list-source-b", scope: "administration" });
+
+      const bySource = await store.docsList({ source: "list-source-a" });
+      expect(bySource.length).toBeGreaterThan(0);
+      expect(bySource.every((d) => d.source === "list-source-a")).toBe(true);
+
+      const byScope = await store.docsList({ scope: "administration" });
+      expect(byScope.length).toBeGreaterThan(0);
+      expect(byScope.every((d) => d.scope === "administration")).toBe(true);
+      expect(byScope.some((d) => d.source === "list-source-b")).toBe(true);
+
+      const unfiltered = await store.docsList();
+      const unfilteredSources = new Set(unfiltered.map((d) => d.source));
+      expect(unfilteredSources.has("list-source-a")).toBe(true);
+      expect(unfilteredSources.has("list-source-b")).toBe(true);
+
+      rmSync(dirA, { recursive: true, force: true });
+      rmSync(dirB, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
     it("recall: lexical-only returns cited cards, facts before docs, no private", async () => {
       await store.factsAdd({
         fact: "recall fuses vector and lexical lanes with RRF",
@@ -326,6 +534,33 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
     it("docsPrune marks missing nothing when files present", async () => {
       const res = await store.docsPrune();
       expect(res.missing).toBe(0);
+    });
+
+    it("docsPrune with remove:true deletes rows for a file removed from disk", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-prune-remove-test-"));
+      writeFileSync(
+        join(dir, "prune-remove-doc.md"),
+        "# Prune Remove Doc\n\nzzqpruneremovetoken content to be deleted from disk.\n",
+        "utf8",
+      );
+
+      const report = await store.docsIngest([dir], { source: "prune-remove-test" });
+      expect(report.added).toBeGreaterThan(0);
+
+      const before = await store.docsList({ source: "prune-remove-test" });
+      expect(before.length).toBeGreaterThan(0);
+
+      // delete the file itself, not the tmp dir, so the path the row stores
+      // is unambiguously gone but the parent dir still exists for cleanup.
+      rmSync(join(dir, "prune-remove-doc.md"));
+
+      const pruned = await store.docsPrune({ remove: true });
+      expect(pruned.removed).toBeGreaterThanOrEqual(before.length);
+
+      const after = await store.docsList({ source: "prune-remove-test" });
+      expect(after.length).toBe(0);
+
+      rmSync(dir, { recursive: true, force: true });
     });
 
     it("vision: set / get / one record per scope, edited in place", async () => {

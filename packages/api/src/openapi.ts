@@ -134,6 +134,7 @@ export const openApiDocument = {
           "totalChunks",
           "bodyHash",
           "status",
+          "scope",
           "ingestedAt",
         ],
         properties: {
@@ -149,6 +150,11 @@ export const openApiDocument = {
           status: { type: "string", enum: ["active", "archived", "missing"] },
           kind: { type: ["string", "null"] },
           machine: { type: ["string", "null"] },
+          scope: {
+            type: "string",
+            description:
+              'Lane, e.g. "global" | "administration". Batch-level only. Routing, not enforcement — self-host runs one static bearer token and scopes are self-declared by the caller.',
+          },
           ingestedAt: { type: "string" },
         },
       },
@@ -172,14 +178,27 @@ export const openApiDocument = {
       },
       IngestReport: {
         type: "object",
-        required: ["scanned", "added", "updated", "skipped", "removed", "paths"],
+        required: ["scanned", "added", "updated", "skipped", "retagged", "removed", "paths"],
         properties: {
           scanned: { type: "integer" },
           added: { type: "integer" },
           updated: { type: "integer" },
           skipped: { type: "integer" },
+          retagged: {
+            type: "integer",
+            description:
+              "Batch tags (source/kind/machine/scope) changed on an otherwise-unchanged chunk: a tag-only update ran, touching neither body, body_hash, total_chunks, nor embedding.",
+          },
           removed: { type: "integer" },
           paths: { type: "array", items: { type: "string" } },
+        },
+      },
+      DocsPruneReport: {
+        type: "object",
+        required: ["missing", "removed"],
+        properties: {
+          missing: { type: "integer" },
+          removed: { type: "integer" },
         },
       },
       BriefResult: {
@@ -433,6 +452,8 @@ export const openApiDocument = {
     "/docs/ingest": {
       post: {
         summary: "Ingest docs from paths",
+        description:
+          'Batch tags apply to every chunk scanned in this call. "scope" is the lane (e.g. "global" | "administration") — routing, not enforcement; the caller self-declares it.',
         requestBody: {
           required: true,
           content: {
@@ -444,6 +465,8 @@ export const openApiDocument = {
                   paths: { type: "array", items: { type: "string" } },
                   source: { type: "string" },
                   kind: { type: "string" },
+                  machine: { type: "string" },
+                  scope: { type: "string", description: 'Lane, defaults to "global".' },
                   dryRun: { type: "boolean" },
                 },
               },
@@ -458,11 +481,46 @@ export const openApiDocument = {
         },
       },
     },
+    "/docs/prune": {
+      post: {
+        summary: "Reconcile docs against the filesystem",
+        description:
+          'For each distinct path with no file on disk: marks status="missing" (default), or with remove:true deletes every chunk row for that path.',
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  remove: { type: "boolean", default: false },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Prune report",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/DocsPruneReport" } } },
+          },
+        },
+      },
+    },
     "/docs": {
       get: {
         summary: "List docs",
+        description:
+          '"source" filters by logical source/collection. "scope"/"scopes" filter by lane (unfiltered by default — docsList always returns every lane, unlike recall/brief).',
         parameters: [
           { name: "source", in: "query", schema: { type: "string" } },
+          { name: "scope", in: "query", schema: { type: "string" } },
+          {
+            name: "scopes",
+            in: "query",
+            description: "Comma-separated list of lanes (OR match).",
+            schema: { type: "string" },
+          },
           { name: "limit", in: "query", schema: { type: "integer" } },
           { name: "offset", in: "query", schema: { type: "integer" } },
         ],
@@ -513,6 +571,12 @@ export const openApiDocument = {
                     items: { type: "string", enum: ["fact", "session", "doc"] },
                   },
                   lexicalOnly: { type: "boolean" },
+                  scopes: {
+                    type: "array",
+                    items: { type: "string" },
+                    description:
+                      'Doc-lane filter (OR match). Defaults to ["global"] when omitted, so callers that declare nothing never see non-global lanes (e.g. "administration"). Routing, not enforcement — self-declared by the caller.',
+                  },
                 },
               },
             },
@@ -546,6 +610,13 @@ export const openApiDocument = {
                   cwd: { type: "string" },
                   query: { type: "string" },
                   recentSessions: { type: "integer" },
+                  factScopes: { type: "array", items: { type: "string" } },
+                  docScopes: {
+                    type: "array",
+                    items: { type: "string" },
+                    description:
+                      'Explicit doc-lane set for the related-docs recall call, e.g. ["global","administration"]. Explicit-only — no agent/project/machine derivation. Defaults to ["global"] when omitted/empty.',
+                  },
                   format: { type: "string", enum: ["markdown", "json"] },
                 },
               },

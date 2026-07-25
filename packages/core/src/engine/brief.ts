@@ -32,6 +32,19 @@ export function deriveFactScopes(opts: BriefOptions): string[] {
   return [...new Set(scopes)];
 }
 
+/**
+ * The doc-lane scope set the brief's related-docs recall call reads from.
+ * Explicit-only — unlike `deriveFactScopes`, there is no agent/project/machine
+ * derivation. Returns the deduped `opts.docScopes` when non-empty, else the
+ * default `['global']`.
+ */
+export function deriveDocScopes(opts: BriefOptions): string[] {
+  if (opts.docScopes && opts.docScopes.length > 0) {
+    return [...new Set(opts.docScopes)];
+  }
+  return ["global"];
+}
+
 /** The fixed line that makes vision applied, not just present. */
 const VISION_APPLY_NOTE =
   "Apply this: flag any plan, play, or design that conflicts with the vision before executing it.";

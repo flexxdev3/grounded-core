@@ -49,7 +49,16 @@ export class GroundedHttpError extends Error {
 
 export interface GroundedClient {
   health(): Promise<HealthReport>;
+  /**
+   * `opts.scopes` filters the doc lane (match any, OR); defaults to
+   * `['global']` when omitted so callers that declare nothing never see
+   * non-global lanes (e.g. "administration") in results.
+   */
   recall(query: string, opts?: RecallOptions): Promise<RecallResult[]>;
+  /**
+   * `opts.docScopes` sets the explicit doc-lane scope set for the
+   * related-docs recall call (defaults to `['global']` when omitted/empty).
+   */
   brief(opts?: BriefOptions): Promise<BriefResult>;
   /** Fetch a full record by typed id, e.g. "fact:27" / "session:274" / "doc:1091". */
   get(typedId: TypedId): Promise<FullRecord>;
@@ -72,11 +81,27 @@ export interface GroundedClient {
     get(id: number): Promise<Session>;
   };
   docs: {
-    /** `opts.scope` filters by source (maps to the API's `source` query). */
+    /**
+     * `opts.source` filters by logical source/collection (e.g. "homelab" |
+     * "repo:grounded"). `opts.scope`/`opts.scopes` filter by lane instead —
+     * distinct from `source`, unfiltered by default so the console can still
+     * browse every lane.
+     */
     list(opts?: ListOptions): Promise<Doc[]>;
     get(id: number): Promise<Doc>;
-    /** Ingest/re-ingest files or directories; returns the change report. */
+    /**
+     * Ingest/re-ingest files or directories; returns the change report.
+     * `opts.scope` tags every chunk in this batch with a lane (default
+     * `"global"`); `opts.machine` and `opts.kind` are forwarded as-is.
+     */
     ingest(paths: string[], opts?: IngestOptions): Promise<IngestReport>;
+    /**
+     * Reconcile docs rows against disk: files under a previously-ingested
+     * path that no longer exist are marked `status: "missing"`, or deleted
+     * outright when `remove: true`. `IngestReport.removed` is a different,
+     * unrelated counter — this is the disk-reconciliation signal.
+     */
+    prune(opts?: { remove?: boolean }): Promise<{ missing: number; removed: number }>;
   };
 }
 
@@ -152,10 +177,19 @@ export function createClient(options: ClientOptions): GroundedClient {
       list: (opts = {}) =>
         request<Doc[]>(
           "GET",
-          `/docs${qs({ source: opts.scope, limit: opts.limit, offset: opts.offset, documents: opts.documents ? "true" : undefined })}`,
+          `/docs${qs({
+            source: opts.source,
+            scope: opts.scope,
+            scopes: opts.scopes?.length ? opts.scopes.join(",") : undefined,
+            limit: opts.limit,
+            offset: opts.offset,
+            documents: opts.documents ? "true" : undefined,
+          })}`,
         ),
       get: (id) => request<Doc>("GET", `/docs/${id}`),
       ingest: (paths, opts = {}) => request<IngestReport>("POST", "/docs/ingest", { paths, ...opts }),
+      prune: (opts = {}) =>
+        request<{ missing: number; removed: number }>("POST", "/docs/prune", opts),
     },
   };
 }
