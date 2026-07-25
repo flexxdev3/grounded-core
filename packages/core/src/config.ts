@@ -39,6 +39,12 @@ export function defaultConfig(home?: string): GroundedConfig {
       chunkChars: 1200,
       chunkOverlap: 150,
     },
+    brief: {
+      reserve: { vision: 400, facts: 900, sessions: 500 },
+    },
+    delivery: {
+      typicalFactLimit: 8,
+    },
   };
 }
 

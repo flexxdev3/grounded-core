@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import type { Session, SessionInput } from "@grounded/core/contract";
+import type { Session, SessionInput, ListResult } from "@grounded/core/contract";
 import { api, errMessage } from "../api.js";
 import { useAsync, useDataVersion, toast, bumpData } from "../hooks.js";
 import { useApp } from "../app.js";
@@ -11,12 +11,12 @@ export function SessionsView() {
   const { openRecord, project } = useApp();
   const version = useDataVersion();
   const [adding, setAdding] = useState(false);
-  const { data, loading, error } = useAsync<Session[]>(
+  const { data, loading, error } = useAsync<ListResult<Session>>(
     () => api.sessions.list({ project: project ?? undefined, limit: 200 }),
     [version, project],
   );
 
-  const sessions = data ?? [];
+  const sessions = data?.data ?? [];
   // group by day for the timeline
   const groups = new Map<string, Session[]>();
   for (const s of sessions) {

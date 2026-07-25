@@ -72,7 +72,8 @@ alter table "${s}".docs add column if not exists scope text not null default 'gl
 create table if not exists "${s}".vision (
   id bigint generated always as identity primary key,
   scope text not null default 'global',
-  content text not null,
+  details text not null,
+  summary text,
   created_by text,
   source text,
   created_at timestamptz not null default now(),
@@ -84,10 +85,27 @@ create table if not exists "${s}".vision (
 drop index if exists "${s}".idx_vision_active;
 alter table "${s}".vision drop column if exists status;
 
+-- summary/details split: cabinets created before this column existed have a
+-- content column instead of details. alter table rename column has no
+-- IF EXISTS for the source side, so guard it. Non-destructive: renames data
+-- in place, never drops it; summary is added nullable so existing rows keep
+-- working via the details-truncation fallback (engine/brief.ts).
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = '${s}' and table_name = 'vision' and column_name = 'content'
+  ) then
+    alter table "${s}".vision rename column content to details;
+  end if;
+end $$;
+alter table "${s}".vision add column if not exists summary text;
+
 create unique index if not exists idx_docs_path_chunk on "${s}".docs(path, chunk_idx);
 create unique index if not exists idx_vision_scope on "${s}".vision(scope);
 create index if not exists idx_facts_status on "${s}".facts(status);
 create index if not exists idx_facts_scope on "${s}".facts(scope);
+create index if not exists idx_facts_rank on "${s}".facts(scope, status, pinned desc, importance desc, updated_at desc);
 create index if not exists idx_sessions_project on "${s}".sessions(project);
 create index if not exists idx_sessions_created on "${s}".sessions(created_at);
 create index if not exists idx_docs_status on "${s}".docs(status);

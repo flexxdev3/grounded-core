@@ -8,7 +8,9 @@ import { createServer } from "./server.js";
 async function main(): Promise<void> {
   const config = loadConfig();
   const store = await openStore(config);
-  const server = createServer(store);
+  const server = createServer(store, {
+    typicalFactLimit: config.delivery.typicalFactLimit,
+  });
 
   const portRaw = process.env["GROUNDED_MCP_HTTP_PORT"];
   if (portRaw !== undefined && portRaw !== "") {

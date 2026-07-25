@@ -10,6 +10,11 @@ export interface StartServerOptions {
   host?: string;
   /** serve the built console UI (default: true when @grounded/ui is present). */
   ui?: boolean;
+  /** `cfg.delivery.typicalFactLimit` — the rank threshold the fact-write routes
+   *  use to decide whether a new fact warrants a "you will not be seen" warning.
+   *  Threaded from the resolved config by the bin; omitting it falls back to the
+   *  shipped default rather than silently disabling the signal. */
+  typicalFactLimit?: number;
 }
 
 export interface RunningServer {
@@ -22,7 +27,12 @@ export interface RunningServer {
 /** Boot grounded-api on a real port. Shared by the `grounded-api` bin and
  *  `ground ui`. Serves the console from the same origin unless disabled. */
 export function startServer(opts: StartServerOptions): Promise<RunningServer> {
-  const app = createApp(opts.store, opts.token ? { token: opts.token } : {});
+  const app = createApp(opts.store, {
+    ...(opts.token ? { token: opts.token } : {}),
+    ...(opts.typicalFactLimit !== undefined
+      ? { typicalFactLimit: opts.typicalFactLimit }
+      : {}),
+  });
 
   const distDir = opts.ui === false ? null : resolveUiDist();
   if (distDir) serveUi(app, distDir);

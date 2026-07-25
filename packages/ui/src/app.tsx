@@ -1,6 +1,6 @@
 import { createContext } from "preact";
 import { useContext, useEffect, useState } from "preact/hooks";
-import type { TypedId, SourceType, Session } from "@grounded/core/contract";
+import type { TypedId, SourceType, Session, ListResult } from "@grounded/core/contract";
 import { api } from "./api.js";
 import {
   IconOverview,
@@ -95,10 +95,10 @@ export function App() {
     let live = true;
     api.sessions
       .list({ limit: 300 })
-      .then((rows: Session[]) => {
+      .then((res: ListResult<Session>) => {
         if (!live) return;
         const seen: string[] = [];
-        for (const s of rows) {
+        for (const s of res.data) {
           const p = s.project?.trim();
           if (p && !seen.includes(p)) seen.push(p);
         }

@@ -1,5 +1,5 @@
 import { useEffect } from "preact/hooks";
-import type { HealthReport, Fact } from "@grounded/core/contract";
+import type { HealthReport, Fact, ListResult } from "@grounded/core/contract";
 import { api } from "../api.js";
 import { useAsync, useDataVersion } from "../hooks.js";
 import { useApp } from "../app.js";
@@ -8,7 +8,7 @@ export function OverviewView({ onAdapter }: { onAdapter: (a: string) => void }) 
   const { navigate, setCounts, project } = useApp();
   const version = useDataVersion();
   const health = useAsync<HealthReport>(() => api.health(), [version]);
-  const facts = useAsync<Fact[]>(() => api.facts.list({ limit: 200 }), [version]);
+  const facts = useAsync<ListResult<Fact>>(() => api.facts.list({ limit: 200 }), [version]);
 
   const h = health.data;
   useEffect(() => {
@@ -17,7 +17,7 @@ export function OverviewView({ onAdapter }: { onAdapter: (a: string) => void }) 
       onAdapter(h.storage.adapter);
     }
   }, [h]);
-  const pinned = (facts.data ?? []).filter((f) => f.pinned).length;
+  const pinned = (facts.data?.data ?? []).filter((f) => f.pinned).length;
 
   const cards: { key: string; num: string | number; label: string; sub: string; view: Parameters<typeof navigate>[0] }[] = [
     { key: "facts", num: h?.counts.facts ?? "—", label: "Facts", sub: `${pinned} pinned`, view: "facts" },

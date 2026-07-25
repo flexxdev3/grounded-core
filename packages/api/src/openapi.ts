@@ -69,13 +69,37 @@ export const openApiDocument = {
           source: { type: "string" },
         },
       },
+      DeliveryRank: {
+        type: "object",
+        description:
+          "Write-time delivery signal for a fact: where it lands in factsList's own ordering right now. Omitted entirely on the write response when the fact is archived (no delivery position to report) rather than inventing a rank.",
+        required: ["rank", "ofActive", "delivered"],
+        properties: {
+          rank: { type: "integer", description: "1-based position within active facts in this scope." },
+          ofActive: { type: "integer", description: "count of active facts in this scope." },
+          delivered: {
+            type: "boolean",
+            description: "true when rank is at or below delivery.typicalFactLimit.",
+          },
+          warning: {
+            type: "string",
+            description:
+              'Present only when delivered is false, e.g. "rank 23 of 23 — most consumers request the top 8".',
+          },
+        },
+      },
       Vision: {
         type: "object",
-        required: ["id", "scope", "content", "createdAt", "updatedAt"],
+        required: ["id", "scope", "summary", "details", "createdAt", "updatedAt"],
         properties: {
           id: { type: "integer" },
           scope: { type: "string", description: '"global" or "project:<name>"' },
-          content: { type: "string", description: "narrative markdown" },
+          summary: {
+            type: ["string", "null"],
+            description:
+              "Short form injected at SessionStart. Never recalled. Null falls back to truncated `details` for injection (pre-migration rows).",
+          },
+          details: { type: "string", description: "narrative markdown. Recalled; never injected." },
           createdBy: { type: ["string", "null"] },
           source: { type: ["string", "null"] },
           createdAt: { type: "string" },
@@ -84,9 +108,14 @@ export const openApiDocument = {
       },
       VisionInput: {
         type: "object",
-        required: ["content"],
+        required: ["details"],
         properties: {
-          content: { type: "string" },
+          details: { type: "string", description: "narrative markdown. Recalled; never injected." },
+          summary: {
+            type: "string",
+            description:
+              "Short form injected at SessionStart. Never recalled. Omitted falls back to truncated `details` for injection.",
+          },
           scope: { type: "string" },
           createdBy: { type: "string" },
           source: { type: "string" },
@@ -158,6 +187,44 @@ export const openApiDocument = {
           ingestedAt: { type: "string" },
         },
       },
+      DeliveryMeta: {
+        type: "object",
+        description:
+          "Delivery accounting for a list-shaped response: not just what was stored, but what actually reached the caller. `available` is a real computed count, never derived from data.length.",
+        required: ["returned", "available", "truncated", "limit"],
+        properties: {
+          returned: { type: "integer", description: "rows in this response's data array." },
+          available: {
+            type: "integer",
+            description:
+              "rows that matched before limit/offset/source-cap. For /recall, a saturated candidate lane makes this a documented floor (see truncated).",
+          },
+          truncated: {
+            type: "boolean",
+            description:
+              "returned < available, OR the candidate fetch itself was capped before available could be computed exactly — i.e. there may be more than available, not just more than returned.",
+          },
+          limit: { type: ["integer", "null"] },
+          bySource: {
+            type: "object",
+            description: "POST /recall only: per-source-type breakdown.",
+            properties: {
+              fact: { $ref: "#/components/schemas/DeliveryMetaBySourceEntry" },
+              session: { $ref: "#/components/schemas/DeliveryMetaBySourceEntry" },
+              doc: { $ref: "#/components/schemas/DeliveryMetaBySourceEntry" },
+            },
+          },
+        },
+      },
+      DeliveryMetaBySourceEntry: {
+        type: "object",
+        required: ["returned", "available", "truncated"],
+        properties: {
+          returned: { type: "integer" },
+          available: { type: "integer" },
+          truncated: { type: "boolean" },
+        },
+      },
       RecallResult: {
         type: "object",
         required: ["sourceType", "id", "typedId", "title", "score", "matchedBy", "citation", "snippet"],
@@ -203,7 +270,7 @@ export const openApiDocument = {
       },
       BriefResult: {
         type: "object",
-        required: ["startupNote", "vision", "recentSessions", "facts", "relatedDocs"],
+        required: ["startupNote", "vision", "recentSessions", "facts", "relatedDocs", "meta", "droppedItems"],
         properties: {
           startupNote: { type: "string" },
           vision: {
@@ -216,6 +283,23 @@ export const openApiDocument = {
           recentSessions: { type: "array", items: { $ref: "#/components/schemas/Session" } },
           facts: { type: "array", items: { $ref: "#/components/schemas/Fact" } },
           relatedDocs: { type: "array", items: { $ref: "#/components/schemas/RecallResult" } },
+          meta: {
+            type: "object",
+            description:
+              "Delivery accounting per reserved brief lane. `vision` is measured in CHARS, never items — there is no vision arm in sourceType/typedId, so vision can never appear in droppedItems. `facts`/`sessions` are measured in items, truncated by the brief.reserve.* token (chars÷4) budgets. relatedDocs deliberately has no reserve and no meta key here — it is already bounded by limit:5 + the 200-char snippet cap.",
+            required: ["vision", "facts", "sessions"],
+            properties: {
+              vision: { $ref: "#/components/schemas/DeliveryMeta" },
+              facts: { $ref: "#/components/schemas/DeliveryMeta" },
+              sessions: { $ref: "#/components/schemas/DeliveryMeta" },
+            },
+          },
+          droppedItems: {
+            type: "array",
+            description:
+              'Typed ids ("fact:19", "session:274") of facts/sessions dropped by their lane\'s reserve, in drop order. Never includes vision or relatedDocs. Each id resolves via GET /get/{typedId}.',
+            items: { type: "string" },
+          },
           text: { type: "string" },
         },
       },
@@ -301,10 +385,17 @@ export const openApiDocument = {
         ],
         responses: {
           "200": {
-            description: "Facts",
+            description: "Facts, with delivery accounting for what was actually returned vs what matched.",
             content: {
               "application/json": {
-                schema: { type: "array", items: { $ref: "#/components/schemas/Fact" } },
+                schema: {
+                  type: "object",
+                  required: ["data", "meta"],
+                  properties: {
+                    data: { type: "array", items: { $ref: "#/components/schemas/Fact" } },
+                    meta: { $ref: "#/components/schemas/DeliveryMeta" },
+                  },
+                },
               },
             },
           },
@@ -318,8 +409,21 @@ export const openApiDocument = {
         },
         responses: {
           "201": {
-            description: "Created fact",
-            content: { "application/json": { schema: { $ref: "#/components/schemas/Fact" } } },
+            description:
+              "Created fact, plus its write-time delivery rank. `delivery` is present on every write since a fresh fact is never archived.",
+            content: {
+              "application/json": {
+                schema: {
+                  allOf: [
+                    { $ref: "#/components/schemas/Fact" },
+                    {
+                      type: "object",
+                      properties: { delivery: { $ref: "#/components/schemas/DeliveryRank" } },
+                    },
+                  ],
+                },
+              },
+            },
           },
         },
       },
@@ -334,8 +438,21 @@ export const openApiDocument = {
         },
         responses: {
           "200": {
-            description: "Updated fact",
-            content: { "application/json": { schema: { $ref: "#/components/schemas/Fact" } } },
+            description:
+              "Updated fact, plus its write-time delivery rank. `delivery` is omitted (not a zero rank) when the patch archived the fact — an archived fact has no delivery position.",
+            content: {
+              "application/json": {
+                schema: {
+                  allOf: [
+                    { $ref: "#/components/schemas/Fact" },
+                    {
+                      type: "object",
+                      properties: { delivery: { $ref: "#/components/schemas/DeliveryRank" } },
+                    },
+                  ],
+                },
+              },
+            },
           },
           "404": {
             description: "Not found",
@@ -368,7 +485,14 @@ export const openApiDocument = {
             description: "Vision records",
             content: {
               "application/json": {
-                schema: { type: "array", items: { $ref: "#/components/schemas/Vision" } },
+                schema: {
+                  type: "object",
+                  required: ["data", "meta"],
+                  properties: {
+                    data: { type: "array", items: { $ref: "#/components/schemas/Vision" } },
+                    meta: { $ref: "#/components/schemas/DeliveryMeta" },
+                  },
+                },
               },
             },
           },
@@ -413,7 +537,14 @@ export const openApiDocument = {
             description: "Sessions",
             content: {
               "application/json": {
-                schema: { type: "array", items: { $ref: "#/components/schemas/Session" } },
+                schema: {
+                  type: "object",
+                  required: ["data", "meta"],
+                  properties: {
+                    data: { type: "array", items: { $ref: "#/components/schemas/Session" } },
+                    meta: { $ref: "#/components/schemas/DeliveryMeta" },
+                  },
+                },
               },
             },
           },
@@ -529,7 +660,14 @@ export const openApiDocument = {
             description: "Docs",
             content: {
               "application/json": {
-                schema: { type: "array", items: { $ref: "#/components/schemas/Doc" } },
+                schema: {
+                  type: "object",
+                  required: ["data", "meta"],
+                  properties: {
+                    data: { type: "array", items: { $ref: "#/components/schemas/Doc" } },
+                    meta: { $ref: "#/components/schemas/DeliveryMeta" },
+                  },
+                },
               },
             },
           },
@@ -584,10 +722,18 @@ export const openApiDocument = {
         },
         responses: {
           "200": {
-            description: "Recall result cards",
+            description:
+              "Recall result cards, plus delivery accounting including a per-source-type breakdown (meta.bySource).",
             content: {
               "application/json": {
-                schema: { type: "array", items: { $ref: "#/components/schemas/RecallResult" } },
+                schema: {
+                  type: "object",
+                  required: ["data", "meta"],
+                  properties: {
+                    data: { type: "array", items: { $ref: "#/components/schemas/RecallResult" } },
+                    meta: { $ref: "#/components/schemas/DeliveryMeta" },
+                  },
+                },
               },
             },
           },

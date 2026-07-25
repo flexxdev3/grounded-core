@@ -52,7 +52,14 @@ create table if not exists docs (
 create table if not exists vision (
   id integer primary key autoincrement,
   scope text not null default 'global',
-  content text not null,
+  -- narrative markdown; recalled, never injected. Named 'details' from the
+  -- start for cabinets created after the summary/details split (stage 2).
+  -- Cabinets created before the split have a 'content' column instead --
+  -- see migrateVisionSummarySplit() below, which renames it non-destructively.
+  details text not null,
+  -- short form injected at SessionStart; never recalled. Nullable -- falls
+  -- back to truncated 'details' for injection when unset.
+  summary text,
   created_by text,
   source text,
   created_at text not null,
@@ -62,6 +69,7 @@ create table if not exists vision (
 create index if not exists idx_facts_status on facts(status);
 create index if not exists idx_facts_scope on facts(scope);
 create index if not exists idx_facts_topic on facts(topic_key);
+create index if not exists idx_facts_rank on facts(scope, status, pinned desc, importance desc, updated_at desc);
 create index if not exists idx_sessions_project on sessions(project);
 create index if not exists idx_sessions_created on sessions(created_at);
 create index if not exists idx_docs_path on docs(path);

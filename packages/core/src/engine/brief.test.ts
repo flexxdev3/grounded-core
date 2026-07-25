@@ -47,7 +47,7 @@ describe("brief: renders bodies, not just headings", () => {
     });
 
     await store.docsIngest([EXAMPLES], { source: "examples" });
-    const docs = await store.docsList();
+    const docs = (await store.docsList()).data;
     const seedDoc = docs[0]!;
 
     const brief = await store.brief({

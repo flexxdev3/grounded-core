@@ -7,6 +7,7 @@ import { StoreError } from "../contract.js";
 import type {
   BriefOptions,
   BriefResult,
+  DeliveryMeta,
   Doc,
   DocStatus,
   EmbeddingProvider,
@@ -19,6 +20,7 @@ import type {
   IngestOptions,
   IngestReport,
   ListOptions,
+  ListResult,
   RecallOptions,
   RecallResult,
   Session,
@@ -87,6 +89,7 @@ export class SqliteStore implements Store {
     this.db.exec(SQLITE_FTS);
     this.migrateDropVisionStatus();
     this.migrateAddDocsScope();
+    this.migrateVisionSummarySplit();
 
     if (this.embedder.enabled) {
       try {
@@ -130,6 +133,28 @@ export class SqliteStore implements Store {
       `alter table docs add column scope text not null default 'global';
        create index if not exists idx_docs_scope on docs(scope);`,
     );
+  }
+
+  /**
+   * One-shot migration for cabinets created before the vision summary/details
+   * split (stage 2): rename `content` -> `details`, then separately add a
+   * nullable `summary` column if absent. Non-destructive — never drops data,
+   * never deletes a row. `alter table ... rename column` requires SQLite
+   * >= 3.25; better-sqlite3 bundles a modern build so this is safe.
+   */
+  private migrateVisionSummarySplit(): void {
+    const hasContent = this.db
+      .prepare(`select 1 from pragma_table_info('vision') where name = 'content'`)
+      .get();
+    if (hasContent) {
+      this.db.exec(`alter table vision rename column content to details;`);
+    }
+    const hasSummary = this.db
+      .prepare(`select 1 from pragma_table_info('vision') where name = 'summary'`)
+      .get();
+    if (!hasSummary) {
+      this.db.exec(`alter table vision add column summary text;`);
+    }
   }
 
   private vectorActive(): boolean {
@@ -217,7 +242,7 @@ export class SqliteStore implements Store {
     return fact;
   }
 
-  async factsList(opts?: ListOptions): Promise<Fact[]> {
+  async factsList(opts?: ListOptions): Promise<ListResult<Fact>> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts?.status) {
@@ -239,7 +264,17 @@ export class SqliteStore implements Store {
         `select * from facts ${whereSql} order by pinned desc, importance desc, updated_at desc limit ? offset ?`,
       )
       .all(...params, limit, offset) as Row[];
-    return rows.map((r) => this.rowToFact(r));
+    const available = Number(
+      (this.db.prepare(`select count(*) as c from facts ${whereSql}`).get(...params) as Row).c,
+    );
+    const returned = rows.length;
+    const meta: DeliveryMeta = {
+      returned,
+      available,
+      truncated: offset + returned < available,
+      limit,
+    };
+    return { data: rows.map((r) => this.rowToFact(r)), meta };
   }
 
   async factsGet(id: number): Promise<Fact | null> {
@@ -272,6 +307,7 @@ export class SqliteStore implements Store {
       importance: patch.importance !== undefined ? patch.importance : existing.importance,
       status: patch.status !== undefined ? patch.status : existing.status,
       source: patch.source !== undefined ? patch.source : existing.source,
+      createdBy: patch.createdBy !== undefined ? patch.createdBy : existing.createdBy,
     };
     const textChanged = next.fact !== existing.fact || (next.detail ?? "") !== (existing.detail ?? "");
     if (textChanged) {
@@ -283,7 +319,7 @@ export class SqliteStore implements Store {
     }
     this.db
       .prepare(
-        `update facts set scope = ?, category = ?, fact = ?, detail = ?, topic_key = ?, pinned = ?, importance = ?, status = ?, source = ?, updated_at = ? where id = ?`,
+        `update facts set scope = ?, category = ?, fact = ?, detail = ?, topic_key = ?, pinned = ?, importance = ?, status = ?, source = ?, created_by = ?, updated_at = ? where id = ?`,
       )
       .run(
         next.scope,
@@ -295,6 +331,7 @@ export class SqliteStore implements Store {
         next.importance,
         next.status,
         next.source ?? null,
+        next.createdBy ?? null,
         nowIso(),
         id,
       );
@@ -310,6 +347,30 @@ export class SqliteStore implements Store {
     return fact;
   }
 
+  async factsDeliveryRank(id: number): Promise<{ rank: number; ofActive: number } | null> {
+    const fact = await this.factsGet(id);
+    if (!fact || fact.status !== "active") return null;
+    const row = this.db
+      .prepare(
+        // Self-join against the row's own column values rather than binding a
+        // round-tripped copy — keeps this identical in shape to the postgres
+        // adapter, where re-serializing the timestamp loses precision and makes
+        // a fact outrank itself.
+        `select 1 + sum(case when a.id <> f.id
+                              and (a.pinned > f.pinned
+                                or (a.pinned = f.pinned and a.importance > f.importance)
+                                or (a.pinned = f.pinned and a.importance = f.importance
+                                    and a.updated_at > f.updated_at))
+                             then 1 else 0 end) as rank,
+                count(*) as of_active
+         from facts a
+         cross join (select id, pinned, importance, updated_at from facts where id = ?) f
+         where a.scope = ? and a.status = 'active'`,
+      )
+      .get(id, fact.scope) as Row;
+    return { rank: Number(row.rank), ofActive: Number(row.of_active) };
+  }
+
   // ---- vision --------------------------------------------------------------
   // One active record per scope; edited in place; excluded from recall (no FTS/vec rows).
 
@@ -317,7 +378,8 @@ export class SqliteStore implements Store {
     return {
       id: Number(r.id),
       scope: String(r.scope),
-      content: String(r.content),
+      summary: (r.summary as string | null) ?? null,
+      details: String(r.details),
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: String(r.created_at),
@@ -332,7 +394,7 @@ export class SqliteStore implements Store {
     return r ? this.rowToVision(r) : null;
   }
 
-  async visionList(opts?: ListOptions): Promise<Vision[]> {
+  async visionList(opts?: ListOptions): Promise<ListResult<Vision>> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts?.scope) {
@@ -340,10 +402,22 @@ export class SqliteStore implements Store {
       params.push(opts.scope);
     }
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
+    const limit = opts?.limit ?? 100;
+    const offset = opts?.offset ?? 0;
     const rows = this.db
       .prepare(`select * from vision ${whereSql} order by updated_at desc limit ? offset ?`)
-      .all(...params, opts?.limit ?? 100, opts?.offset ?? 0) as Row[];
-    return rows.map((r) => this.rowToVision(r));
+      .all(...params, limit, offset) as Row[];
+    const available = Number(
+      (this.db.prepare(`select count(*) as c from vision ${whereSql}`).get(...params) as Row).c,
+    );
+    const returned = rows.length;
+    const meta: DeliveryMeta = {
+      returned,
+      available,
+      truncated: offset + returned < available,
+      limit,
+    };
+    return { data: rows.map((r) => this.rowToVision(r)), meta };
   }
 
   async visionSet(input: VisionInput): Promise<Vision> {
@@ -356,16 +430,24 @@ export class SqliteStore implements Store {
       // exactly one record per scope — edit it in place, or insert if none exists.
       if (prior) {
         this.db
-          .prepare(`update vision set content = ?, source = ?, updated_at = ? where id = ?`)
-          .run(input.content, input.source ?? null, ts, Number(prior.id));
+          .prepare(`update vision set details = ?, summary = ?, source = ?, updated_at = ? where id = ?`)
+          .run(input.details, input.summary ?? null, input.source ?? null, ts, Number(prior.id));
         return Number(prior.id);
       }
       const info = this.db
         .prepare(
-          `insert into vision(scope, content, created_by, source, created_at, updated_at)
-           values (?, ?, ?, ?, ?, ?)`,
+          `insert into vision(scope, details, summary, created_by, source, created_at, updated_at)
+           values (?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(scope, input.content, input.createdBy ?? null, input.source ?? null, ts, ts);
+        .run(
+          scope,
+          input.details,
+          input.summary ?? null,
+          input.createdBy ?? null,
+          input.source ?? null,
+          ts,
+          ts,
+        );
       return Number(info.lastInsertRowid);
     });
     const id = run();
@@ -428,7 +510,7 @@ export class SqliteStore implements Store {
     return s;
   }
 
-  async sessionsList(opts?: ListOptions): Promise<Session[]> {
+  async sessionsList(opts?: ListOptions): Promise<ListResult<Session>> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts?.project) {
@@ -443,7 +525,17 @@ export class SqliteStore implements Store {
         `select * from sessions ${whereSql} order by created_at desc, id desc limit ? offset ?`,
       )
       .all(...params, limit, offset) as Row[];
-    return rows.map((r) => this.rowToSession(r));
+    const available = Number(
+      (this.db.prepare(`select count(*) as c from sessions ${whereSql}`).get(...params) as Row).c,
+    );
+    const returned = rows.length;
+    const meta: DeliveryMeta = {
+      returned,
+      available,
+      truncated: offset + returned < available,
+      limit,
+    };
+    return { data: rows.map((r) => this.rowToSession(r)), meta };
   }
 
   async sessionsGet(id: number): Promise<Session | null> {
@@ -482,7 +574,7 @@ export class SqliteStore implements Store {
         project: opts.project,
         limit: window,
       });
-      const ids = results.map((r) => r.id);
+      const ids = results.data.map((r) => r.id);
       const out: Session[] = [];
       for (const id of ids) {
         const s = await this.sessionsGet(id);
@@ -490,7 +582,7 @@ export class SqliteStore implements Store {
       }
       return out;
     }
-    return this.sessionsList({ project: opts.project, limit: window });
+    return (await this.sessionsList({ project: opts.project, limit: window })).data;
   }
 
   // ---- docs --------------------------------------------------------------
@@ -673,7 +765,7 @@ export class SqliteStore implements Store {
     return report;
   }
 
-  async docsList(opts?: ListOptions): Promise<Doc[]> {
+  async docsList(opts?: ListOptions): Promise<ListResult<Doc>> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts?.status) {
@@ -700,7 +792,17 @@ export class SqliteStore implements Store {
         `select * from docs ${whereSql} order by path asc, chunk_idx asc limit ? offset ?`,
       )
       .all(...params, limit, offset) as Row[];
-    return rows.map((r) => this.rowToDoc(r));
+    const available = Number(
+      (this.db.prepare(`select count(*) as c from docs ${whereSql}`).get(...params) as Row).c,
+    );
+    const returned = rows.length;
+    const meta: DeliveryMeta = {
+      returned,
+      available,
+      truncated: offset + returned < available,
+      limit,
+    };
+    return { data: rows.map((r) => this.rowToDoc(r)), meta };
   }
 
   async docsGet(id: number): Promise<Doc | null> {
@@ -855,7 +957,7 @@ export class SqliteStore implements Store {
     return map;
   }
 
-  async recall(query: string, opts?: RecallOptions): Promise<RecallResult[]> {
+  async recall(query: string, opts?: RecallOptions): Promise<ListResult<RecallResult>> {
     const sources: SourceType[] = opts?.sources ?? ["fact", "session", "doc"];
     const limit = opts?.limit ?? 10;
     const laneN = Math.max(limit * 3, 20);
@@ -867,6 +969,7 @@ export class SqliteStore implements Store {
 
     const fused: FusedItem[] = [];
     const orderMeta = new Map<string, CandidateMeta>();
+    const bySource: NonNullable<DeliveryMeta["bySource"]> = {};
 
     if (sources.includes("fact")) {
       const rawVec = this.vectorLane("vec_facts", queryVec, laneN);
@@ -890,11 +993,21 @@ export class SqliteStore implements Store {
         const m = meta.get(f.id);
         if (m) orderMeta.set(`fact:${f.id}`, m);
       }
+      // available = meta.size: ids that had a lexical or vector hit AND passed
+      // scope/status filtering, computed before the sourceCaps fuse-cap and the
+      // final per-source slice. No extra query — meta is already fetched.
+      const available = meta.size;
+      bySource.fact = {
+        returned: out.length,
+        available,
+        truncated:
+          out.length < available || rawVec.length >= laneN || rawLex.length >= laneN,
+      };
     }
 
     if (sources.includes("session")) {
-      const vec = this.vectorLane("vec_sessions", queryVec, laneN);
-      const lex = this.lexicalLane(
+      const rawVec = this.vectorLane("vec_sessions", queryVec, laneN);
+      const rawLex = this.lexicalLane(
         "fts_sessions",
         "sessions",
         matchExpr,
@@ -903,16 +1016,23 @@ export class SqliteStore implements Store {
       );
       // when project filter set, restrict vector lane too
       const filteredVec = opts?.project
-        ? this.filterSessionVecByProject(vec, opts.project)
-        : vec;
-      const ids = unionIds(filteredVec, lex);
+        ? this.filterSessionVecByProject(rawVec, opts.project)
+        : rawVec;
+      const ids = unionIds(filteredVec, rawLex);
       const meta = this.sessionsMeta(ids);
-      const out = fuseLane("session", filteredVec, lex, meta, this.cfg).slice(0, limit);
+      const out = fuseLane("session", filteredVec, rawLex, meta, this.cfg).slice(0, limit);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
         if (m) orderMeta.set(`session:${f.id}`, m);
       }
+      const available = meta.size;
+      bySource.session = {
+        returned: out.length,
+        available,
+        truncated:
+          out.length < available || rawVec.length >= laneN || rawLex.length >= laneN,
+      };
     }
 
     if (sources.includes("doc")) {
@@ -936,6 +1056,13 @@ export class SqliteStore implements Store {
         const m = meta.get(f.id);
         if (m) orderMeta.set(`doc:${f.id}`, m);
       }
+      const available = meta.size;
+      bySource.doc = {
+        returned: out.length,
+        available,
+        truncated:
+          out.length < available || rawVec.length >= laneN || rawLex.length >= laneN,
+      };
     }
 
     // Per-lane cap already applied above (each source contributes up to `limit`).
@@ -943,7 +1070,17 @@ export class SqliteStore implements Store {
     // within its lane — the live system's sectioned model. No global truncation,
     // so a weak-but-present fact can never bury a strong session/doc.
     const ordered = orderResults(fused, orderMeta);
-    return ordered.map((f) => this.toRecallResult(f));
+    const data = ordered.map((f) => this.toRecallResult(f));
+    const totalAvailable = Object.values(bySource).reduce((sum, s) => sum + (s?.available ?? 0), 0);
+    const anyTruncated = Object.values(bySource).some((s) => s?.truncated);
+    const meta: DeliveryMeta = {
+      returned: data.length,
+      available: totalAvailable,
+      truncated: anyTruncated,
+      limit,
+      bySource,
+    };
+    return { data, meta };
   }
 
   private filterSessionVecByProject(
@@ -1039,29 +1176,45 @@ export class SqliteStore implements Store {
   async brief(opts?: BriefOptions): Promise<BriefResult> {
     const o = opts ?? {};
     const recentN = o.recentSessions ?? 8;
-    const recentSessions = await this.sessionsList({
+    const recentSessionsResult = await this.sessionsList({
       project: o.project,
       limit: recentN,
     });
-    const facts = await this.factsList({
+    // Bumped 30 -> 200: at 30, facts 31+ are invisible to the brief's reserve
+    // and can never be named in droppedItems (their ids were never fetched).
+    const factsResult = await this.factsList({
       status: "active",
       scopes: deriveFactScopes(o),
-      limit: 30,
+      limit: 200,
     });
     let relatedDocs: RecallResult[] = [];
     const hint = o.query ?? o.cwd;
     if (hint) {
-      relatedDocs = await this.recall(hint, {
+      const recallResult = await this.recall(hint, {
         sources: ["doc"],
         limit: 5,
         scopes: deriveDocScopes(o),
       });
+      relatedDocs = recallResult.data;
     }
     const vision = {
       global: await this.visionGet("global"),
       project: o.project ? await this.visionGet(`project:${o.project}`) : null,
     };
-    return assembleBrief({ vision, recentSessions, facts, relatedDocs }, o);
+    return assembleBrief(
+      {
+        vision,
+        recentSessions: recentSessionsResult.data,
+        facts: factsResult.data,
+        relatedDocs,
+        // The true pre-reserve counts, so assembleBrief's meta/droppedItems
+        // report what actually matched — not just what this fetch window held.
+        factsAvailable: factsResult.meta.available,
+        recentSessionsAvailable: recentSessionsResult.meta.available,
+      },
+      o,
+      this.cfg,
+    );
   }
 
   async health(): Promise<HealthReport> {

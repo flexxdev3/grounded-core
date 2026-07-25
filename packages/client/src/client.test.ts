@@ -47,14 +47,42 @@ describe("@grounded/client against in-process createApp", () => {
     expect(f.id).toBeGreaterThan(0);
     expect(f.pinned).toBe(true);
     const list = await client.facts.list();
-    expect(list.some((x) => x.id === f.id)).toBe(true);
+    expect(list.data.some((x) => x.id === f.id)).toBe(true);
+  });
+
+  it("facts.list meta.available reflects the true count when more rows exist than limit", async () => {
+    const scope = "project:client-envelope-honesty";
+    for (let i = 0; i < 12; i++) {
+      await client.facts.add({ fact: `Envelope honesty fact ${i}`, scope });
+    }
+    const list = await client.facts.list({ scope, limit: 5 });
+    // A `data.length` fake would report 5 here and pass a naive assertion;
+    // asserting available/returned/truncated together against the seeded
+    // count (12, not the limit) is what catches it.
+    expect(list.data.length).toBe(5);
+    expect(list.meta.returned).toBe(5);
+    expect(list.meta.available).toBe(12);
+    expect(list.meta.truncated).toBe(true);
+  });
+
+  it("facts.add returns a delivery rank", async () => {
+    const f = await client.facts.add({ fact: "Delivery rank smoke test", scope: "project:client-delivery" });
+    expect(f.delivery).toBeDefined();
+    expect(f.delivery!.rank).toBeGreaterThan(0);
+    expect(f.delivery!.ofActive).toBeGreaterThanOrEqual(f.delivery!.rank);
+  });
+
+  it("recall returns meta.bySource", async () => {
+    await client.facts.add({ fact: "Recall bySource accounting probe" });
+    const results = await client.recall("bySource accounting", { lexicalOnly: true });
+    expect(results.meta.bySource).toBeDefined();
   });
 
   it("sessions add + list", async () => {
     const s = await client.sessions.add({ summary: "Set up the demo", project: "demo" });
     expect(s.summary).toBe("Set up the demo");
     const list = await client.sessions.list({ project: "demo" });
-    expect(list.some((x) => x.id === s.id)).toBe(true);
+    expect(list.data.some((x) => x.id === s.id)).toBe(true);
   });
 
   it("sessions get by id", async () => {
@@ -83,8 +111,8 @@ describe("@grounded/client against in-process createApp", () => {
 
   it("recall returns cited cards", async () => {
     const results = await client.recall("demo", { lexicalOnly: true });
-    expect(Array.isArray(results)).toBe(true);
-    for (const r of results) expect(r.citation).toBeTruthy();
+    expect(Array.isArray(results.data)).toBe(true);
+    for (const r of results.data) expect(r.citation).toBeTruthy();
   });
 
   it("brief assembles context", async () => {
@@ -94,23 +122,35 @@ describe("@grounded/client against in-process createApp", () => {
   });
 
   it("vision set edits the active record in place + brief carries it", async () => {
-    const v1 = await client.vision.set({ content: "First direction." });
+    const v1 = await client.vision.set({ details: "First direction." });
     expect(v1.scope).toBe("global");
-    const v2 = await client.vision.set({ content: "Second direction.", scope: "global" });
+    const v2 = await client.vision.set({ details: "Second direction.", scope: "global" });
     expect(v2.id).toBe(v1.id);
-    expect(v2.content).toBe("Second direction.");
+    expect(v2.details).toBe("Second direction.");
 
     const active = await client.vision.list({ scope: "global" });
-    expect(active.length).toBe(1);
-    expect(active[0]!.id).toBe(v1.id);
+    expect(active.data.length).toBe(1);
+    expect(active.data[0]!.id).toBe(v1.id);
 
     const b = await client.brief({ format: "markdown" });
     expect(b.vision.global?.id).toBe(v1.id);
     expect(b.text).toContain("=== VISION (global) ===");
     expect(b.text).toContain("Second direction.");
 
-    const pv = await client.vision.set({ scope: "project:demo", content: "Demo direction." });
+    const pv = await client.vision.set({ scope: "project:demo", details: "Demo direction." });
     const del = await client.vision.delete(pv.id);
+    expect(del.deleted).toBe(true);
+  });
+
+  it("vision.set round-trips both details and summary", async () => {
+    const v = await client.vision.set({
+      scope: "project:round-trip",
+      details: "The full narrative direction, at length.",
+      summary: "Short form.",
+    });
+    expect(v.details).toBe("The full narrative direction, at length.");
+    expect(v.summary).toBe("Short form.");
+    const del = await client.vision.delete(v.id);
     expect(del.deleted).toBe(true);
   });
 
@@ -138,26 +178,26 @@ describe("@grounded/client against in-process createApp", () => {
 
     it("?source= filters by logical source, not lane", async () => {
       const bySource = await client.docs.list({ source: "eng-cabinet" });
-      expect(bySource.length).toBeGreaterThan(0);
-      expect(bySource.every((d) => d.source === "eng-cabinet")).toBe(true);
+      expect(bySource.data.length).toBeGreaterThan(0);
+      expect(bySource.data.every((d) => d.source === "eng-cabinet")).toBe(true);
     });
 
     it("?scope= filters by lane, independent of source", async () => {
       const byScope = await client.docs.list({ scope: "administration" });
-      expect(byScope.length).toBeGreaterThan(0);
-      expect(byScope.every((d) => d.scope === "administration")).toBe(true);
+      expect(byScope.data.length).toBeGreaterThan(0);
+      expect(byScope.data.every((d) => d.scope === "administration")).toBe(true);
     });
 
     it("?scopes= (comma-joined) matches any of the given lanes", async () => {
       const byScopes = await client.docs.list({ scopes: ["global", "administration"] });
-      const scopesSeen = new Set(byScopes.map((d) => d.scope));
+      const scopesSeen = new Set(byScopes.data.map((d) => d.scope));
       expect(scopesSeen.has("global")).toBe(true);
       expect(scopesSeen.has("administration")).toBe(true);
     });
 
     it("docs.list with no options stays unfiltered (every lane visible)", async () => {
       const all = await client.docs.list();
-      const scopesSeen = new Set(all.map((d) => d.scope));
+      const scopesSeen = new Set(all.data.map((d) => d.scope));
       expect(scopesSeen.has("administration")).toBe(true);
     });
   });

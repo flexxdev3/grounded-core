@@ -67,8 +67,8 @@ export function RecordDrawer(props: { typedId: TypedId; onClose: () => void }) {
 
   const updateFact = async (fact: Fact, patch: Partial<FactInput>) => {
     try {
-      await api.facts.update(fact.id, patch);
-      afterMutation("Fact updated");
+      const updated = await api.facts.update(fact.id, patch);
+      afterMutation(updated.delivery?.warning ?? "Fact updated");
     } catch (e) {
       toast(errMessage(e));
     }

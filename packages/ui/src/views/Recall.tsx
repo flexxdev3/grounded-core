@@ -1,5 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
-import type { RecallResult, SourceType, MatchedBy } from "@grounded/core/contract";
+import type { RecallResult, SourceType, MatchedBy, DeliveryMeta } from "@grounded/core/contract";
 import { api, errMessage } from "../api.js";
 import { useApp } from "../app.js";
 import { typeLabel } from "../util.js";
@@ -11,6 +11,13 @@ const MATCH_COLOR: Record<MatchedBy, string> = {
   both: "var(--verdigris-bright)",
 };
 
+interface RunInfo {
+  meta: DeliveryMeta;
+  mode: string;
+  project?: string;
+  ms: number;
+}
+
 export function RecallView() {
   const { openRecord, recallSeed, project } = useApp();
   const [query, setQuery] = useState(recallSeed);
@@ -18,7 +25,7 @@ export function RecallView() {
   const [lexicalOnly, setLexicalOnly] = useState(false);
   const [scoped, setScoped] = useState(true);
   const [results, setResults] = useState<RecallResult[] | null>(null);
-  const [meta, setMeta] = useState("");
+  const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,13 +43,12 @@ export function RecallView() {
         project: proj,
       });
       const ms = Math.round(performance.now() - t0);
-      setResults(res);
-      setMeta(
-        `${res.length} result${res.length === 1 ? "" : "s"} · ${lexicalOnly ? "lexical" : "hybrid"}${proj ? ` · ${proj}` : ""} · ${ms}ms`,
-      );
+      setResults(res.data);
+      setRunInfo({ meta: res.meta, mode: lexicalOnly ? "lexical" : "hybrid", project: proj, ms });
     } catch (e) {
       setError(errMessage(e));
       setResults([]);
+      setRunInfo(null);
     } finally {
       setBusy(false);
     }
@@ -99,9 +105,32 @@ export function RecallView() {
       </div>
 
       {error && <div class="empty" style={{ color: "var(--copper-bright)" }}>{error}</div>}
-      {meta && <div class="mono" style={{ fontSize: "0.72rem", color: "rgba(190,214,178,0.7)", marginBottom: "1rem" }}>
-        <span style={{ color: "var(--verdigris)" }}>→</span> {meta}
-      </div>}
+      {runInfo && (
+        <div class="mono" style={{ fontSize: "0.72rem", color: "rgba(190,214,178,0.7)", marginBottom: "1rem" }}>
+          <div>
+            <span style={{ color: "var(--verdigris)" }}>→</span>{" "}
+            {runInfo.meta.returned} of {runInfo.meta.available} matched · {runInfo.mode}
+            {runInfo.project ? ` · ${runInfo.project}` : ""} · {runInfo.ms}ms
+            {runInfo.meta.truncated && (
+              <span class="mono" style={{ color: "var(--copper-bright)", marginLeft: "0.5rem" }}>truncated</span>
+            )}
+          </div>
+          {runInfo.meta.bySource && (
+            <div style={{ marginTop: "0.25rem", paddingLeft: "1.1rem", color: "rgba(236,230,216,0.4)" }}>
+              {ALL_SOURCES.filter((s) => runInfo.meta.bySource?.[s]).map((s, i) => {
+                const b = runInfo.meta.bySource![s]!;
+                return (
+                  <span key={s}>
+                    {i > 0 && " · "}
+                    {typeLabel(s)} {b.returned}/{b.available}
+                    {b.truncated ? "*" : ""}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {results && results.length === 0 && !error && (
         <div class="empty">No matches. Try a broader query.</div>

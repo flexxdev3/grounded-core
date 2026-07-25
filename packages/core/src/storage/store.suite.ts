@@ -4,6 +4,7 @@ import { dirname, resolve, join } from "node:path";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openStore } from "../store.js";
+import { assembleBrief } from "../engine/brief.js";
 import type { GroundedConfig, Store, StorageAdapter } from "../contract.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -63,7 +64,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const got = await store.factsGet(f.id);
       expect(got?.fact).toBe(f.fact);
 
-      const list = await store.factsList({ status: "active" });
+      const list = (await store.factsList({ status: "active" })).data;
       expect(list.some((x) => x.id === f.id)).toBe(true);
 
       const updated = await store.factsUpdate(f.id, {
@@ -76,7 +77,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       expect(updated.pinned).toBe(true);
       expect(updated.category).toBe("commit-rule");
       // exactly one row, still active
-      const stillActive = await store.factsList({ status: "active" });
+      const stillActive = (await store.factsList({ status: "active" })).data;
       expect(stillActive.filter((x) => x.id === f.id).length).toBe(1);
 
       const deleted = await store.factsDelete(f.id);
@@ -118,10 +119,10 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
         status: "archived",
       });
 
-      const activeList = await store.factsList({ status: "active" });
+      const activeList = (await store.factsList({ status: "active" })).data;
       expect(activeList.some((x) => x.id === f.id)).toBe(false);
 
-      const archivedList = await store.factsList({ status: "archived" });
+      const archivedList = (await store.factsList({ status: "archived" })).data;
       expect(archivedList.some((x) => x.id === f.id)).toBe(true);
 
       const got = await store.factsGet(f.id);
@@ -142,7 +143,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
         status: "archived",
       });
 
-      const results = await store.recall(uniqueToken, { sources: ["fact"], limit: 10 });
+      const results = (await store.recall(uniqueToken, { sources: ["fact"], limit: 10 })).data;
       const ids = results.map((r) => r.id);
       expect(ids).toContain(active.id);
       expect(ids).not.toContain(archived.id);
@@ -175,7 +176,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       });
       expect(s1.id).toBeGreaterThan(0);
 
-      const list = await store.sessionsList({ project: "grounded" });
+      const list = (await store.sessionsList({ project: "grounded" })).data;
       expect(list.length).toBeGreaterThanOrEqual(2);
       // newest first
       expect(list[0]!.id).toBe(s2.id);
@@ -192,7 +193,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       expect(report.scanned).toBeGreaterThan(0);
       expect(report.added).toBeGreaterThan(0);
 
-      const docs = await store.docsList();
+      const docs = (await store.docsList()).data;
       expect(docs.length).toBeGreaterThan(0);
       const allBodies = docs.map((d) => d.body).join("\n");
       expect(allBodies).not.toMatch(/should be stripped/i);
@@ -219,7 +220,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const report = await store.docsIngest([dir], { source: "frontmatter-test" });
       expect(report.added).toBeGreaterThan(0);
 
-      const docs = await store.docsList();
+      const docs = (await store.docsList()).data;
       const ownDocs = docs.filter((d) => d.source === "frontmatter-test");
       expect(ownDocs.length).toBeGreaterThan(0);
       const chunk0 = ownDocs.find((d) => d.chunkIdx === 0);
@@ -250,7 +251,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const report = await store.docsIngest([dir], { source: "default-scope-test" });
       expect(report.added).toBeGreaterThan(0);
 
-      const docs = await store.docsList({ source: "default-scope-test" });
+      const docs = (await store.docsList({ source: "default-scope-test" })).data;
       expect(docs.length).toBeGreaterThan(0);
       for (const d of docs) expect(d.scope).toBe("global");
 
@@ -271,14 +272,14 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       // Positive control FIRST: prove the doc landed and is lexically reachable.
       // Without this the negative assertion below passes just as happily when the
       // ingest silently failed or the token never matched anything.
-      const scoped = await store.recall("zzqadminlanetoken", {
+      const scoped = (await store.recall("zzqadminlanetoken", {
         sources: ["doc"],
         scopes: ["administration"],
         limit: 10,
-      });
+      })).data;
       expect(scoped.some((r) => r.snippet.includes("zzqadminlanetoken"))).toBe(true);
 
-      const unscoped = await store.recall("zzqadminlanetoken", { sources: ["doc"], limit: 10 });
+      const unscoped = (await store.recall("zzqadminlanetoken", { sources: ["doc"], limit: 10 })).data;
       expect(unscoped.some((r) => r.snippet.includes("zzqadminlanetoken"))).toBe(false);
 
       rmSync(dir, { recursive: true, force: true });
@@ -302,18 +303,18 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.docsIngest([globalDir], { source: "scope-matrix-test" });
       await store.docsIngest([adminDir], { source: "scope-matrix-test", scope: "administration" });
 
-      const adminOnly = await store.recall("zzqscopematrixtoken", {
+      const adminOnly = (await store.recall("zzqscopematrixtoken", {
         sources: ["doc"],
         scopes: ["administration"],
         limit: 10,
-      });
+      })).data;
       expect(adminOnly.some((r) => r.snippet.includes("zzqscopematrixtoken"))).toBe(true);
 
-      const both = await store.recall("zzqscopematrixtoken", {
+      const both = (await store.recall("zzqscopematrixtoken", {
         sources: ["doc"],
         scopes: ["global", "administration"],
         limit: 10,
-      });
+      })).data;
       const bothPaths = new Set(
         both.filter((r) => r.sourceType === "doc").map((r) => r.citation),
       );
@@ -336,7 +337,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const first = await store.docsIngest([dir], { source: "retag-test" });
       expect(first.added).toBeGreaterThan(0);
 
-      const before = await store.docsList({ source: "retag-test" });
+      const before = (await store.docsList({ source: "retag-test" })).data;
       const hashBefore = new Map(before.map((d) => [d.id, d.bodyHash]));
 
       const second = await store.docsIngest([dir], {
@@ -347,7 +348,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       expect(second.updated).toBe(0);
       expect(second.added).toBe(0);
 
-      const after = await store.docsList({ source: "retag-test" });
+      const after = (await store.docsList({ source: "retag-test" })).data;
       expect(after.length).toBe(before.length);
       for (const d of after) {
         expect(d.scope).toBe("administration");
@@ -367,7 +368,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       );
 
       await store.docsIngest([dir], { source: "retag-dryrun-test" });
-      const before = await store.docsList({ source: "retag-dryrun-test" });
+      const before = (await store.docsList({ source: "retag-dryrun-test" })).data;
       const scopeBefore = before.map((d) => d.scope);
       expect(scopeBefore.every((s) => s === "global")).toBe(true);
 
@@ -378,7 +379,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       });
       expect(dry.retagged).toBeGreaterThan(0);
 
-      const after = await store.docsList({ source: "retag-dryrun-test" });
+      const after = (await store.docsList({ source: "retag-dryrun-test" })).data;
       for (const d of after) expect(d.scope).toBe("global");
 
       rmSync(dir, { recursive: true, force: true });
@@ -428,16 +429,16 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.docsIngest([dirA], { source: "list-source-a", scope: "global" });
       await store.docsIngest([dirB], { source: "list-source-b", scope: "administration" });
 
-      const bySource = await store.docsList({ source: "list-source-a" });
+      const bySource = (await store.docsList({ source: "list-source-a" })).data;
       expect(bySource.length).toBeGreaterThan(0);
       expect(bySource.every((d) => d.source === "list-source-a")).toBe(true);
 
-      const byScope = await store.docsList({ scope: "administration" });
+      const byScope = (await store.docsList({ scope: "administration" })).data;
       expect(byScope.length).toBeGreaterThan(0);
       expect(byScope.every((d) => d.scope === "administration")).toBe(true);
       expect(byScope.some((d) => d.source === "list-source-b")).toBe(true);
 
-      const unfiltered = await store.docsList();
+      const unfiltered = (await store.docsList()).data;
       const unfilteredSources = new Set(unfiltered.map((d) => d.source));
       expect(unfilteredSources.has("list-source-a")).toBe(true);
       expect(unfilteredSources.has("list-source-b")).toBe(true);
@@ -453,7 +454,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
         category: "recall",
         importance: 0.5,
       });
-      const results = await store.recall("recall lexical vector fusion");
+      const results = (await store.recall("recall lexical vector fusion")).data;
       expect(results.length).toBeGreaterThan(0);
       for (const r of results) {
         expect(r.citation).toBeTruthy();
@@ -470,7 +471,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
     });
 
     it("get(typedId) returns full records", async () => {
-      const results = await store.recall("recall fusion");
+      const results = (await store.recall("recall fusion")).data;
       expect(results.length).toBeGreaterThan(0);
       const first = results[0]!;
       const full = await store.get(first.typedId);
@@ -503,10 +504,10 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.factsAdd({ fact: "other-project fact", scope: "money" });
 
       // multi-scope list returns only the requested scopes
-      const scoped = await store.factsList({
+      const scoped = (await store.factsList({
         status: "active",
         scopes: ["global", "project:alpha"],
-      });
+      })).data;
       const scopeSet = new Set(scoped.map((f) => f.scope));
       expect(scopeSet.has("project:alpha")).toBe(true);
       expect(scopeSet.has("money")).toBe(false);
@@ -547,7 +548,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const report = await store.docsIngest([dir], { source: "prune-remove-test" });
       expect(report.added).toBeGreaterThan(0);
 
-      const before = await store.docsList({ source: "prune-remove-test" });
+      const before = (await store.docsList({ source: "prune-remove-test" })).data;
       expect(before.length).toBeGreaterThan(0);
 
       // delete the file itself, not the tmp dir, so the path the row stores
@@ -557,7 +558,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const pruned = await store.docsPrune({ remove: true });
       expect(pruned.removed).toBeGreaterThanOrEqual(before.length);
 
-      const after = await store.docsList({ source: "prune-remove-test" });
+      const after = (await store.docsList({ source: "prune-remove-test" })).data;
       expect(after.length).toBe(0);
 
       rmSync(dir, { recursive: true, force: true });
@@ -565,7 +566,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
 
     it("vision: set / get / one record per scope, edited in place", async () => {
       const v1 = await store.visionSet({
-        content: "Ship taste at scale without diluting the standard.",
+        details: "Ship taste at scale without diluting the standard.",
       });
       expect(v1.scope).toBe("global");
 
@@ -574,18 +575,18 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
 
       // set again → edits v1 in place, still exactly one row, same id
       const v2 = await store.visionSet({
-        content: "Ship taste at scale. Design out front, engineering underneath.",
+        details: "Ship taste at scale. Design out front, engineering underneath.",
       });
       expect(v2.id).toBe(v1.id);
-      expect(v2.content).toBe("Ship taste at scale. Design out front, engineering underneath.");
-      const list = await store.visionList({ scope: "global" });
+      expect(v2.details).toBe("Ship taste at scale. Design out front, engineering underneath.");
+      const list = (await store.visionList({ scope: "global" })).data;
       expect(list.length).toBe(1);
       expect(list[0]!.id).toBe(v1.id);
 
       // project vision is independent of global
       const pv = await store.visionSet({
         scope: "project:grounded",
-        content: "Self-hosted continuity for multi-agent workspaces.",
+        details: "Self-hosted continuity for multi-agent workspaces.",
       });
       expect((await store.visionGet("project:grounded"))?.id).toBe(pv.id);
       expect((await store.visionGet("global"))?.id).toBe(v2.id);
@@ -613,6 +614,276 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const deleted = await store.visionDelete(brief.vision.project!.id);
       expect(deleted).toBe(true);
       expect(await store.visionGet("project:grounded")).toBeNull();
+    });
+
+    // -----------------------------------------------------------------
+    // Delivery accounting (stage 2): `available`/`truncated` must be real
+    // computed quantities, never derived from data.length. Every test below
+    // is written to fail against a `data.length` fake — see each comment.
+    // -----------------------------------------------------------------
+
+    it("factsList: honest available — a data.length fake reports 5, not 15", async () => {
+      const scope = "test:available-honesty";
+      const ids: number[] = [];
+      for (let i = 0; i < 15; i++) {
+        const f = await store.factsAdd({ fact: `available-honesty fact ${i}`, scope });
+        ids.push(f.id);
+      }
+
+      const page = await store.factsList({ scope, limit: 5 });
+      expect(page.data.length).toBe(5);
+      expect(page.meta.returned).toBe(5);
+      expect(page.meta.available).toBe(15);
+      expect(page.meta.truncated).toBe(true);
+
+      for (const id of ids) await store.factsDelete(id);
+    });
+
+    it("factsList: available respects offset — page 2 of 3 (rows 10-15) is not truncated", async () => {
+      const scope = "test:available-offset";
+      const ids: number[] = [];
+      for (let i = 0; i < 15; i++) {
+        const f = await store.factsAdd({ fact: `available-offset fact ${i}`, scope });
+        ids.push(f.id);
+      }
+
+      const lastPage = await store.factsList({ scope, limit: 5, offset: 10 });
+      expect(lastPage.data.length).toBe(5);
+      expect(lastPage.meta.available).toBe(15);
+      // offset(10) + returned(5) === available(15): nothing left unseen.
+      expect(lastPage.meta.truncated).toBe(false);
+
+      for (const id of ids) await store.factsDelete(id);
+    });
+
+    it("recall: bySource.fact is honest when sourceCaps saturates without saturating laneN", async () => {
+      const uniqueToken = "zzqbysourcehonestytoken";
+      const scope = "test:bysource-honesty";
+      const ids: number[] = [];
+      // 15 matching facts: more than the default sourceCaps.fact (10), well
+      // under laneN (max(limit*3,20) = 30 at the default limit of 10) — the
+      // saturation here is the fuse-cap, not the lane-candidate floor.
+      for (let i = 0; i < 15; i++) {
+        const f = await store.factsAdd({
+          fact: `${uniqueToken} candidate ${i}`,
+          scope,
+          importance: 0.5,
+        });
+        ids.push(f.id);
+      }
+
+      const result = await store.recall(uniqueToken, { sources: ["fact"] });
+      const factMeta = result.meta.bySource?.fact;
+      expect(factMeta).toBeDefined();
+      // Real post-scope-filter match count, not `returned` (capped at 10 by
+      // sourceCaps.fact). A `returned`-derived fake would report 10 here.
+      expect(factMeta!.available).toBe(15);
+      expect(factMeta!.returned).toBeLessThanOrEqual(10);
+      expect(factMeta!.truncated).toBe(true);
+
+      for (const id of ids) await store.factsDelete(id);
+    });
+
+    it("recall: truncated stays true when laneN itself is saturated, even though sourceCaps would otherwise look like the whole story", async () => {
+      const uniqueToken = "zzqlanesaturationtoken";
+      const scope = "test:lane-saturation";
+      const limit = 2;
+      const laneN = Math.max(limit * 3, 20); // 20 at this limit
+      const seedCount = laneN + 10; // strictly more than the lane can even fetch
+      const ids: number[] = [];
+      for (let i = 0; i < seedCount; i++) {
+        const f = await store.factsAdd({
+          fact: `${uniqueToken} candidate ${i}`,
+          scope,
+          importance: 0.5,
+        });
+        ids.push(f.id);
+      }
+
+      const result = await store.recall(uniqueToken, { sources: ["fact"], limit });
+      const factMeta = result.meta.bySource?.fact;
+      expect(factMeta).toBeDefined();
+      // `available` is a documented FLOOR here (meta.size can never exceed
+      // laneN) — strictly less than the true seeded population, proving this
+      // isn't silently reporting the real count.
+      expect(factMeta!.available).toBeLessThan(seedCount);
+      expect(factMeta!.truncated).toBe(true);
+
+      for (const id of ids) await store.factsDelete(id);
+    });
+
+    it("factsDeliveryRank: top pinned/importance ranks 1, lowest ranks N; archived and missing return null", async () => {
+      const scope = "test:delivery-rank";
+      const low = await store.factsAdd({ fact: "rank low", scope, importance: 0.1 });
+      const mid = await store.factsAdd({ fact: "rank mid", scope, importance: 0.5 });
+      const top = await store.factsAdd({ fact: "rank top", scope, pinned: true, importance: 0.9 });
+      const archived = await store.factsAdd({
+        fact: "rank archived",
+        scope,
+        status: "archived",
+      });
+
+      const topRank = await store.factsDeliveryRank(top.id);
+      expect(topRank).not.toBeNull();
+      expect(topRank!.rank).toBe(1);
+      expect(topRank!.ofActive).toBe(3);
+
+      const lowRank = await store.factsDeliveryRank(low.id);
+      expect(lowRank).not.toBeNull();
+      expect(lowRank!.rank).toBe(3);
+      expect(lowRank!.ofActive).toBe(3);
+
+      const midRank = await store.factsDeliveryRank(mid.id);
+      expect(midRank!.rank).toBe(2);
+
+      expect(await store.factsDeliveryRank(archived.id)).toBeNull();
+      expect(await store.factsDeliveryRank(-1)).toBeNull();
+
+      await store.factsDelete(low.id);
+      await store.factsDelete(mid.id);
+      await store.factsDelete(top.id);
+      await store.factsDelete(archived.id);
+    });
+
+    it("factsUpdate: createdBy round-trips when patched explicitly", async () => {
+      const f = await store.factsAdd({ fact: "createdBy round-trip fact", createdBy: "alice" });
+      expect(f.createdBy).toBe("alice");
+
+      const updated = await store.factsUpdate(f.id, { createdBy: "bob" });
+      expect(updated.createdBy).toBe("bob");
+
+      const refetched = await store.factsGet(f.id);
+      expect(refetched?.createdBy).toBe("bob");
+
+      await store.factsDelete(f.id);
+    });
+
+    it("brief reserve: facts lane truncates within its own budget, names the dropped tail, and the rendered text omits them", async () => {
+      const scope = "test:brief-reserve-facts";
+      const ids: number[] = [];
+      // Each rendered line is well over 20 chars, so a tiny reserve (5 tok =
+      // 20 chars) keeps only the first fact and drops the rest, in order.
+      // Distinct descending importance forces a deterministic factsList order
+      // (pinned desc, importance desc, updated_at desc) matching insertion
+      // order, regardless of same-millisecond updated_at ties.
+      for (let i = 0; i < 5; i++) {
+        const f = await store.factsAdd({
+          fact: `brief reserve fact number ${i} with enough text to blow a tiny budget`,
+          scope,
+          importance: 0.9 - i * 0.1,
+        });
+        ids.push(f.id);
+      }
+
+      const facts = (await store.factsList({ scope })).data;
+      const cfg = kase.makeConfig();
+      cfg.brief.reserve.facts = 5; // 20 chars — the first line alone exceeds it
+
+      const brief = assembleBrief(
+        {
+          vision: { global: null, project: null },
+          recentSessions: [],
+          facts,
+          relatedDocs: [],
+          factsAvailable: facts.length,
+          recentSessionsAvailable: 0,
+        },
+        { format: "markdown" },
+        cfg,
+      );
+
+      expect(brief.meta.facts.truncated).toBe(true);
+      // guard: the first item is never dropped, even though it alone busts the budget
+      expect(brief.facts.length).toBeGreaterThanOrEqual(1);
+      expect(brief.facts[0]!.id).toBe(facts[0]!.id);
+      expect(brief.droppedItems.length).toBeGreaterThan(0);
+
+      const keptIds = new Set(brief.facts.map((f) => f.id));
+      const droppedFactIds = ids.filter((id) => !keptIds.has(id));
+      expect(brief.droppedItems).toEqual(droppedFactIds.map((id) => `fact:${id}`));
+
+      for (const id of droppedFactIds) {
+        const dropped = facts.find((f) => f.id === id)!;
+        expect(brief.text).not.toContain(dropped.fact);
+      }
+
+      // droppedItems name real, fetchable records — not placeholders.
+      const resolved = await store.get(brief.droppedItems[0]!);
+      expect(resolved).not.toBeNull();
+      expect(resolved!.sourceType).toBe("fact");
+      expect((resolved!.record as { id: number }).id).toBe(
+        Number(brief.droppedItems[0]!.split(":")[1]),
+      );
+
+      for (const id of ids) await store.factsDelete(id);
+    });
+
+    it("brief reserve: vision lane truncates by chars, never appears in droppedItems", async () => {
+      const longDetails = "vision prose ".repeat(200); // ~2600 chars
+      await store.visionSet({ scope: "project:brief-reserve-vision", details: longDetails });
+      const vision = await store.visionGet("project:brief-reserve-vision");
+      expect(vision).not.toBeNull();
+
+      const cfg = kase.makeConfig();
+      cfg.brief.reserve.vision = 10; // 40 chars — far under the seeded prose
+
+      const brief = assembleBrief(
+        {
+          vision: { global: null, project: vision },
+          recentSessions: [],
+          facts: [],
+          relatedDocs: [],
+          factsAvailable: 0,
+          recentSessionsAvailable: 0,
+        },
+        { format: "markdown" },
+        cfg,
+      );
+
+      expect(brief.meta.vision.truncated).toBe(true);
+      expect(brief.meta.vision.available).toBeGreaterThan(brief.meta.vision.returned);
+      // no vision arm in SourceType/TypedId — it can never show up here.
+      expect(brief.droppedItems.some((id) => id.startsWith("vision"))).toBe(false);
+
+      const visionSectionStart = brief.text!.indexOf("=== VISION");
+      const visionSectionEnd = brief.text!.indexOf("=== MOST RECENT WORK");
+      const visionSection = brief.text!.slice(visionSectionStart, visionSectionEnd);
+      // the section is bounded by the reserve, not by the full seeded prose
+      expect(visionSection.length).toBeLessThan(longDetails.length);
+
+      await store.visionDelete(vision!.id);
+    });
+
+    it("vision: summary falls back to truncated details when null; a set summary renders instead", async () => {
+      await store.visionSet({
+        scope: "project:vision-fallback-null",
+        details: "full narrative details for the null-summary vision row",
+      });
+      await store.visionSet({
+        scope: "project:vision-fallback-set",
+        details: "full narrative details that should NOT appear when a summary is set",
+        summary: "short injected summary",
+      });
+
+      const nullSummaryBrief = await store.brief({
+        project: "vision-fallback-null",
+        format: "markdown",
+      });
+      expect(nullSummaryBrief.text).toContain("full narrative details for the null-summary vision row");
+
+      const setSummaryBrief = await store.brief({
+        project: "vision-fallback-set",
+        format: "markdown",
+      });
+      expect(setSummaryBrief.text).toContain("short injected summary");
+      expect(setSummaryBrief.text).not.toContain(
+        "full narrative details that should NOT appear when a summary is set",
+      );
+
+      const v1 = await store.visionGet("project:vision-fallback-null");
+      const v2 = await store.visionGet("project:vision-fallback-set");
+      await store.visionDelete(v1!.id);
+      await store.visionDelete(v2!.id);
     });
   });
 }

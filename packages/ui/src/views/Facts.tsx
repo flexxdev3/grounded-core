@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import type { Fact, FactInput, ListOptions } from "@grounded/core/contract";
+import type { Fact, FactInput, ListOptions, ListResult } from "@grounded/core/contract";
 import { api, errMessage } from "../api.js";
 import { useAsync, useDataVersion, toast, bumpData } from "../hooks.js";
 import { useApp } from "../app.js";
@@ -26,12 +26,12 @@ export function FactsView() {
   const [scope, setScope] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
-  const { data, loading, error } = useAsync<Fact[]>(
+  const { data, loading, error } = useAsync<ListResult<Fact>>(
     () => api.facts.list({ limit: 500, status: statusFilter } satisfies ListOptions),
     [version, statusFilter],
   );
 
-  const facts = data ?? [];
+  const facts = data?.data ?? [];
   const effScope = scope ?? (project ? FOCUS : "all");
   const scopes = Array.from(new Set(facts.map((f) => f.scope))).sort();
   const query = q.trim().toLowerCase();
@@ -56,8 +56,8 @@ export function FactsView() {
 
   const addFact = async (input: FactInput) => {
     try {
-      await api.facts.add(input);
-      toast("Fact added");
+      const added = await api.facts.add(input);
+      toast(added.delivery.warning ?? "Fact added");
       bumpData();
       setAdding(false);
     } catch (e) {

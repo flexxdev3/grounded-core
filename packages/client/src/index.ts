@@ -7,6 +7,7 @@
 import type {
   Fact,
   FactInput,
+  FactWriteResponse,
   Session,
   SessionInput,
   Doc,
@@ -15,6 +16,7 @@ import type {
   BriefResult,
   BriefOptions,
   ListOptions,
+  ListResult,
   HealthReport,
   IngestOptions,
   IngestReport,
@@ -53,8 +55,12 @@ export interface GroundedClient {
    * `opts.scopes` filters the doc lane (match any, OR); defaults to
    * `['global']` when omitted so callers that declare nothing never see
    * non-global lanes (e.g. "administration") in results.
+   *
+   * The returned `meta.available` is the true match count across sources
+   * (never derived from `data.length`); `meta.truncated` says whether more
+   * exist than were returned. See `meta.bySource` for per-source accounting.
    */
-  recall(query: string, opts?: RecallOptions): Promise<RecallResult[]>;
+  recall(query: string, opts?: RecallOptions): Promise<ListResult<RecallResult>>;
   /**
    * `opts.docScopes` sets the explicit doc-lane scope set for the
    * related-docs recall call (defaults to `['global']` when omitted/empty).
@@ -63,21 +69,39 @@ export interface GroundedClient {
   /** Fetch a full record by typed id, e.g. "fact:27" / "session:274" / "doc:1091". */
   get(typedId: TypedId): Promise<FullRecord>;
   vision: {
-    /** Set the vision for a scope; edits the active record in place (one per scope). */
+    /**
+     * Set the vision for a scope; edits the active record in place (one per
+     * scope). `details` is the narrative markdown (recalled, never
+     * injected); `summary` is the short form injected at SessionStart
+     * (never recalled) — omitted/undefined falls back to truncated
+     * `details` for injection.
+     */
     set(input: VisionInput): Promise<Vision>;
-    list(opts?: ListOptions): Promise<Vision[]>;
+    /** `meta.available` is the true row count for the scope filter;
+     * `meta.truncated` says whether more exist than were returned. */
+    list(opts?: ListOptions): Promise<ListResult<Vision>>;
     delete(id: number): Promise<{ deleted: boolean; id: number }>;
   };
   facts: {
-    add(input: FactInput): Promise<Fact>;
-    list(opts?: ListOptions): Promise<Fact[]>;
+    /** Returns the created fact plus its `delivery` position (rank among
+     * active facts in its scope, `ofActive`, and a warning when the rank
+     * falls outside the typical consumer limit). */
+    add(input: FactInput): Promise<FactWriteResponse>;
+    /** `meta.available` is the true match count before limit/offset (never
+     * derived from `data.length`); `meta.truncated` says whether more exist
+     * than were returned. */
+    list(opts?: ListOptions): Promise<ListResult<Fact>>;
     delete(id: number): Promise<{ deleted: boolean; id: number }>;
-    /** Edit fact `id` in place (partial patch). */
-    update(id: number, patch: Partial<FactInput>): Promise<Fact>;
+    /** Edit fact `id` in place (partial patch). Returns the updated fact
+     * plus its `delivery` position — see `add`. `delivery` is omitted when
+     * the patched fact is archived (no delivery position exists). */
+    update(id: number, patch: Partial<FactInput>): Promise<FactWriteResponse>;
   };
   sessions: {
     add(input: SessionInput): Promise<Session>;
-    list(opts?: ListOptions): Promise<Session[]>;
+    /** `meta.available` is the true match count before limit/offset;
+     * `meta.truncated` says whether more exist than were returned. */
+    list(opts?: ListOptions): Promise<ListResult<Session>>;
     get(id: number): Promise<Session>;
   };
   docs: {
@@ -85,9 +109,11 @@ export interface GroundedClient {
      * `opts.source` filters by logical source/collection (e.g. "homelab" |
      * "repo:grounded"). `opts.scope`/`opts.scopes` filter by lane instead —
      * distinct from `source`, unfiltered by default so the console can still
-     * browse every lane.
+     * browse every lane. `meta.available` is the true match count before
+     * limit/offset; `meta.truncated` says whether more exist than were
+     * returned.
      */
-    list(opts?: ListOptions): Promise<Doc[]>;
+    list(opts?: ListOptions): Promise<ListResult<Doc>>;
     get(id: number): Promise<Doc>;
     /**
      * Ingest/re-ingest files or directories; returns the change report.
@@ -139,22 +165,22 @@ export function createClient(options: ClientOptions): GroundedClient {
 
   return {
     health: () => request<HealthReport>("GET", "/health"),
-    recall: (query, opts = {}) => request<RecallResult[]>("POST", "/recall", { query, ...opts }),
+    recall: (query, opts = {}) => request<ListResult<RecallResult>>("POST", "/recall", { query, ...opts }),
     brief: (opts = {}) => request<BriefResult>("POST", "/brief", opts),
     get: (typedId) => request<FullRecord>("GET", `/get/${typedId}`),
     vision: {
       set: (input) => request<Vision>("POST", "/vision", input),
       list: (opts = {}) =>
-        request<Vision[]>(
+        request<ListResult<Vision>>(
           "GET",
           `/vision${qs({ scope: opts.scope, limit: opts.limit, offset: opts.offset })}`,
         ),
       delete: (id) => request<{ deleted: boolean; id: number }>("DELETE", `/vision/${id}`),
     },
     facts: {
-      add: (input) => request<Fact>("POST", "/facts", input),
+      add: (input) => request<FactWriteResponse>("POST", "/facts", input),
       list: (opts = {}) =>
-        request<Fact[]>(
+        request<ListResult<Fact>>(
           "GET",
           `/facts${qs({
             scope: opts.scope,
@@ -165,17 +191,17 @@ export function createClient(options: ClientOptions): GroundedClient {
           })}`,
         ),
       delete: (id) => request<{ deleted: boolean; id: number }>("DELETE", `/facts/${id}`),
-      update: (id, patch) => request<Fact>("PATCH", `/facts/${id}`, patch),
+      update: (id, patch) => request<FactWriteResponse>("PATCH", `/facts/${id}`, patch),
     },
     sessions: {
       add: (input) => request<Session>("POST", "/sessions", input),
       list: (opts = {}) =>
-        request<Session[]>("GET", `/sessions${qs({ project: opts.project, limit: opts.limit })}`),
+        request<ListResult<Session>>("GET", `/sessions${qs({ project: opts.project, limit: opts.limit })}`),
       get: (id) => request<Session>("GET", `/sessions/${id}`),
     },
     docs: {
       list: (opts = {}) =>
-        request<Doc[]>(
+        request<ListResult<Doc>>(
           "GET",
           `/docs${qs({
             source: opts.source,

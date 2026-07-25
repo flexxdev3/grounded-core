@@ -58,7 +58,7 @@ describe("sqlite vector lane (fake embedder)", () => {
       fact: "hybrid recall combines cosine and bm25 via reciprocal rank fusion",
       category: "recall",
     });
-    const results = await store.recall("hybrid recall reciprocal rank fusion");
+    const results = (await store.recall("hybrid recall reciprocal rank fusion")).data;
     expect(results.length).toBeGreaterThan(0);
     const top = results[0]!;
     expect(top.sourceType).toBe("fact");

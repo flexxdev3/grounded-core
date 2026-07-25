@@ -25,7 +25,14 @@ async function main(): Promise<void> {
   const host = process.env.GROUNDED_API_HOST ?? "127.0.0.1";
   const ui = process.env.GROUNDED_API_UI !== "0";
 
-  const server = await startServer({ store, token, port, host, ui });
+  const server = await startServer({
+    store,
+    token,
+    port,
+    host,
+    ui,
+    typicalFactLimit: config.delivery.typicalFactLimit,
+  });
   console.log(`grounded-api listening on ${server.url}`);
   console.log(server.ui ? `console: ${server.url}/` : "console: not built (headless)");
   if (token) console.log("auth: bearer token required (except /health)");

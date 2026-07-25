@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import type { Doc, IngestReport } from "@grounded/core/contract";
+import type { Doc, IngestReport, ListResult } from "@grounded/core/contract";
 import { api, errMessage } from "../api.js";
 import { useAsync, useDataVersion, toast, bumpData } from "../hooks.js";
 import { useApp } from "../app.js";
@@ -37,9 +37,9 @@ export function DocsView() {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [closed, setClosed] = useState<Set<string>>(new Set());
   // `documents: true` → one row per document (chunk 0), not every chunk.
-  const { data, loading, error } = useAsync<Doc[]>(() => api.docs.list({ documents: true, limit: 2000 }), [version]);
+  const { data, loading, error } = useAsync<ListResult<Doc>>(() => api.docs.list({ documents: true, limit: 2000 }), [version]);
 
-  const docs = data ?? [];
+  const docs = data?.data ?? [];
   const q = filter.trim().toLowerCase();
   const matched = q
     ? docs.filter((d) => d.title.toLowerCase().includes(q) || d.path.toLowerCase().includes(q))

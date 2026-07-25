@@ -4,6 +4,7 @@ import { StoreError } from "../contract.js";
 import type {
   BriefOptions,
   BriefResult,
+  DeliveryMeta,
   Doc,
   DocStatus,
   EmbeddingProvider,
@@ -16,6 +17,7 @@ import type {
   IngestOptions,
   IngestReport,
   ListOptions,
+  ListResult,
   RecallOptions,
   RecallResult,
   Session,
@@ -143,7 +145,7 @@ export class PostgresStore implements Store {
     return this.rowToFact(res.rows[0] as Row);
   }
 
-  async factsList(opts?: ListOptions): Promise<Fact[]> {
+  async factsList(opts?: ListOptions): Promise<ListResult<Fact>> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts?.status) {
@@ -158,15 +160,31 @@ export class PostgresStore implements Store {
       where.push(`scope = $${params.length}`);
     }
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
-    params.push(opts?.limit ?? 100);
+    const countParams = [...params];
+    const limit = opts?.limit ?? 100;
+    const offset = opts?.offset ?? 0;
+    params.push(limit);
     const limitIdx = params.length;
-    params.push(opts?.offset ?? 0);
+    params.push(offset);
     const offsetIdx = params.length;
-    const res = await this.pool.query(
-      `select * from ${this.q("facts")} ${whereSql} order by pinned desc, importance desc, updated_at desc limit $${limitIdx} offset $${offsetIdx}`,
-      params,
-    );
-    return (res.rows as Row[]).map((r) => this.rowToFact(r));
+    const [res, countRes] = await Promise.all([
+      this.pool.query(
+        `select * from ${this.q("facts")} ${whereSql} order by pinned desc, importance desc, updated_at desc limit $${limitIdx} offset $${offsetIdx}`,
+        params,
+      ),
+      this.pool.query(`select count(*) from ${this.q("facts")} ${whereSql}`, countParams),
+    ]);
+    const data = (res.rows as Row[]).map((r) => this.rowToFact(r));
+    const available = Number((countRes.rows[0] as Row).count);
+    return {
+      data,
+      meta: {
+        returned: data.length,
+        available,
+        truncated: offset + data.length < available,
+        limit,
+      },
+    };
   }
 
   async factsGet(id: number): Promise<Fact | null> {
@@ -198,6 +216,7 @@ export class PostgresStore implements Store {
       pinned: patch.pinned !== undefined ? patch.pinned : existing.pinned,
       importance: patch.importance !== undefined ? patch.importance : existing.importance,
       status: patch.status !== undefined ? patch.status : existing.status,
+      createdBy: patch.createdBy !== undefined ? patch.createdBy : existing.createdBy,
       source: patch.source !== undefined ? patch.source : existing.source,
     };
     const textChanged = next.fact !== existing.fact || (next.detail ?? "") !== (existing.detail ?? "");
@@ -205,9 +224,9 @@ export class PostgresStore implements Store {
       ? await this.embedOne(`${next.fact}\n${next.detail ?? ""}`.trim())
       : null;
     const res = await this.pool.query(
-      `update ${this.q("facts")} set scope=$1, category=$2, fact=$3, detail=$4, topic_key=$5, pinned=$6, importance=$7, status=$8, source=$9, updated_at=now()${
-        textChanged ? ", embedding=$11" : ""
-      } where id=$10 returning *`,
+      `update ${this.q("facts")} set scope=$1, category=$2, fact=$3, detail=$4, topic_key=$5, pinned=$6, importance=$7, status=$8, created_by=$9, source=$10, updated_at=now()${
+        textChanged ? ", embedding=$12" : ""
+      } where id=$11 returning *`,
       [
         next.scope,
         next.category,
@@ -217,12 +236,45 @@ export class PostgresStore implements Store {
         next.pinned,
         next.importance,
         next.status,
+        next.createdBy ?? null,
         next.source ?? null,
         id,
         ...(textChanged ? [emb ? pgvector.toSql(emb) : null] : []),
       ],
     );
     return this.rowToFact(res.rows[0] as Row);
+  }
+
+  /**
+   * Delivery rank for one fact: 1-based position within `factsList`'s own
+   * ordering (pinned desc, importance desc, updated_at desc), scoped to the
+   * fact's own scope + status='active'. Null when missing or not active.
+   */
+  async factsDeliveryRank(id: number): Promise<{ rank: number; ofActive: number } | null> {
+    const fact = await this.factsGet(id);
+    if (!fact || fact.status !== "active") return null;
+    const res = await this.pool.query(
+      // Compare against the row's OWN column values via a self-join, never a
+      // re-serialized JS Date: timestamptz carries microseconds and
+      // toISOString() truncates to milliseconds, so a round-tripped value is
+      // almost always < the real column and the fact outranks itself. The
+      // explicit `a.id <> f.id` is belt-and-braces on the same hazard.
+      `select 1 + count(*) filter (
+                where a.id <> f.id
+                  and (a.pinned > f.pinned
+                    or (a.pinned = f.pinned and a.importance > f.importance)
+                    or (a.pinned = f.pinned and a.importance = f.importance
+                        and a.updated_at > f.updated_at))
+              ) as rank,
+              count(*) as of_active
+       from ${this.q("facts")} a
+       cross join (select id, pinned, importance, updated_at
+                   from ${this.q("facts")} where id = $1) f
+       where a.scope = $2 and a.status = 'active'`,
+      [id, fact.scope],
+    );
+    const row = res.rows[0] as Row;
+    return { rank: Number(row.rank), ofActive: Number(row.of_active) };
   }
 
   // ---- vision --------------------------------------------------------------
@@ -232,7 +284,8 @@ export class PostgresStore implements Store {
     return {
       id: Number(r.id),
       scope: String(r.scope),
-      content: String(r.content),
+      summary: (r.summary as string | null) ?? null,
+      details: String(r.details),
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: new Date(r.created_at as string).toISOString(),
@@ -249,7 +302,7 @@ export class PostgresStore implements Store {
     return r ? this.rowToVision(r) : null;
   }
 
-  async visionList(opts?: ListOptions): Promise<Vision[]> {
+  async visionList(opts?: ListOptions): Promise<ListResult<Vision>> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts?.scope) {
@@ -257,15 +310,31 @@ export class PostgresStore implements Store {
       where.push(`scope = $${params.length}`);
     }
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
-    params.push(opts?.limit ?? 100);
+    const countParams = [...params];
+    const limit = opts?.limit ?? 100;
+    const offset = opts?.offset ?? 0;
+    params.push(limit);
     const limitIdx = params.length;
-    params.push(opts?.offset ?? 0);
+    params.push(offset);
     const offsetIdx = params.length;
-    const res = await this.pool.query(
-      `select * from ${this.q("vision")} ${whereSql} order by updated_at desc limit $${limitIdx} offset $${offsetIdx}`,
-      params,
-    );
-    return (res.rows as Row[]).map((r) => this.rowToVision(r));
+    const [res, countRes] = await Promise.all([
+      this.pool.query(
+        `select * from ${this.q("vision")} ${whereSql} order by updated_at desc limit $${limitIdx} offset $${offsetIdx}`,
+        params,
+      ),
+      this.pool.query(`select count(*) from ${this.q("vision")} ${whereSql}`, countParams),
+    ]);
+    const data = (res.rows as Row[]).map((r) => this.rowToVision(r));
+    const available = Number((countRes.rows[0] as Row).count);
+    return {
+      data,
+      meta: {
+        returned: data.length,
+        available,
+        truncated: offset + data.length < available,
+        limit,
+      },
+    };
   }
 
   async visionSet(input: VisionInput): Promise<Vision> {
@@ -282,14 +351,14 @@ export class PostgresStore implements Store {
       let res;
       if (priorId != null) {
         res = await client.query(
-          `update ${this.q("vision")} set content = $1, source = $2, updated_at = now() where id = $3 returning *`,
-          [input.content, input.source ?? null, priorId],
+          `update ${this.q("vision")} set details = $1, summary = $2, source = $3, updated_at = now() where id = $4 returning *`,
+          [input.details, input.summary ?? null, input.source ?? null, priorId],
         );
       } else {
         res = await client.query(
-          `insert into ${this.q("vision")}(scope, content, created_by, source)
-           values ($1, $2, $3, $4) returning *`,
-          [scope, input.content, input.createdBy ?? null, input.source ?? null],
+          `insert into ${this.q("vision")}(scope, details, summary, created_by, source)
+           values ($1, $2, $3, $4, $5) returning *`,
+          [scope, input.details, input.summary ?? null, input.createdBy ?? null, input.source ?? null],
         );
       }
       const created = this.rowToVision(res.rows[0] as Row);
@@ -349,7 +418,7 @@ export class PostgresStore implements Store {
     return this.rowToSession(res.rows[0] as Row);
   }
 
-  async sessionsList(opts?: ListOptions): Promise<Session[]> {
+  async sessionsList(opts?: ListOptions): Promise<ListResult<Session>> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts?.project) {
@@ -357,15 +426,31 @@ export class PostgresStore implements Store {
       where.push(`project = $${params.length}`);
     }
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
-    params.push(opts?.limit ?? 50);
+    const countParams = [...params];
+    const limit = opts?.limit ?? 50;
+    const offset = opts?.offset ?? 0;
+    params.push(limit);
     const limitIdx = params.length;
-    params.push(opts?.offset ?? 0);
+    params.push(offset);
     const offsetIdx = params.length;
-    const res = await this.pool.query(
-      `select * from ${this.q("sessions")} ${whereSql} order by created_at desc, id desc limit $${limitIdx} offset $${offsetIdx}`,
-      params,
-    );
-    return (res.rows as Row[]).map((r) => this.rowToSession(r));
+    const [res, countRes] = await Promise.all([
+      this.pool.query(
+        `select * from ${this.q("sessions")} ${whereSql} order by created_at desc, id desc limit $${limitIdx} offset $${offsetIdx}`,
+        params,
+      ),
+      this.pool.query(`select count(*) from ${this.q("sessions")} ${whereSql}`, countParams),
+    ]);
+    const data = (res.rows as Row[]).map((r) => this.rowToSession(r));
+    const available = Number((countRes.rows[0] as Row).count);
+    return {
+      data,
+      meta: {
+        returned: data.length,
+        available,
+        truncated: offset + data.length < available,
+        limit,
+      },
+    };
   }
 
   async sessionsGet(id: number): Promise<Session | null> {
@@ -412,13 +497,14 @@ export class PostgresStore implements Store {
         limit: window,
       });
       const out: Session[] = [];
-      for (const r of results) {
+      for (const r of results.data) {
         const s = await this.sessionsGet(r.id);
         if (s) out.push(s);
       }
       return out;
     }
-    return this.sessionsList({ project: opts.project, limit: window });
+    const listed = await this.sessionsList({ project: opts.project, limit: window });
+    return listed.data;
   }
 
   // ---- docs --------------------------------------------------------------
@@ -561,7 +647,7 @@ export class PostgresStore implements Store {
     return report;
   }
 
-  async docsList(opts?: ListOptions): Promise<Doc[]> {
+  async docsList(opts?: ListOptions): Promise<ListResult<Doc>> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts?.status) {
@@ -581,15 +667,31 @@ export class PostgresStore implements Store {
     }
     if (opts?.documents) where.push("chunk_idx = 0");
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
-    params.push(opts?.limit ?? 100);
+    const countParams = [...params];
+    const limit = opts?.limit ?? 100;
+    const offset = opts?.offset ?? 0;
+    params.push(limit);
     const limitIdx = params.length;
-    params.push(opts?.offset ?? 0);
+    params.push(offset);
     const offsetIdx = params.length;
-    const res = await this.pool.query(
-      `select * from ${this.q("docs")} ${whereSql} order by path asc, chunk_idx asc limit $${limitIdx} offset $${offsetIdx}`,
-      params,
-    );
-    return (res.rows as Row[]).map((r) => this.rowToDoc(r));
+    const [res, countRes] = await Promise.all([
+      this.pool.query(
+        `select * from ${this.q("docs")} ${whereSql} order by path asc, chunk_idx asc limit $${limitIdx} offset $${offsetIdx}`,
+        params,
+      ),
+      this.pool.query(`select count(*) from ${this.q("docs")} ${whereSql}`, countParams),
+    ]);
+    const data = (res.rows as Row[]).map((r) => this.rowToDoc(r));
+    const available = Number((countRes.rows[0] as Row).count);
+    return {
+      data,
+      meta: {
+        returned: data.length,
+        available,
+        truncated: offset + data.length < available,
+        limit,
+      },
+    };
   }
 
   async docsGet(id: number): Promise<Doc | null> {
@@ -729,7 +831,7 @@ export class PostgresStore implements Store {
     return map;
   }
 
-  async recall(query: string, opts?: RecallOptions): Promise<RecallResult[]> {
+  async recall(query: string, opts?: RecallOptions): Promise<ListResult<RecallResult>> {
     const sources: SourceType[] = opts?.sources ?? ["fact", "session", "doc"];
     const limit = opts?.limit ?? 10;
     const laneN = Math.max(limit * 3, 20);
@@ -745,12 +847,15 @@ export class PostgresStore implements Store {
 
     const fused: FusedItem[] = [];
     const orderMeta = new Map<string, CandidateMeta>();
+    const bySource: NonNullable<DeliveryMeta["bySource"]> = {};
 
     for (const st of sources) {
       const table = tableFor[st];
       const proj = st === "session" ? opts?.project : undefined;
-      let vec = await this.vectorLane(table, queryVec, proj, laneN);
-      let lex = await this.lexicalLane(table, query, proj, laneN);
+      const rawVec = await this.vectorLane(table, queryVec, proj, laneN);
+      const rawLex = await this.lexicalLane(table, query, proj, laneN);
+      let vec = rawVec;
+      let lex = rawLex;
       const ids = new Set<number>();
       for (const h of vec) ids.add(h.id);
       for (const h of lex) ids.add(h.id);
@@ -759,6 +864,12 @@ export class PostgresStore implements Store {
       // default engineering recall pool.
       const docScopes = opts?.scopes && opts.scopes.length > 0 ? opts.scopes : ["global"];
       const meta = await this.metaFor(st, [...ids], docScopes);
+      // `meta.size` is the honest per-source `available`: ids that had a lexical
+      // or vector hit AND passed scope/status filtering, computed before the
+      // sourceCaps fusion cap and the final per-source slice below. It is a
+      // floor, not an exact count, when either raw lane saturated `laneN` — see
+      // `truncated` below.
+      const available = meta.size;
       if (st === "fact" || st === "doc") {
         // metaFor already filtered (status='active' for facts, declared scopes for
         // docs); drop any lane hit whose id has no meta entry and re-rank so RRF
@@ -775,6 +886,11 @@ export class PostgresStore implements Store {
         const m = meta.get(f.id);
         if (m) orderMeta.set(`${st}:${f.id}`, m);
       }
+      bySource[st] = {
+        returned: out.length,
+        available,
+        truncated: out.length < available || rawVec.length >= laneN || rawLex.length >= laneN,
+      };
     }
 
     // Per-lane cap already applied above (each source contributes up to `limit`).
@@ -786,7 +902,18 @@ export class PostgresStore implements Store {
       const r = await this.toRecallResult(f);
       if (r) out.push(r);
     }
-    return out;
+    const available = Object.values(bySource).reduce((sum, s) => sum + (s?.available ?? 0), 0);
+    const truncated = Object.values(bySource).some((s) => s?.truncated);
+    return {
+      data: out,
+      meta: {
+        returned: out.length,
+        available,
+        truncated,
+        limit,
+        bySource,
+      },
+    };
   }
 
   private async toRecallResult(f: FusedItem): Promise<RecallResult | null> {
@@ -865,29 +992,45 @@ export class PostgresStore implements Store {
 
   async brief(opts?: BriefOptions): Promise<BriefResult> {
     const o = opts ?? {};
-    const recentSessions = await this.sessionsList({
+    const recentSessionsResult = await this.sessionsList({
       project: o.project,
       limit: o.recentSessions ?? 8,
     });
-    const facts = await this.factsList({
+    // 200, not 30: facts 31+ must still be fetched or their ids can never be
+    // named in droppedItems (the reserve truncation in engine/brief.ts).
+    const factsResult = await this.factsList({
       status: "active",
       scopes: deriveFactScopes(o),
-      limit: 30,
+      limit: 200,
     });
     let relatedDocs: RecallResult[] = [];
     const hint = o.query ?? o.cwd;
     if (hint) {
-      relatedDocs = await this.recall(hint, {
+      const relatedDocsResult = await this.recall(hint, {
         sources: ["doc"],
         limit: 5,
         scopes: deriveDocScopes(o),
       });
+      relatedDocs = relatedDocsResult.data;
     }
     const vision = {
       global: await this.visionGet("global"),
       project: o.project ? await this.visionGet(`project:${o.project}`) : null,
     };
-    return assembleBrief({ vision, recentSessions, facts, relatedDocs }, o);
+    return assembleBrief(
+      {
+        vision,
+        recentSessions: recentSessionsResult.data,
+        facts: factsResult.data,
+        relatedDocs,
+        // The true pre-reserve counts, so assembleBrief's meta/droppedItems
+        // report what actually matched — not just what this fetch window held.
+        factsAvailable: factsResult.meta.available,
+        recentSessionsAvailable: recentSessionsResult.meta.available,
+      },
+      o,
+      this.cfg,
+    );
   }
 
   async health(): Promise<HealthReport> {

@@ -1,10 +1,15 @@
 import { useState } from "preact/hooks";
-import type { Vision } from "@grounded/core/contract";
+import type { Vision, ListResult } from "@grounded/core/contract";
 import { api, errMessage } from "../api.js";
 import { useAsync, useDataVersion, toast, bumpData } from "../hooks.js";
 import { useApp } from "../app.js";
 import { Modal } from "../components/Modal.js";
 import { Markdown } from "../components/Markdown.js";
+
+// Mirrors GroundedConfig.brief.reserve.vision's default (config.ts) and the
+// chars÷4 approximation used everywhere else in the engine (no tokenizer).
+const SUMMARY_RESERVE_TOK = 400;
+const SUMMARY_RESERVE_CHARS = SUMMARY_RESERVE_TOK * 4;
 
 /** One vision card: the single active record for a scope, edited in place. */
 function VisionCard(props: {
@@ -14,21 +19,29 @@ function VisionCard(props: {
   emptyHint: string;
 }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
+  const [summaryDraft, setSummaryDraft] = useState("");
+  const [detailsDraft, setDetailsDraft] = useState("");
 
   const openEdit = () => {
-    setDraft(props.active?.content ?? "");
+    setSummaryDraft(props.active?.summary ?? "");
+    setDetailsDraft(props.active?.details ?? "");
     setEditing(true);
   };
 
   const save = async () => {
-    const content = draft.trim();
-    if (!content) {
-      toast("Vision content is required");
+    const details = detailsDraft.trim();
+    if (!details) {
+      toast("Vision details are required");
       return;
     }
+    const summary = summaryDraft.trim();
     try {
-      await api.vision.set({ scope: props.scope, content, source: "console" });
+      await api.vision.set({
+        scope: props.scope,
+        details,
+        summary: summary || undefined,
+        source: "console",
+      });
       toast(props.active ? "Vision updated" : "Vision set");
       bumpData();
       setEditing(false);
@@ -36,6 +49,9 @@ function VisionCard(props: {
       toast(errMessage(e));
     }
   };
+
+  const summaryLen = summaryDraft.trim().length;
+  const overBudget = summaryLen > SUMMARY_RESERVE_CHARS;
 
   return (
     <div class="card" style={{ marginBottom: "1.2rem" }}>
@@ -53,7 +69,28 @@ function VisionCard(props: {
       </div>
 
       {props.active ? (
-        <Markdown source={props.active.content} />
+        <>
+          <div style={{ marginBottom: props.active.summary ? "1rem" : 0 }}>
+            <div class="field-label" style={{ marginBottom: "0.4rem" }}>
+              Summary · injected at every SessionStart
+            </div>
+            {props.active.summary ? (
+              <div class="mono" style={{ fontSize: "0.8rem", color: "#ece6d8", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+                {props.active.summary}
+              </div>
+            ) : (
+              <div class="mono" style={{ fontSize: "0.72rem", color: "var(--paper-faint)" }}>
+                No summary set — the brief falls back to a truncated slice of the details below.
+              </div>
+            )}
+          </div>
+          <div>
+            <div class="field-label" style={{ marginBottom: "0.4rem" }}>
+              Details · recalled on demand, never injected
+            </div>
+            <Markdown source={props.active.details} />
+          </div>
+        </>
       ) : (
         <div class="empty">{props.emptyHint}</div>
       )}
@@ -71,18 +108,34 @@ function VisionCard(props: {
             </>
           }
         >
-          <p class="mono" style={{ fontSize: "0.7rem", color: "var(--paper-faint)", marginTop: 0 }}>
-            {props.active
-              ? "Saving edits the active vision for this scope in place."
-              : "This becomes the active vision, injected into every brief for this scope."}
-          </p>
-          <textarea
-            class="input"
-            style={{ width: "100%", minHeight: "14rem", resize: "vertical", fontFamily: "inherit" }}
-            value={draft}
-            placeholder="Narrative markdown — what this is, where it's going, what not to do…"
-            onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value)}
-          />
+          <div style={{ marginBottom: "1rem" }}>
+            <label class="field-label" style={{ display: "flex", alignItems: "center" }}>
+              <span style={{ flex: 1 }}>Summary — terse bullets, injected into every SessionStart</span>
+              <span class="mono" style={{ fontSize: "0.66rem", color: overBudget ? "var(--copper-bright)" : "var(--paper-faint)" }}>
+                {summaryLen} / ~{SUMMARY_RESERVE_CHARS} chars ({SUMMARY_RESERVE_TOK} tok budget)
+              </span>
+            </label>
+            <textarea
+              class="textarea"
+              style={{ minHeight: "5rem", fontFamily: "inherit" }}
+              value={summaryDraft}
+              placeholder={"- what this is\n- where it's going\n- what not to do"}
+              onInput={(e) => setSummaryDraft((e.target as HTMLTextAreaElement).value)}
+            />
+            <p class="mono" style={{ fontSize: "0.66rem", color: "var(--paper-faint)", margin: "0.4rem 0 0" }}>
+              Optional — blank falls back to a truncated slice of the details. Scarce and budgeted: keep it to bullets, not prose.
+            </p>
+          </div>
+          <div>
+            <label class="field-label">Details — narrative markdown, recalled but never injected</label>
+            <textarea
+              class="input"
+              style={{ width: "100%", minHeight: "14rem", resize: "vertical", fontFamily: "inherit" }}
+              value={detailsDraft}
+              placeholder="Narrative markdown — what this is, where it's going, what not to do…"
+              onInput={(e) => setDetailsDraft((e.target as HTMLTextAreaElement).value)}
+            />
+          </div>
         </Modal>
       )}
     </div>
@@ -92,12 +145,12 @@ function VisionCard(props: {
 export function VisionView() {
   const { project } = useApp();
   const version = useDataVersion();
-  const { data, loading, error } = useAsync<Vision[]>(
+  const { data, loading, error } = useAsync<ListResult<Vision>>(
     () => api.vision.list({ limit: 200 }),
     [version],
   );
 
-  const all = data ?? [];
+  const all = data?.data ?? [];
   const byScope = (scope: string) => ({
     active: all.find((v) => v.scope === scope) ?? null,
   });

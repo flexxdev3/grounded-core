@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { GroundedError } from "@grounded/core";
+import { GroundedError, defaultConfig } from "@grounded/core";
+import { computeDeliveryRank } from "@grounded/core/delivery";
 import type {
   Store,
   RecallResult,
@@ -55,7 +56,15 @@ const SOURCE_TYPES = ["fact", "session", "doc"] as const;
 
 const TYPED_ID_RE = /^(fact|session|doc):\d+$/;
 
-export function createServer(store: Store): McpServer {
+/**
+ * `typicalFactLimit` is the threshold `computeDeliveryRank` uses to decide
+ * whether a freshly-written fact warrants a "you will not be seen" warning.
+ * It comes from `cfg.delivery.typicalFactLimit`, threaded in by bin.ts —
+ * defaulting here only so an embedder calling `createServer(store)` still gets
+ * correct out-of-the-box behaviour.
+ */
+export function createServer(store: Store, opts: { typicalFactLimit?: number } = {}): McpServer {
+  const typicalFactLimit = opts.typicalFactLimit ?? defaultConfig().delivery.typicalFactLimit;
   const server = new McpServer(
     { name: "grounded", version: "0.1.0" },
     {
@@ -87,18 +96,24 @@ export function createServer(store: Store): McpServer {
       },
     },
     guard(async ({ query, limit, project, sources, lexicalOnly, scopes }) => {
-      const results = await store.recall(query, {
+      const { data, meta } = await store.recall(query, {
         ...(limit !== undefined ? { limit } : {}),
         ...(project !== undefined ? { project } : {}),
         ...(sources !== undefined ? { sources: sources as SourceType[] } : {}),
         ...(lexicalOnly !== undefined ? { lexicalOnly } : {}),
         ...(scopes !== undefined ? { scopes } : {}),
       });
-      if (results.length === 0) {
+      if (data.length === 0) {
         return { content: [{ type: "text", text: "No results.\n\n[]" }] };
       }
-      const cards = results.map(renderCard).join("\n\n");
-      const body = `${cards}\n\n--- raw JSON (pick typedId) ---\n${JSON.stringify(results)}`;
+      const bySourceParts = SOURCE_TYPES.filter((s) => (meta.bySource?.[s]?.available ?? 0) > 0).map(
+        (s) => `${s} ${meta.bySource![s]!.returned}/${meta.bySource![s]!.available}`,
+      );
+      const metaLine =
+        `${meta.returned} of ${meta.available} matched` +
+        (bySourceParts.length ? ` (${bySourceParts.join(" · ")}${meta.truncated ? ", truncated" : ""})` : "");
+      const cards = data.map(renderCard).join("\n\n");
+      const body = `${metaLine}\n\n${cards}\n\n--- raw JSON (pick typedId) ---\n${JSON.stringify(data)}`;
       return text(body);
     }),
   );
@@ -203,15 +218,23 @@ export function createServer(store: Store): McpServer {
     {
       title: "Set vision",
       description:
-        "Set the vision for a scope (narrative markdown). Edits the one active record for that scope in place.",
+        "Set the vision for a scope (narrative markdown). Edits the one active record for that scope in place. " +
+        "`details` is the full narrative markdown — recalled via ground_recall, never injected at SessionStart. " +
+        "`summary` is the short form injected at SessionStart and never recalled; omit it to fall back to a " +
+        "truncated `details` for injection.",
       inputSchema: {
-        content: z.string().describe("the vision — narrative markdown"),
+        details: z.string().describe("the vision itself — narrative markdown. Recalled; never injected."),
+        summary: z
+          .string()
+          .optional()
+          .describe("short form injected at SessionStart; never recalled. Falls back to truncated details when omitted."),
         scope: z.string().optional().describe('"global" (default) or "project:<name>"'),
       },
     },
-    guard(async ({ content, scope }) => {
+    guard(async ({ details, summary, scope }) => {
       const created = await store.visionSet({
-        content,
+        details,
+        ...(summary !== undefined ? { summary } : {}),
         ...(scope !== undefined ? { scope } : {}),
         source: "mcp",
       });
@@ -246,7 +269,9 @@ export function createServer(store: Store): McpServer {
         ...(importance !== undefined ? { importance } : {}),
         ...(status !== undefined ? { status } : {}),
       });
-      return json(created);
+      const rank = await store.factsDeliveryRank(created.id);
+      const delivery = rank ? computeDeliveryRank(rank.rank, rank.ofActive, typicalFactLimit) : null;
+      return json(delivery ? { ...created, delivery } : created);
     }),
   );
 
@@ -278,7 +303,9 @@ export function createServer(store: Store): McpServer {
         ...(importance !== undefined ? { importance } : {}),
         ...(status !== undefined ? { status } : {}),
       });
-      return json(updated);
+      const rank = await store.factsDeliveryRank(updated.id);
+      const delivery = rank ? computeDeliveryRank(rank.rank, rank.ofActive, typicalFactLimit) : null;
+      return json(delivery ? { ...updated, delivery } : updated);
     }),
   );
 

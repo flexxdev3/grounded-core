@@ -7,8 +7,11 @@ import {
 } from "@grounded/core/contract";
 import type {
   BriefOptions,
+  DeliveryRank,
+  Fact,
   FactInput,
   FactStatus,
+  FactWriteResponse,
   IngestOptions,
   ListOptions,
   RecallOptions,
@@ -18,9 +21,16 @@ import type {
   TypedId,
   VisionInput,
 } from "@grounded/core/contract";
+// Narrow subpath, not the barrel: the route layer must not drag openStore and
+// its database drivers in just to render a delivery warning.
+import { computeDeliveryRank } from "@grounded/core/delivery";
 import { openApiDocument } from "./openapi.js";
 
 const SOURCE_TYPES: readonly SourceType[] = ["fact", "session", "doc"];
+
+/** Fallback for `createApp(store)` callers that pass no config. Kept in sync
+ *  with defaultConfig().delivery.typicalFactLimit by the api test suite. */
+const DEFAULT_TYPICAL_FACT_LIMIT = 8;
 
 /** Thrown by request guards; mapped to HTTP 400 in onError. */
 class ValidationError extends GroundedError {
@@ -140,14 +150,22 @@ function factPatch(body: unknown): Partial<FactInput> {
   if (body.pinned !== undefined) patch.pinned = optBool(body.pinned, "pinned");
   if (body.importance !== undefined) patch.importance = optNumber(body.importance, "importance");
   if (body.status !== undefined) patch.status = optFactStatus(body.status, "status");
+  if (body.createdBy !== undefined) patch.createdBy = optString(body.createdBy, "createdBy");
   if (body.source !== undefined) patch.source = optString(body.source, "source");
   return patch;
 }
 
+// Clean break, no legacy `content` alias: Vision.content is gone from the
+// contract (replaced by summary/details), matching the scope/source clean
+// break already made in stage 3. Pre-1.0, one call site each in the
+// SessionStart hook and the /fact skill are being updated in lockstep by the
+// main thread — an alias would let a stale caller silently keep writing into
+// the wrong field instead of failing loudly.
 function visionInput(body: unknown): VisionInput {
   if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
   return {
-    content: asString(body.content, "content"),
+    details: asString(body.details, "details"),
+    summary: optString(body.summary, "summary"),
     scope: optString(body.scope, "scope"),
     createdBy: optString(body.createdBy, "createdBy"),
     source: optString(body.source, "source"),
@@ -195,9 +213,28 @@ async function readJsonOptional(c: {
   }
 }
 
-export function createApp(store: Store, opts: { token?: string } = {}): Hono {
+export function createApp(
+  store: Store,
+  opts: { token?: string; typicalFactLimit?: number } = {},
+): Hono {
   const app = new Hono();
   const token = opts.token;
+  // Threaded from the resolved config by bin.ts -> startServer. The fallback
+  // matches defaultConfig().delivery.typicalFactLimit so an embedder calling
+  // createApp(store) directly still gets the signal rather than silently
+  // losing it.
+  const typicalFactLimit = opts.typicalFactLimit ?? DEFAULT_TYPICAL_FACT_LIMIT;
+
+  /** Assembles the write-time delivery signal for a fact write response.
+   * Omits `delivery` entirely for an archived fact (factsDeliveryRank
+   * returns null) rather than inventing a rank — an archived fact has no
+   * delivery position. */
+  async function factWithDelivery(fact: Fact): Promise<Fact | FactWriteResponse> {
+    const rankInfo = await store.factsDeliveryRank(fact.id);
+    if (!rankInfo) return fact;
+    const delivery = computeDeliveryRank(rankInfo.rank, rankInfo.ofActive, typicalFactLimit);
+    return { ...fact, delivery };
+  }
 
   // Auth: when a token is configured, require it on every route except /health.
   if (token) {
@@ -238,7 +275,8 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
 
   app.post("/facts", async (c) => {
     const input = factInput(await readJson(c));
-    return c.json(await store.factsAdd(input), 201);
+    const fact = await store.factsAdd(input);
+    return c.json(await factWithDelivery(fact), 201);
   });
 
   app.delete("/facts/:id", async (c) => {
@@ -251,7 +289,8 @@ export function createApp(store: Store, opts: { token?: string } = {}): Hono {
   app.patch("/facts/:id", async (c) => {
     const id = parseId(c.req.param("id"));
     const patch = factPatch(await readJson(c));
-    return c.json(await store.factsUpdate(id, patch));
+    const fact = await store.factsUpdate(id, patch);
+    return c.json(await factWithDelivery(fact));
   });
 
   // ---- vision ----

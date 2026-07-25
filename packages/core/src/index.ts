@@ -16,6 +16,13 @@ export { loadConfig, defaultConfig, CONFIG_FILENAME } from "./config.js";
 export { openStore } from "./store.js";
 export { createEmbeddingProvider } from "./embedding/index.js";
 
+// Delivery accounting — turns Store.factsDeliveryRank's raw position into the
+// wire-shaped signal. Public because every write surface (API, MCP) must render
+// the SAME verdict about whether a fact will actually reach an agent; a surface
+// that reimplements this can disagree with the engine, which is the exact class
+// of silent divergence this whole contract exists to remove.
+export { computeDeliveryRank } from "./engine/delivery.js";
+
 // Install helpers — ready-to-paste MCP server config snippets (dependency-free).
 export {
   installSnippet,

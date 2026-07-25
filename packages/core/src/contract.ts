@@ -45,8 +45,14 @@ export interface Vision {
   id: number;
   /** "global" | "project:<name>". */
   scope: string;
-  /** the vision itself — narrative markdown. */
-  content: string;
+  /**
+   * The short form injected at SessionStart. Never recalled. A null `summary`
+   * falls back to truncated `details` for injection, so existing rows (written
+   * before this column existed) keep working without a backfill.
+   */
+  summary: string | null;
+  /** the vision itself — narrative markdown. Recalled; never injected. */
+  details: string;
   createdBy?: string | null;
   source?: string | null;
   createdAt: string; // ISO-8601
@@ -132,6 +138,33 @@ export type FullRecord =
   | { sourceType: "doc"; record: Doc };
 
 // ---------------------------------------------------------------------------
+// Delivery accounting — the launch-blocking signal: not just what was stored,
+// but what actually reached the caller. Every list-shaped Store method returns
+// this alongside its data so truncation is never silent.
+// ---------------------------------------------------------------------------
+
+export interface DeliveryMeta {
+  returned: number;
+  /** rows that matched before limit/offset/source-cap. A real computed quantity,
+   * never derived from data.length. See recall()'s lane-saturation note for the
+   * one case where this is a documented floor. */
+  available: number;
+  /** returned < available, OR the candidate fetch itself was capped before
+   * `available` could be computed exactly — i.e. "there may be more than
+   * `available`", not just more than `returned`. */
+  truncated: boolean;
+  limit: number | null;
+  bySource?: Partial<Record<SourceType, { returned: number; available: number; truncated: boolean }>>;
+}
+
+export interface ListResult<T> { data: T[]; meta: DeliveryMeta; }
+
+export interface DeliveryRank { rank: number; ofActive: number; delivered: boolean; warning?: string; }
+
+/** Wire shape only — NOT the Store.factsAdd/factsUpdate return type. */
+export type FactWriteResponse = Fact & { delivery: DeliveryRank };
+
+// ---------------------------------------------------------------------------
 // Embedding provider adapter
 // ---------------------------------------------------------------------------
 
@@ -202,6 +235,32 @@ export interface GroundedConfig {
     /** chunk overlap in characters. */
     chunkOverlap: number;
   };
+  /**
+   * Per-lane token reserves for `Store.brief()`. Each lane truncates within its
+   * own reserve independently — a long facts section never eats into the
+   * sessions budget. Units are tokens, approximated as chars÷4 (no BPE
+   * dependency — the engine has no tokenizer and never will for this). The
+   * static preamble/maps text (~200 tok) is NOT budgeted here — it's a fixed
+   * `PREAMBLE_RESERVE_TOK` constant in engine/brief.ts, not configurable,
+   * because it's not a truncatable lane.
+   */
+  brief: {
+    reserve: {
+      vision: number;
+      facts: number;
+      sessions: number;
+    };
+  };
+  /**
+   * `typicalFactLimit` mirrors the hardcoded `FACTS_LIMIT=8` in the live
+   * SessionStart hook (`~/.claude/hooks/grounded-hook.sh`). It is the
+   * threshold `computeDeliveryRank` uses to decide whether a fact's rank
+   * warrants a warning — keeping the hook's assumption and the engine's
+   * promise from drifting independently.
+   */
+  delivery: {
+    typicalFactLimit: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +308,20 @@ export interface BriefResult {
   recentSessions: Session[];
   facts: Fact[];
   relatedDocs: RecallResult[];
+  /**
+   * Delivery accounting per reserved lane. `vision` is measured in CHARS, not
+   * items — there is no vision arm in `SourceType`/`TypedId`, so vision has no
+   * per-item count to report and can never appear in `droppedItems` below.
+   * `facts` and `sessions` are measured in items, truncated by the
+   * `brief.reserve.*` token (chars÷4) budgets. `relatedDocs` deliberately gets
+   * no reserve and no meta key — it has no row in Doctrine 3's reserve table
+   * and is already bounded by `limit: 5` + the 200-char snippet cap.
+   */
+  meta: { vision: DeliveryMeta; facts: DeliveryMeta; sessions: DeliveryMeta };
+  /** typed ids of facts/sessions dropped by their lane's reserve, in the order
+   * they were dropped. Never includes vision (no vision arm in SourceType) or
+   * relatedDocs (unreserved). Each id resolves via Store.get(). */
+  droppedItems: TypedId[];
   /** rendered text when format=markdown. */
   text?: string;
 }
@@ -267,8 +340,11 @@ export interface FactInput {
 }
 
 export interface VisionInput {
-  /** narrative markdown. */
-  content: string;
+  /** narrative markdown. Recalled; never injected. */
+  details: string;
+  /** short form injected at SessionStart. Never recalled. Omitted/undefined
+   * falls back to truncated `details` for injection. */
+  summary?: string;
   /** "global" (default) | "project:<name>". */
   scope?: string;
   createdBy?: string;
@@ -357,35 +433,50 @@ export interface Store {
   init(): Promise<void>;
 
   // facts
+  /** Wire concern (rank) lives one layer up — see FactWriteResponse. Returns
+   * the plain Fact so internal callers and the test suite never unwrap `.data`
+   * for a write. */
   factsAdd(input: FactInput): Promise<Fact>;
-  factsList(opts?: ListOptions): Promise<Fact[]>;
+  factsList(opts?: ListOptions): Promise<ListResult<Fact>>;
   factsGet(id: number): Promise<Fact | null>;
   factsDelete(id: number): Promise<boolean>;
-  /** edit a fact in place; re-embeds when the text changes. Returns the updated fact. */
+  /** edit a fact in place; re-embeds when the text changes. Returns the updated
+   * fact (plain `Fact`, not wrapped — see factsAdd's note). */
   factsUpdate(id: number, patch: Partial<FactInput>): Promise<Fact>;
+  /**
+   * Delivery rank for one fact: its 1-based position within `factsList`'s
+   * ordering (`pinned desc, importance desc, updated_at desc`), scoped to the
+   * fact's own `scope` and `status='active'`, plus `ofActive` (the count of
+   * active facts in that scope). Returns null when the fact is missing or
+   * archived. The `{...fact, delivery}` wire shape (`FactWriteResponse`) is
+   * assembled at the HTTP/MCP layer from this + `computeDeliveryRank`, not here.
+   */
+  factsDeliveryRank(id: number): Promise<{ rank: number; ofActive: number } | null>;
 
   // vision — one active record per scope; edited in place; excluded from recall.
   visionGet(scope: string): Promise<Vision | null>;
-  visionList(opts?: ListOptions): Promise<Vision[]>;
+  visionList(opts?: ListOptions): Promise<ListResult<Vision>>;
   /** upsert the active record for that scope in place (no lineage rows). */
   visionSet(input: VisionInput): Promise<Vision>;
   visionDelete(id: number): Promise<boolean>;
 
   // sessions
   sessionsAdd(input: SessionInput): Promise<Session>;
-  sessionsList(opts?: ListOptions): Promise<Session[]>;
+  sessionsList(opts?: ListOptions): Promise<ListResult<Session>>;
   sessionsGet(id: number): Promise<Session | null>;
+  /** window semantics (before/after an anchor), not limit/offset truncation —
+   * not wrapped in ListResult. */
   sessionsTimeline(opts: TimelineOptions): Promise<Session[]>;
 
   // docs
   docsIngest(rootPaths: string[], opts?: IngestOptions): Promise<IngestReport>;
-  docsList(opts?: ListOptions): Promise<Doc[]>;
+  docsList(opts?: ListOptions): Promise<ListResult<Doc>>;
   docsGet(id: number): Promise<Doc | null>;
   /** mark/remove docs whose files no longer exist. */
   docsPrune(opts?: { remove?: boolean }): Promise<{ missing: number; removed: number }>;
 
   // retrieval
-  recall(query: string, opts?: RecallOptions): Promise<RecallResult[]>;
+  recall(query: string, opts?: RecallOptions): Promise<ListResult<RecallResult>>;
   get(typedId: TypedId): Promise<FullRecord | null>;
   brief(opts?: BriefOptions): Promise<BriefResult>;
 
