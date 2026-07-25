@@ -65,6 +65,7 @@ activeStatus = 1.25
 [ingest]
 ignoreFile = ".groundignore"
 stripPrivate = true
+stripFrontmatter = true
 chunkChars = 1200
 chunkOverlap = 150
 ```
@@ -292,6 +293,19 @@ heading → else first non-empty line (≤120 chars) → else path.
 
 **private.ts** — strip `` /<private>[\s\S]*?<\/private>/gi `` then collapse 3+ newlines to 2
 (`private.ts:1-6`). Gated by `ingest.stripPrivate` (default true).
+
+**frontmatter.ts** — split a leading YAML frontmatter block off the body before it is titled, chunked,
+hashed, or embedded. Gated by `ingest.stripFrontmatter` (default true). Deliberately conservative: the
+block must start on line 1 (a leading BOM is tolerated), close on a `---` or `...` fence line, **and
+contain at least one `^key:` line** — otherwise the text is returned untouched, so a document that opens
+with a `---` horizontal rule is never truncated. No YAML parsing and no dependency: this only removes the
+block from the indexed text. Reading frontmatter *into* columns (`type`→`kind`, per-file `scope`) is a
+later stage. `splitFrontmatter()` also returns the raw block for that stage to consume.
+
+Why it matters: without it every doc's chunk 0 opens with ~15–25 tokens of near-identical
+`type:/status:/updated:/project:/scope:` boilerplate, which pulls front-door chunks together in vector
+space and dilutes each document's actual opening. Landed 2026-07-25 after a 250-doc frontmatter sweep
+made the effect measurable.
 
 ---
 

@@ -40,6 +40,7 @@ import {
 import { assembleBrief, deriveFactScopes } from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
+import { splitFrontmatter } from "../ingest/frontmatter.js";
 import { chunkText, deriveTitle } from "../ingest/chunk.js";
 
 type Row = Record<string, unknown>;
@@ -510,6 +511,7 @@ export class SqliteStore implements Store {
     const machine = opts?.machine ?? null;
     const dryRun = opts?.dryRun ?? false;
     const stripPrivate = this.cfg.ingest.stripPrivate;
+    const stripFrontmatterFlag = this.cfg.ingest.stripFrontmatter;
     const ignoreFile = this.cfg.ingest.ignoreFile;
 
     for (const root of rootPaths) {
@@ -522,7 +524,8 @@ export class SqliteStore implements Store {
         } catch {
           continue;
         }
-        const content = stripPrivate ? stripPrivateBlocks(raw) : raw;
+        const stripped = stripPrivate ? stripPrivateBlocks(raw) : raw;
+        const content = stripFrontmatterFlag ? splitFrontmatter(stripped).body : stripped;
         const title = deriveTitle(content, file.relPath);
         const chunks = chunkText(
           content,

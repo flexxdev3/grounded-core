@@ -193,6 +193,8 @@ export interface GroundedConfig {
     ignoreFile: string;
     /** strip <private>...</private> blocks during ingest. */
     stripPrivate: boolean;
+    /** strip leading YAML frontmatter from the indexed/embedded body during ingest. */
+    stripFrontmatter: boolean;
     /** target chunk size in characters. */
     chunkChars: number;
     /** chunk overlap in characters. */

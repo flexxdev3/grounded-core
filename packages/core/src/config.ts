@@ -35,6 +35,7 @@ export function defaultConfig(home?: string): GroundedConfig {
     ingest: {
       ignoreFile: ".groundignore",
       stripPrivate: true,
+      stripFrontmatter: true,
       chunkChars: 1200,
       chunkOverlap: 150,
     },

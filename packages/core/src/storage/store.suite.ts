@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { openStore } from "../store.js";
 import type { GroundedConfig, Store, StorageAdapter } from "../contract.js";
 
@@ -200,6 +202,41 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const again = await store.docsIngest([EXAMPLES], { source: "examples" });
       expect(again.added).toBe(0);
       expect(again.skipped).toBeGreaterThan(0);
+    });
+
+    it("docs: strips YAML frontmatter from the indexed/embedded body", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-frontmatter-test-"));
+      const fileContent =
+        "---\n" +
+        "type: note\n" +
+        "status: active\n" +
+        "scope: global\n" +
+        "---\n" +
+        "# Real Heading\n\n" +
+        "some prose about frontmatter stripping for the search index.\n";
+      writeFileSync(join(dir, "frontmatter-doc.md"), fileContent, "utf8");
+
+      const report = await store.docsIngest([dir], { source: "frontmatter-test" });
+      expect(report.added).toBeGreaterThan(0);
+
+      const docs = await store.docsList();
+      const ownDocs = docs.filter((d) => d.source === "frontmatter-test");
+      expect(ownDocs.length).toBeGreaterThan(0);
+      const chunk0 = ownDocs.find((d) => d.chunkIdx === 0);
+      expect(chunk0).toBeTruthy();
+      expect(chunk0!.body).not.toContain("type:");
+      expect(chunk0!.body).not.toContain("scope:");
+      expect(chunk0!.body).not.toContain("---");
+      expect(chunk0!.title).toBe("Real Heading");
+
+      const full = await store.get(`doc:${chunk0!.id}`);
+      expect(full).not.toBeNull();
+
+      // Clean up our own fixture: drop the dir, then prune the rows it left.
+      // Leaving either behind would break the later docsPrune expectation.
+      rmSync(dir, { recursive: true, force: true });
+      const pruned = await store.docsPrune({ remove: true });
+      expect(pruned.removed).toBeGreaterThan(0);
     });
 
     it("recall: lexical-only returns cited cards, facts before docs, no private", async () => {

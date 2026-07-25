@@ -37,6 +37,7 @@ import {
 import { assembleBrief, deriveFactScopes } from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
+import { splitFrontmatter } from "../ingest/frontmatter.js";
 import { chunkText, deriveTitle } from "../ingest/chunk.js";
 import { readFileSync, existsSync } from "node:fs";
 
@@ -464,7 +465,10 @@ export class PostgresStore implements Store {
         } catch {
           continue;
         }
-        const content = this.cfg.ingest.stripPrivate ? stripPrivateBlocks(raw) : raw;
+        const stripped = this.cfg.ingest.stripPrivate ? stripPrivateBlocks(raw) : raw;
+        const content = this.cfg.ingest.stripFrontmatter
+          ? splitFrontmatter(stripped).body
+          : stripped;
         const title = deriveTitle(content, file.relPath);
         const chunks = chunkText(
           content,
