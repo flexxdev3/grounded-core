@@ -86,7 +86,7 @@ Cloud owns its own schema, separate from every tenant cabinet. better-auth manag
 - **One cabinet per user in v1** (`cabinets` UNIQUE on userId); the model already allows N for teams later.
 - **API tokens** are shown once at creation (`grnd_<prefix>_<secret>`); we store `sha256(secret)` +
   a short `prefix` for display/lookup. Verify = hash the presented secret, match, check `revokedAt IS NULL`,
-  touch `lastUsedAt`. Scopes reserved (`read`/`write`) — v1 issues full-access.
+  touch `lastUsedAt`. `scopes` default to `['read','write']` at issue and are enforced at the gateway (§5).
 
 ---
 
@@ -120,9 +120,15 @@ OAuth state) are exactly where hand-rolled code leaks. Vetted lib = less securit
 | `/api/*` | **API token OR session** | resolve cabinet → cached Store → `createApp(store).fetch()` — the full existing API |
 | `/` (+ console assets) | session-gated shell | cloud UI (account pages + embedded console) |
 
-`/api/*` is the same 18 routes the self-hosted API exposes — a hosted user's agents talk to Grounded
+`/api/*` is the same 20 routes the self-hosted API exposes — a hosted user's agents talk to Grounded
 identically to a self-hoster, only the base URL + token differ. That keeps MCP/hook/client config a
 one-line change between self-hosted and hosted.
+
+**Per-token scope enforcement is a hosted-only behaviour.** The gateway rejects a bearer token with a
+403 `{error, code:"FORBIDDEN"}` on any mutating method (`POST`/`PATCH`/`PUT`/`DELETE`) if its scopes lack
+`"write"`, and on every method if they lack `"read"` (`scopeCheck()` in `gateway.ts`). **Self-hosted
+`@grounded/api` is unchanged** — one static bearer token, no per-scope check; scopes there remain
+routing, not enforcement. Do not let this section's enforcement read across to the open-core API.
 
 ---
 
@@ -176,6 +182,7 @@ static `cloud-ui`. Env: `CLOUD_PG_URL`, `CLOUD_BASE_URL`, `BETTER_AUTH_SECRET`, 
 5. Account UI (design pass first, then build the 8 surfaces). ✓ built 2026-07-13 → `@grounded/cloud-web`.
 6. `docker-compose.cloud.yml` + OVH deploy notes.
 7. Tests: tenant isolation (two schemas don't see each other), token verify, provision/delete round-trip.
+   ✓ per-token scope enforcement (403 on missing read/write) shipped — §5.
 
-**Non-goals v1:** real payments, teams/multi-user cabinets, per-token scopes enforcement, usage-based
-limits. All are reserved in the data model, none built.
+**Non-goals v1:** real payments, teams/multi-user cabinets, usage-based limits. Reserved in the data
+model, none built.

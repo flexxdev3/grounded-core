@@ -11,6 +11,24 @@ every implementation must honor. API / MCP / installer depend only on the `Store
 Generalized from the live StuntLabs schemas: `facts` → `Fact`, `labwork` → `Session`,
 `notes_corpus` → `Doc`. Keep semantics identical; only names are productized.
 
+## Delivery accounting (the envelope)
+Every list-shaped method — `factsList`, `docsList`, `visionList`, `recall`, `impact` — returns
+`ListResult<T> = { data: T[]; meta: DeliveryMeta }`. `meta.available` is a real computed count of what
+matched, **never `data.length`** — a caller must be able to tell "there are more, capped by limit" from
+"you saw everything." **Deliberate exception:** `sessionsTimeline` returns a bare `Session[]` — window
+semantics (before/after an anchor), not limit/offset truncation, so it has no `meta` to report. That's
+intentional; don't "fix" it into an envelope.
+
+## Facts
+- `origin: "stated" | "derived"`. Every current write path uses `stated`; `derived` is reserved for
+  synthesis (never built yet — see CLAUDE.md Phase 8) and must never be presentable as operator truth.
+- `(scope, topicKey)` is a partial-unique key over ACTIVE facts. Writing the same pair edits that fact
+  in place — MERGE-PATCH semantics, omitted fields keep their existing value — instead of creating a
+  competing row. Archived rows are exempt, so a retired `topicKey` can be reused.
+- `factsDeliveryRank(id)` returns the fact's 1-based rank within its own scope's active `factsList`
+  ordering (`pinned desc, importance desc, updated_at desc`) plus `ofActive`. The `{...fact, delivery}`
+  wire shape (`FactWriteResponse`) is assembled one layer up (HTTP/MCP) from this + `computeDeliveryRank`.
+
 ## Vision (the direction lane)
 `Vision` holds what the work is FOR — one narrative markdown record per scope:
 - **Global Vision** (`scope="global"`) — what the whole operation is and where it's going.
@@ -25,6 +43,9 @@ Rules every adapter must honor:
   recall** — `SourceType` stays `fact | session | doc`. No embedding, no FTS row.
 - `visionGet(scope)` returns the one record for the scope or null; `visionSet` edits it in place
   (`unique(scope)`, no status/supersede/history). `visionList` supports a `scope` filter.
+- `summary` (short, injected at SessionStart) and `details` (full narrative, recalled via `ground_recall`,
+  never injected) are separate columns. A null `summary` falls back to truncated `details` for injection,
+  so rows written before this column existed keep working without a backfill.
 
 ## Embedding providers
 - `ollama` (default): `POST {baseUrl}/api/embeddings { model, prompt }` → `.embedding` (768 floats for
@@ -64,6 +85,26 @@ Given a query string:
 If embeddings are disabled/unavailable, run lexical-only and set `matchedBy="lexical"`. Never error
 just because embeddings are off — degrade gracefully.
 
+**Doc lane scoping.** `RecallOptions.scopes` (default `['global']` when omitted) filters out-of-lane
+docs in SQL — they never reach the caller (filter-then-drop). This is the one behaviour `impact()`
+(below) deliberately does NOT share.
+
+## Reverse lookup (`Store.impact`)
+The pre-flight before stopping, removing, or renaming infrastructure — "what depends on this subject?"
+A dependency tripwire, not a search; `subject` is a literal token (a container name, a port, a path),
+not a natural-language query.
+- **Lexical-only by construction** — there is no `lexicalOnly` option. A nearest-neighbour match on a
+  literal token would surface resemblance, not dependency. Works with `embeddings=none`.
+- **The only operation that crosses a lane boundary.** `recall()` filters out-of-lane docs in SQL and
+  never sees them (filter-then-drop, unchanged by this feature). `impact()` fetches them and flags them
+  instead (filter-then-flag): `title`/`snippet` are `null`, `citation`/`path`/`scope` survive, and
+  `inScope: false` says why. Declaring the lane in `ImpactOptions.scopes` reveals the content.
+- Lane gating is **docs-only** — facts and sessions are always `inScope: true`, `scope: "global"`.
+- `meta.available` counts withheld hits too — hiding them would be the exact silent-omission defect this
+  contract exists to prevent.
+- `limit` is authoritative and overrides `recall.sourceCaps` for impact only (default 20, vs recall's 10).
+- Citations are chunk-grained (`doc:{source}/{path}#chunk{N}`) — no line numbers.
+
 ## Progressive disclosure (MCP especially)
 `recall` returns compact cards → caller picks `typedId`s → `sessionsTimeline`/`get` fetch detail only for
 selected ids. Don't dump full bodies in `recall`.
@@ -89,8 +130,15 @@ The VISION section is omitted entirely when no vision records exist (zero cost t
 `Apply this:` line is fixed — it is the instruction that makes vision *applied*, not just present.
 `format=json` returns the structured `BriefResult`; `format=markdown` also fills `.text`.
 
+Facts and sessions each truncate within their own `config.brief.reserve.*` token budget (chars÷4,
+independent lanes — a long facts section never eats the sessions budget). Items dropped by that
+truncation are listed in `BriefResult.droppedItems` (typed ids, resolvable via `Store.get`). `vision` is
+measured in chars (no `SourceType` arm, so it never appears in `droppedItems`); `relatedDocs` is
+unreserved — bounded only by its own `limit` + snippet length — and also never appears there.
+
 ## Citations
-Every `RecallResult` carries a `citation` and `typedId`. No result without a resolvable source.
+Every `RecallResult` (and `ImpactResult`, even when withheld) carries a `citation` and `typedId`. No
+result without a resolvable source.
 
 ## Errors
 Throw `EmbedError` (embedding backend down), `StoreError` (storage failure), `ConfigError` (bad config).
