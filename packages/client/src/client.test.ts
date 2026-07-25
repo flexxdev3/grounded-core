@@ -102,6 +102,46 @@ describe("@grounded/client against in-process createApp", () => {
     expect(del.id).toBe(next.id);
   });
 
+  it("facts.add defaults origin to 'stated' and accepts an explicit 'derived'", async () => {
+    const defaulted = await client.facts.add({ fact: "client origin default" });
+    expect(defaulted.origin).toBe("stated");
+
+    const derived = await client.facts.add({ fact: "client origin explicit", origin: "derived" });
+    expect(derived.origin).toBe("derived");
+
+    await client.facts.delete(defaulted.id);
+    await client.facts.delete(derived.id);
+  });
+
+  it("facts.add upsert via topicKey survives the HTTP round trip as merge-patch, not full replacement", async () => {
+    const scope = "project:client-upsert-merge-patch";
+    const original = await client.facts.add({
+      fact: "original curated fact",
+      scope,
+      topicKey: "client-upsert-key",
+      pinned: true,
+      importance: 0.9,
+      category: "x",
+    });
+    expect(original.pinned).toBe(true);
+    expect(original.importance).toBe(0.9);
+
+    const upserted = await client.facts.add({
+      fact: "restated fact text only",
+      scope,
+      topicKey: "client-upsert-key",
+    });
+    expect(upserted.id).toBe(original.id);
+    expect(upserted.fact).toBe("restated fact text only");
+    // omitted fields survive the round trip unchanged — this is what fails
+    // against a full-replacement implementation.
+    expect(upserted.pinned).toBe(true);
+    expect(upserted.importance).toBe(0.9);
+    expect(upserted.category).toBe("x");
+
+    await client.facts.delete(original.id);
+  });
+
   it("get resolves a typed id to a full record", async () => {
     const f = await client.facts.add({ fact: "Cite every retrieved answer" });
     const rec = await client.get(`fact:${f.id}`);

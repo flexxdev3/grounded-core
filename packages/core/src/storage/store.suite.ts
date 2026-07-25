@@ -758,6 +758,207 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.factsDelete(f.id);
     });
 
+    it("factsAdd: upsert on (scope, topicKey) is MERGE-PATCH, not full replacement", async () => {
+      const scope = "test:upsert-merge-patch";
+      const original = await store.factsAdd({
+        fact: "original fact text",
+        scope,
+        topicKey: "merge-patch-key",
+        pinned: true,
+        importance: 0.9,
+        category: "x",
+      });
+      expect(original.pinned).toBe(true);
+      expect(original.importance).toBe(0.9);
+      expect(original.category).toBe("x");
+
+      // Re-add through the same (scope, topicKey), supplying ONLY fact + topicKey.
+      // A full-replacement implementation resets pinned/importance/category to
+      // their insert-time defaults here — that is exactly what this asserts against.
+      const upserted = await store.factsAdd({
+        fact: "updated fact text",
+        scope,
+        topicKey: "merge-patch-key",
+      });
+      expect(upserted.id).toBe(original.id);
+      expect(upserted.fact).toBe("updated fact text");
+      expect(upserted.pinned).toBe(true);
+      expect(upserted.importance).toBe(0.9);
+      expect(upserted.category).toBe("x");
+
+      await store.factsDelete(original.id);
+    });
+
+    it("factsAdd: upsert does not duplicate — exactly one active row holds the (scope, topicKey)", async () => {
+      const scope = "test:upsert-no-duplicate";
+      const first = await store.factsAdd({
+        fact: "first write",
+        scope,
+        topicKey: "no-dup-key",
+      });
+      const second = await store.factsAdd({
+        fact: "second write, same key",
+        scope,
+        topicKey: "no-dup-key",
+      });
+      expect(second.id).toBe(first.id);
+
+      const active = (await store.factsList({ scope, status: "active" })).data;
+      const holders = active.filter((f) => f.topicKey === "no-dup-key");
+      expect(holders.length).toBe(1);
+      expect(holders[0].id).toBe(first.id);
+
+      await store.factsDelete(first.id);
+    });
+
+    it("factsAdd: the same topicKey in a different scope is a separate row, never a collision", async () => {
+      const keyName = "shared-key-cross-scope";
+      const a = await store.factsAdd({
+        fact: "scope A holds this key",
+        scope: "test:upsert-scope-a",
+        topicKey: keyName,
+      });
+      const b = await store.factsAdd({
+        fact: "scope B holds this key",
+        scope: "test:upsert-scope-b",
+        topicKey: keyName,
+      });
+      expect(b.id).not.toBe(a.id);
+
+      const refetchedA = await store.factsGet(a.id);
+      expect(refetchedA?.fact).toBe("scope A holds this key");
+      const refetchedB = await store.factsGet(b.id);
+      expect(refetchedB?.fact).toBe("scope B holds this key");
+
+      await store.factsDelete(a.id);
+      await store.factsDelete(b.id);
+    });
+
+    it("factsAdd: re-adding a key held only by an archived row creates a fresh active row, archived row untouched", async () => {
+      const scope = "test:upsert-archived-exemption";
+      const original = await store.factsAdd({
+        fact: "will be archived",
+        scope,
+        topicKey: "archived-exemption-key",
+      });
+      const archived = await store.factsUpdate(original.id, { status: "archived" });
+      expect(archived.status).toBe("archived");
+
+      const reAdded = await store.factsAdd({
+        fact: "fresh active row claiming the freed key",
+        scope,
+        topicKey: "archived-exemption-key",
+      });
+      expect(reAdded.id).not.toBe(original.id);
+      expect(reAdded.status).toBe("active");
+
+      const stillArchived = await store.factsGet(original.id);
+      expect(stillArchived?.status).toBe("archived");
+      expect(stillArchived?.fact).toBe("will be archived");
+      expect(stillArchived?.topicKey).toBe("archived-exemption-key");
+
+      await store.factsDelete(original.id);
+      await store.factsDelete(reAdded.id);
+    });
+
+    it("factsUpdate: un-archiving into a key an ACTIVE row already holds throws, and both rows survive unchanged", async () => {
+      const scope = "test:upsert-unarchive-collision";
+      const active = await store.factsAdd({
+        fact: "active row holding the key",
+        scope,
+        topicKey: "unarchive-collision-key",
+      });
+      const archived = await store.factsAdd({
+        fact: "archived row that will try to reclaim the key",
+        scope,
+        topicKey: "unarchive-collision-key",
+        status: "archived",
+      });
+      // both rows may share the key while one is archived — the partial index
+      // only constrains active rows, so this setup itself is legal.
+      expect(active.topicKey).toBe("unarchive-collision-key");
+      expect(archived.topicKey).toBe("unarchive-collision-key");
+
+      await expect(
+        store.factsUpdate(archived.id, { status: "active" }),
+      ).rejects.toThrow();
+
+      // the failure must not have half-applied — both rows unchanged.
+      const activeAfter = await store.factsGet(active.id);
+      expect(activeAfter?.status).toBe("active");
+      expect(activeAfter?.fact).toBe("active row holding the key");
+      const archivedAfter = await store.factsGet(archived.id);
+      expect(archivedAfter?.status).toBe("archived");
+      expect(archivedAfter?.fact).toBe("archived row that will try to reclaim the key");
+
+      await store.factsDelete(active.id);
+      await store.factsDelete(archived.id);
+    });
+
+    it("facts: origin defaults to 'stated', accepts explicit 'derived', and round-trips through factsList/factsGet", async () => {
+      const scope = "test:origin-roundtrip";
+      const defaulted = await store.factsAdd({ fact: "no origin specified", scope });
+      expect(defaulted.origin).toBe("stated");
+
+      const derived = await store.factsAdd({
+        fact: "explicitly derived fact",
+        scope,
+        origin: "derived",
+      });
+      expect(derived.origin).toBe("derived");
+
+      const list = (await store.factsList({ scope })).data;
+      const listedDefault = list.find((f) => f.id === defaulted.id);
+      const listedDerived = list.find((f) => f.id === derived.id);
+      expect(listedDefault?.origin).toBe("stated");
+      expect(listedDerived?.origin).toBe("derived");
+
+      const gotDefault = await store.factsGet(defaulted.id);
+      const gotDerived = await store.factsGet(derived.id);
+      expect(gotDefault?.origin).toBe("stated");
+      expect(gotDerived?.origin).toBe("derived");
+
+      await store.factsDelete(defaulted.id);
+      await store.factsDelete(derived.id);
+    });
+
+    it("facts: an invalid origin value is rejected, not silently coerced", async () => {
+      const scope = "test:origin-invalid";
+      await expect(
+        store.factsAdd({
+          fact: "bad origin",
+          scope,
+          // deliberately outside the FactOrigin union — proves the DB-level
+          // CHECK constraint holds even if a caller bypasses the TS type.
+          origin: "guessed" as unknown as "stated",
+        }),
+      ).rejects.toThrow();
+    });
+
+    it("factsAdd: origin survives an upsert that omits it — a 'derived' fact re-added without origin does not silently become 'stated'", async () => {
+      const scope = "test:origin-upsert-survives";
+      const original = await store.factsAdd({
+        fact: "derived fact via synthesis",
+        scope,
+        topicKey: "origin-upsert-key",
+        origin: "derived",
+      });
+      expect(original.origin).toBe("derived");
+
+      const upserted = await store.factsAdd({
+        fact: "re-added without stating origin",
+        scope,
+        topicKey: "origin-upsert-key",
+      });
+      expect(upserted.id).toBe(original.id);
+      expect(upserted.origin).toBe("derived");
+
+      const refetched = await store.factsGet(original.id);
+      expect(refetched?.origin).toBe("derived");
+
+      await store.factsDelete(original.id);
+    });
+
     it("brief reserve: facts lane truncates within its own budget, names the dropped tail, and the rendered text omits them", async () => {
       const scope = "test:brief-reserve-facts";
       const ids: number[] = [];

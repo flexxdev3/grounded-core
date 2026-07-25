@@ -12,6 +12,11 @@
 
 export type FactStatus = "active" | "archived";
 
+/** Provenance of a fact. Synthesis writes `derived`; everything a human or an
+ *  agent states outright is `stated`. Never inferred from context — a write
+ *  path that cannot say which it is has no business writing a fact. */
+export type FactOrigin = "stated" | "derived";
+
 /** A durable hard rule / operator truth. Explicit memory. */
 export interface Fact {
   id: number;
@@ -23,12 +28,23 @@ export interface Fact {
   fact: string;
   /** optional elaboration / when-to-apply. */
   detail?: string | null;
-  /** stable dedupe key, e.g. "commit-no-ai-trailer". */
+  /** Stable identity key, e.g. "commit-no-ai-trailer". Unique per scope among
+   * ACTIVE rows — writing the same (scope, topicKey) edits that fact in place
+   * rather than creating a second competing row. Archived rows are exempt, so
+   * a retired key can be reused. */
   topicKey?: string | null;
   pinned: boolean;
   /** 0..1 ranking boost. */
   importance: number;
   status: FactStatus;
+  /**
+   * How this fact came to exist. `stated` = written by an operator or agent
+   * that meant it — every current write path. `derived` is reserved for
+   * synthesis, which must never be able to present its inferences as operator
+   * truth; keeping the distinction in a column (not a convention) is what makes
+   * that guarantee checkable.
+   */
+  origin: FactOrigin;
   createdBy?: string | null;
   source?: string | null;
   createdAt: string; // ISO-8601
@@ -335,6 +351,8 @@ export interface FactInput {
   pinned?: boolean;
   importance?: number;
   status?: FactStatus;
+  /** defaults to "stated". */
+  origin?: FactOrigin;
   createdBy?: string;
   source?: string;
 }

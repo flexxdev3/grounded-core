@@ -34,6 +34,7 @@ export const openApiDocument = {
           "pinned",
           "importance",
           "status",
+          "origin",
           "createdAt",
           "updatedAt",
         ],
@@ -43,10 +44,20 @@ export const openApiDocument = {
           category: { type: "string" },
           fact: { type: "string" },
           detail: { type: ["string", "null"] },
-          topicKey: { type: ["string", "null"] },
+          topicKey: {
+            type: ["string", "null"],
+            description:
+              "Stable identity key, unique per scope among ACTIVE rows. Writing the same (scope, topicKey) via POST /facts edits this row in place instead of creating a second competing row.",
+          },
           pinned: { type: "boolean" },
           importance: { type: "number" },
           status: { type: "string", enum: ["active", "archived"] },
+          origin: {
+            type: "string",
+            enum: ["stated", "derived"],
+            description:
+              "Provenance of the fact. 'stated' = an operator or agent asserted it outright — every current write path. 'derived' is reserved for synthesis, which must never present its inferences as operator truth.",
+          },
           createdBy: { type: ["string", "null"] },
           source: { type: ["string", "null"] },
           createdAt: { type: "string" },
@@ -61,10 +72,19 @@ export const openApiDocument = {
           scope: { type: "string" },
           category: { type: "string" },
           detail: { type: "string" },
-          topicKey: { type: "string" },
+          topicKey: {
+            type: "string",
+            description:
+              "Stable identity key. Supplying a topicKey that already matches an active fact in this scope upserts that fact in place (merge-patch — omitted fields keep their stored value) rather than creating a duplicate.",
+          },
           pinned: { type: "boolean" },
           importance: { type: "number" },
           status: { type: "string", enum: ["active", "archived"] },
+          origin: {
+            type: "string",
+            enum: ["stated", "derived"],
+            description: "Defaults to 'stated' when omitted. See Fact.origin.",
+          },
           createdBy: { type: "string" },
           source: { type: "string" },
         },

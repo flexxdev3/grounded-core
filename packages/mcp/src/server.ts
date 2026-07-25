@@ -246,19 +246,37 @@ export function createServer(store: Store, opts: { typicalFactLimit?: number } =
     "ground_facts_add",
     {
       title: "Add fact",
-      description: "Add a durable fact (explicit operator truth).",
+      description:
+        "Add a durable fact (explicit operator truth). If topicKey matches an already-ACTIVE fact " +
+        "in the same scope, this UPSERTS that fact in place (merge-patch — any field you omit keeps " +
+        "its stored value) instead of creating a second, competing row. Restating a pinned fact through " +
+        "this tool without repeating pinned:true will NOT unpin it. An archived fact holding the same " +
+        "key does not block a fresh active row from claiming it.",
       inputSchema: {
         fact: z.string().describe("the sharp one-liner rule"),
         scope: z.string().optional().describe('e.g. "global", "project:x", "agent:y"'),
         category: z.string().optional(),
         detail: z.string().optional().describe("elaboration / when-to-apply"),
-        topicKey: z.string().optional().describe("stable dedupe key"),
+        topicKey: z
+          .string()
+          .optional()
+          .describe(
+            "stable dedupe key — supplying the same (scope, topicKey) as an active fact upserts it in place rather than duplicating",
+          ),
         pinned: z.boolean().optional(),
         importance: z.number().min(0).max(1).optional().describe("0..1 ranking boost"),
         status: z.enum(["active", "archived"]).optional().describe('defaults to "active"'),
+        origin: z
+          .enum(["stated", "derived"])
+          .optional()
+          .describe(
+            'defaults to "stated". "stated" = an operator or agent is asserting this outright — use this for ' +
+              'virtually every call. "derived" is reserved for synthesis inferring a fact from other data; it must ' +
+              "never be used to make a guess look like operator truth.",
+          ),
       },
     },
-    guard(async ({ fact, scope, category, detail, topicKey, pinned, importance, status }) => {
+    guard(async ({ fact, scope, category, detail, topicKey, pinned, importance, status, origin }) => {
       const created = await store.factsAdd({
         fact,
         ...(scope !== undefined ? { scope } : {}),
@@ -268,6 +286,7 @@ export function createServer(store: Store, opts: { typicalFactLimit?: number } =
         ...(pinned !== undefined ? { pinned } : {}),
         ...(importance !== undefined ? { importance } : {}),
         ...(status !== undefined ? { status } : {}),
+        ...(origin !== undefined ? { origin } : {}),
       });
       const rank = await store.factsDeliveryRank(created.id);
       const delivery = rank ? computeDeliveryRank(rank.rank, rank.ofActive, typicalFactLimit) : null;
@@ -290,9 +309,16 @@ export function createServer(store: Store, opts: { typicalFactLimit?: number } =
         pinned: z.boolean().optional(),
         importance: z.number().min(0).max(1).optional(),
         status: z.enum(["active", "archived"]).optional().describe("archive/restore a fact"),
+        origin: z
+          .enum(["stated", "derived"])
+          .optional()
+          .describe(
+            '"stated" = an operator or agent asserted this outright. "derived" is reserved for synthesis and ' +
+              "must never be used to present an inference as operator truth. Omit to leave the fact's existing origin untouched.",
+          ),
       },
     },
-    guard(async ({ id, fact, scope, category, detail, topicKey, pinned, importance, status }) => {
+    guard(async ({ id, fact, scope, category, detail, topicKey, pinned, importance, status, origin }) => {
       const updated = await store.factsUpdate(id, {
         ...(fact !== undefined ? { fact } : {}),
         ...(scope !== undefined ? { scope } : {}),
@@ -302,6 +328,7 @@ export function createServer(store: Store, opts: { typicalFactLimit?: number } =
         ...(pinned !== undefined ? { pinned } : {}),
         ...(importance !== undefined ? { importance } : {}),
         ...(status !== undefined ? { status } : {}),
+        ...(origin !== undefined ? { origin } : {}),
       });
       const rank = await store.factsDeliveryRank(updated.id);
       const delivery = rank ? computeDeliveryRank(rank.rank, rank.ofActive, typicalFactLimit) : null;

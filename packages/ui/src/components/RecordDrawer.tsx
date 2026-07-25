@@ -176,6 +176,15 @@ function RecordBody({ rec }: { rec: FullRecord }) {
         <Row label="Fact">
           {f.pinned && <span class="pin-dot" style={{ marginRight: "0.4rem" }}>★</span>}
           {f.fact}
+          {f.origin === "derived" && (
+            <span
+              class="chip"
+              style={{ cursor: "default", marginLeft: "0.5rem", verticalAlign: "middle" }}
+              title="Written by synthesis, not stated outright by an operator or agent."
+            >
+              derived
+            </span>
+          )}
         </Row>
         {f.detail && <Row label="Detail"><Markdown source={f.detail} /></Row>}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.6rem" }}>

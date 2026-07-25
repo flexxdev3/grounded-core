@@ -10,6 +10,7 @@ import type {
   EmbeddingProvider,
   Fact,
   FactInput,
+  FactOrigin,
   FactStatus,
   FullRecord,
   GroundedConfig,
@@ -112,6 +113,7 @@ export class PostgresStore implements Store {
       pinned: Boolean(r.pinned),
       importance: Number(r.importance),
       status: String(r.status) as FactStatus,
+      origin: String(r.origin) as FactOrigin,
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: new Date(r.created_at as string).toISOString(),
@@ -119,11 +121,17 @@ export class PostgresStore implements Store {
     };
   }
 
-  async factsAdd(input: FactInput): Promise<Fact> {
+  /**
+   * Plain insert — no topicKey (never collides; the partial unique index
+   * excludes null topic_key) or an explicit non-active status (the index
+   * only constrains status='active', so an archived insert can share a key
+   * with nothing — or with an already-archived duplicate).
+   */
+  private async factsInsert(input: FactInput): Promise<Fact> {
     const emb = await this.embedOne(`${input.fact}\n${input.detail ?? ""}`.trim());
     const res = await this.pool.query(
-      `insert into ${this.q("facts")}(scope, category, fact, detail, topic_key, pinned, importance, status, created_by, source, embedding)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *`,
+      `insert into ${this.q("facts")}(scope, category, fact, detail, topic_key, pinned, importance, status, created_by, source, origin, embedding)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,
       [
         input.scope ?? "global",
         input.category ?? "",
@@ -139,10 +147,119 @@ export class PostgresStore implements Store {
         input.status ?? "active",
         input.createdBy ?? null,
         input.source ?? null,
+        input.origin ?? "stated",
         emb ? pgvector.toSql(emb) : null,
       ],
     );
     return this.rowToFact(res.rows[0] as Row);
+  }
+
+  /**
+   * factsAdd is an upsert-in-place on (scope, topicKey) among ACTIVE rows —
+   * see idx_facts_topic_key. Verified against a real postgres that
+   * `insert ... on conflict (scope, topic_key) where topic_key is not null
+   * and status = 'active' do update ...` works cleanly targeting the partial
+   * index. Chose a read-then-branch instead (transactional `select ... for
+   * update` + conditional insert/update) so re-embedding only happens when
+   * the fact/detail text actually changed, matching factsUpdate's existing
+   * textChanged guard below — a blind ON CONFLICT would have to embed on
+   * every call before knowing whether the write collides, paying an ollama
+   * round trip on what may turn out to be a no-op text update.
+   */
+  async factsAdd(input: FactInput): Promise<Fact> {
+    const scope = input.scope ?? "global";
+    const topicKey = input.topicKey ?? null;
+    const status = input.status ?? "active";
+    if (topicKey == null || status !== "active") {
+      return this.factsInsert(input);
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existingRes = await client.query(
+        `select * from ${this.q("facts")} where scope = $1 and topic_key = $2 and status = 'active' for update`,
+        [scope, topicKey],
+      );
+      const priorRow = existingRes.rows[0] as Row | undefined;
+      if (!priorRow) {
+        // No colliding active row. Insert inside the same transaction so the
+        // `for update` scan above at least serializes with another
+        // concurrent upsert attempt on this key; the unique index remains
+        // the final guarantee against a true race (a losing racer sees a
+        // duplicate-key error rather than a silent second row).
+        const emb = await this.embedOne(`${input.fact}\n${input.detail ?? ""}`.trim());
+        const res = await client.query(
+          `insert into ${this.q("facts")}(scope, category, fact, detail, topic_key, pinned, importance, status, created_by, source, origin, embedding)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,
+          [
+            scope,
+            input.category ?? "",
+            input.fact,
+            input.detail ?? null,
+            topicKey,
+            input.pinned ?? false,
+            input.importance ?? 0.6,
+            status,
+            input.createdBy ?? null,
+            input.source ?? null,
+            input.origin ?? "stated",
+            emb ? pgvector.toSql(emb) : null,
+          ],
+        );
+        await client.query("commit");
+        return this.rowToFact(res.rows[0] as Row);
+      }
+      // MERGE-PATCH semantics, not full replacement: a field the caller omits
+      // keeps the stored value rather than resetting to the insert-time default.
+      //
+      // The alternative loses operator curation silently. `pinned` and
+      // `importance` are deliberately curated per fact; an agent restating a
+      // rule through ground_facts_add without repeating `pinned: true` would
+      // unpin it, with a 200 and no signal — the same invisible mutation of
+      // operator-authored data this initiative already refused once when it
+      // declined to retro-rewrite the live facts. Requiring a caller to restate
+      // every field to preserve it makes omission destructive by default.
+      //
+      // Must stay identical to the sqlite adapter, which reaches the same
+      // behaviour by delegating to factsUpdate's patch merge.
+      const prior = this.rowToFact(priorRow);
+      const nextCategory = input.category ?? prior.category;
+      const nextDetail = input.detail ?? prior.detail ?? null;
+      const nextPinned = input.pinned ?? prior.pinned;
+      const nextImportance = input.importance ?? prior.importance;
+      const nextCreatedBy = input.createdBy ?? prior.createdBy ?? null;
+      const nextSource = input.source ?? prior.source ?? null;
+      const nextOrigin = input.origin ?? prior.origin;
+      const textChanged = input.fact !== prior.fact || (nextDetail ?? "") !== (prior.detail ?? "");
+      const emb = textChanged
+        ? await this.embedOne(`${input.fact}\n${nextDetail ?? ""}`.trim())
+        : null;
+      const res = await client.query(
+        `update ${this.q("facts")} set category=$1, fact=$2, detail=$3, pinned=$4, importance=$5,
+           created_by=$6, source=$7, origin=$8, updated_at=now()${
+             textChanged ? ", embedding=$10" : ""
+           } where id=$9 returning *`,
+        [
+          nextCategory,
+          input.fact,
+          nextDetail,
+          nextPinned,
+          nextImportance,
+          nextCreatedBy,
+          nextSource,
+          nextOrigin,
+          prior.id,
+          ...(textChanged ? [emb ? pgvector.toSql(emb) : null] : []),
+        ],
+      );
+      await client.query("commit");
+      return this.rowToFact(res.rows[0] as Row);
+    } catch (err) {
+      await client.query("rollback");
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async factsList(opts?: ListOptions): Promise<ListResult<Fact>> {
@@ -204,6 +321,23 @@ export class PostgresStore implements Store {
     return (res.rowCount ?? 0) > 0;
   }
 
+  /**
+   * Partial patch (not a full replacement, unlike factsAdd's upsert branch):
+   * every omitted field keeps its existing value, including `origin` — a
+   * PATCH that only touches `pinned` must not silently reset a `derived`
+   * fact back to `stated`.
+   *
+   * Edge case: un-archiving a row (status archived -> active) into a
+   * (scope, topicKey) that collides with an already-active row is left to
+   * the database's own idx_facts_topic_key constraint rather than resolved
+   * here — verified live: the UPDATE raises a 23505 unique_violation, which
+   * is caught below and rethrown as a StoreError naming the collision. This
+   * is deliberately NOT auto-reconciled (no silent merge, no silent second
+   * key, no silent overwrite of the other row) — the operator must resolve
+   * it explicitly, e.g. by archiving the other row or renaming this one's
+   * key, exactly as the plan's non-destructive posture requires everywhere
+   * else in this stage.
+   */
   async factsUpdate(id: number, patch: Partial<FactInput>): Promise<Fact> {
     const existing = await this.factsGet(id);
     if (!existing) throw new StoreError(`fact ${id} not found`);
@@ -216,6 +350,7 @@ export class PostgresStore implements Store {
       pinned: patch.pinned !== undefined ? patch.pinned : existing.pinned,
       importance: patch.importance !== undefined ? patch.importance : existing.importance,
       status: patch.status !== undefined ? patch.status : existing.status,
+      origin: patch.origin !== undefined ? patch.origin : existing.origin,
       createdBy: patch.createdBy !== undefined ? patch.createdBy : existing.createdBy,
       source: patch.source !== undefined ? patch.source : existing.source,
     };
@@ -223,26 +358,36 @@ export class PostgresStore implements Store {
     const emb = textChanged
       ? await this.embedOne(`${next.fact}\n${next.detail ?? ""}`.trim())
       : null;
-    const res = await this.pool.query(
-      `update ${this.q("facts")} set scope=$1, category=$2, fact=$3, detail=$4, topic_key=$5, pinned=$6, importance=$7, status=$8, created_by=$9, source=$10, updated_at=now()${
-        textChanged ? ", embedding=$12" : ""
-      } where id=$11 returning *`,
-      [
-        next.scope,
-        next.category,
-        next.fact,
-        next.detail ?? null,
-        next.topicKey ?? null,
-        next.pinned,
-        next.importance,
-        next.status,
-        next.createdBy ?? null,
-        next.source ?? null,
-        id,
-        ...(textChanged ? [emb ? pgvector.toSql(emb) : null] : []),
-      ],
-    );
-    return this.rowToFact(res.rows[0] as Row);
+    try {
+      const res = await this.pool.query(
+        `update ${this.q("facts")} set scope=$1, category=$2, fact=$3, detail=$4, topic_key=$5, pinned=$6, importance=$7, status=$8, origin=$9, created_by=$10, source=$11, updated_at=now()${
+          textChanged ? ", embedding=$13" : ""
+        } where id=$12 returning *`,
+        [
+          next.scope,
+          next.category,
+          next.fact,
+          next.detail ?? null,
+          next.topicKey ?? null,
+          next.pinned,
+          next.importance,
+          next.status,
+          next.origin,
+          next.createdBy ?? null,
+          next.source ?? null,
+          id,
+          ...(textChanged ? [emb ? pgvector.toSql(emb) : null] : []),
+        ],
+      );
+      return this.rowToFact(res.rows[0] as Row);
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505") {
+        throw new StoreError(
+          `fact ${id} update collides with an already-active fact for scope "${next.scope}" topicKey "${next.topicKey}" — archive or re-key one of them first`,
+        );
+      }
+      throw err;
+    }
   }
 
   /**

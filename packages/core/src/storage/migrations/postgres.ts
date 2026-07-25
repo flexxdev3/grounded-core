@@ -69,6 +69,35 @@ create table if not exists "${s}".docs (
 -- docs scope lane (stage 3): idempotent add for cabinets created before this column existed.
 alter table "${s}".docs add column if not exists scope text not null default 'global';
 
+-- fact origin (stage 2b): every current write path is explicit operator/agent
+-- input, so 'stated' is the correct default and backfill value for existing
+-- rows. Reserved for Phase 8 synthesis, which must never be able to present
+-- an inference as operator truth. IF NOT EXISTS guards the whole clause
+-- (including the inline check) atomically -- on a cabinet that already has
+-- the column this is a pure no-op, so re-running never touches the
+-- constraint on an existing column. Same idiom as docs.scope above.
+alter table "${s}".facts add column if not exists origin text not null default 'stated' check (origin in ('stated','derived'));
+
+-- fact identity backfill (stage 2b), MUST run before idx_facts_topic_key below:
+-- a cabinet that predates topicKey-uniqueness may already hold two or more
+-- ACTIVE rows sharing a (scope, topic_key) -- creating the unique index first
+-- would fail on that cabinet and break init(). Null the topic_key on every
+-- row in a collision group except the newest (by updated_at, then id as a
+-- deterministic tiebreak); the older rows survive untouched, just unkeyed --
+-- never deleted, never merged. Archived rows are exempt (the index only
+-- constrains status='active'), so an archived duplicate keeps its key.
+-- Idempotent: once no group has more than one active row per key, this is a
+-- zero-row UPDATE on every subsequent init().
+update "${s}".facts f
+set topic_key = null
+where f.status = 'active' and f.topic_key is not null
+  and f.id <> (
+    select f2.id from "${s}".facts f2
+    where f2.scope = f.scope and f2.topic_key = f.topic_key and f2.status = 'active'
+    order by f2.updated_at desc, f2.id desc
+    limit 1
+  );
+
 create table if not exists "${s}".vision (
   id bigint generated always as identity primary key,
   scope text not null default 'global',
@@ -103,6 +132,14 @@ alter table "${s}".vision add column if not exists summary text;
 
 create unique index if not exists idx_docs_path_chunk on "${s}".docs(path, chunk_idx);
 create unique index if not exists idx_vision_scope on "${s}".vision(scope);
+-- fact identity (stage 2b): makes factsAdd an upsert-in-place on (scope,
+-- topic_key). Partial -- constrains ACTIVE rows only, so an archived row
+-- never blocks a new active row with the same key, and a retired key can be
+-- reused. Must run after the backfill above on a cabinet with pre-existing
+-- collisions.
+create unique index if not exists idx_facts_topic_key
+  on "${s}".facts (scope, topic_key)
+  where topic_key is not null and status = 'active';
 create index if not exists idx_facts_status on "${s}".facts(status);
 create index if not exists idx_facts_scope on "${s}".facts(scope);
 create index if not exists idx_facts_rank on "${s}".facts(scope, status, pinned desc, importance desc, updated_at desc);

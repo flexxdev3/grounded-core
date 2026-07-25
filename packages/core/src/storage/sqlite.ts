@@ -13,6 +13,7 @@ import type {
   EmbeddingProvider,
   Fact,
   FactInput,
+  FactOrigin,
   FactStatus,
   FullRecord,
   GroundedConfig,
@@ -90,6 +91,8 @@ export class SqliteStore implements Store {
     this.migrateDropVisionStatus();
     this.migrateAddDocsScope();
     this.migrateVisionSummarySplit();
+    this.migrateAddFactsOrigin();
+    this.migrateFactsTopicKeyIdentity();
 
     if (this.embedder.enabled) {
       try {
@@ -157,6 +160,73 @@ export class SqliteStore implements Store {
     }
   }
 
+  /**
+   * One-shot migration for cabinets created before facts.origin existed
+   * (stage 2b). SQLite has no ADD COLUMN IF NOT EXISTS, so probe
+   * pragma_table_info first. The CHECK constraint is enforced by SQLite on
+   * ADD COLUMN as long as the default value ('stated') satisfies it, which it
+   * does — every existing row backfills to 'stated', the correct value since
+   * every current write path is explicit operator/agent input.
+   */
+  private migrateAddFactsOrigin(): void {
+    const hasOrigin = this.db
+      .prepare(`select 1 from pragma_table_info('facts') where name = 'origin'`)
+      .get();
+    if (hasOrigin) return;
+    this.db.exec(
+      `alter table facts add column origin text not null default 'stated' check (origin in ('stated', 'derived'));`,
+    );
+  }
+
+  /**
+   * One-shot migration for cabinets created before facts had an identity
+   * constraint (stage 2b): backfill any pre-existing (scope, topic_key)
+   * collisions among active rows, then create the partial unique index that
+   * makes factsAdd an upsert going forward.
+   *
+   * Non-destructive: NEVER deletes a row, NEVER merges two rows' content.
+   * For each collision group, the newest row keeps its topic_key — newest by
+   * `updated_at desc, id desc`, i.e. most recently edited, with id breaking
+   * the millisecond ties that rapid writes can produce. Every older row in
+   * the group is nulled on topic_key only, so it survives intact and simply
+   * loses its identity key. An operator can re-key it deliberately later.
+   *
+   * Guarded on the index's own existence (not a column probe, since this
+   * migrates an index, not a column) so it runs exactly once per cabinet —
+   * idempotent by construction, and init() re-running it on every open is
+   * therefore cheap after the first run. The live homelab cabinet (24 facts,
+   * already unique per scope) is a no-op here; the migration still had to be
+   * verified against a cabinet that does collide (see stage report).
+   */
+  private migrateFactsTopicKeyIdentity(): void {
+    const hasIndex = this.db
+      .prepare(`select 1 from pragma_index_list('facts') where name = 'idx_facts_topic_active_unique'`)
+      .get();
+    if (hasIndex) return;
+    this.db.exec(
+      // "Newest" = most recently EDITED, with id as the tiebreak: the row an
+      // operator touched last is the live one. Ordering by id alone would keep
+      // an untouched early row over a later-curated one. Must stay identical to
+      // the postgres backfill's `order by updated_at desc, id desc`.
+      `update facts
+       set topic_key = null
+       where status = 'active'
+         and topic_key is not null
+         and id not in (
+           select f2.id from facts f2
+           where f2.status = 'active' and f2.topic_key is not null
+             and f2.scope = facts.scope and f2.topic_key = facts.topic_key
+           order by f2.updated_at desc, f2.id desc
+           limit 1
+         );`,
+    );
+    this.db.exec(
+      `create unique index if not exists idx_facts_topic_active_unique
+       on facts(scope, topic_key)
+       where topic_key is not null and status = 'active';`,
+    );
+  }
+
   private vectorActive(): boolean {
     return this.vectorEnabled && this.embedder.enabled;
   }
@@ -199,6 +269,7 @@ export class SqliteStore implements Store {
       pinned: Number(r.pinned) === 1,
       importance: Number(r.importance),
       status: String(r.status) as FactStatus,
+      origin: String(r.origin) as FactOrigin,
       createdBy: (r.created_by as string | null) ?? null,
       source: (r.source as string | null) ?? null,
       createdAt: String(r.created_at),
@@ -207,14 +278,36 @@ export class SqliteStore implements Store {
   }
 
   async factsAdd(input: FactInput): Promise<Fact> {
+    const scope = input.scope ?? "global";
+    // Identity contract (Fact.topicKey's JSDoc): unique per scope among ACTIVE
+    // rows. Writing the same (scope, topicKey) edits that row in place instead
+    // of racing the partial unique index into a constraint error — dedup on
+    // write, never a second row, never a supersede chain (d20bbb3 stands).
+    // Archived rows are exempt from the lookup (and the index), so a retired
+    // key never blocks a fresh active fact from claiming it.
+    //
+    // The `status === "active"` guard is load-bearing, not defensive. Without
+    // it, adding an ARCHIVED fact whose key an ACTIVE row already holds would
+    // find that active row and route the write through factsUpdate — silently
+    // overwriting an unrelated live fact's text and archiving it, with a 200
+    // and no signal. Adding a non-active row cannot collide, because the
+    // partial unique index only constrains active rows; it is a plain insert.
+    if (input.topicKey && (input.status ?? "active") === "active") {
+      const existing = this.db
+        .prepare(`select id from facts where scope = ? and topic_key = ? and status = 'active'`)
+        .get(scope, input.topicKey) as Row | undefined;
+      if (existing) {
+        return this.factsUpdate(Number(existing.id), input);
+      }
+    }
     const ts = nowIso();
     const info = this.db
       .prepare(
-        `insert into facts(scope, category, fact, detail, topic_key, pinned, importance, status, created_by, source, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `insert into facts(scope, category, fact, detail, topic_key, pinned, importance, status, origin, created_by, source, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        input.scope ?? "global",
+        scope,
         input.category ?? "",
         input.fact,
         input.detail ?? null,
@@ -226,6 +319,7 @@ export class SqliteStore implements Store {
         // not sort dead last.
         input.importance ?? 0.6,
         input.status ?? "active",
+        input.origin ?? "stated",
         input.createdBy ?? null,
         input.source ?? null,
         ts,
@@ -306,6 +400,7 @@ export class SqliteStore implements Store {
       pinned: patch.pinned !== undefined ? patch.pinned : existing.pinned,
       importance: patch.importance !== undefined ? patch.importance : existing.importance,
       status: patch.status !== undefined ? patch.status : existing.status,
+      origin: patch.origin !== undefined ? patch.origin : existing.origin,
       source: patch.source !== undefined ? patch.source : existing.source,
       createdBy: patch.createdBy !== undefined ? patch.createdBy : existing.createdBy,
     };
@@ -317,24 +412,47 @@ export class SqliteStore implements Store {
         .prepare(`insert into fts_facts(fts_facts, rowid, fact, detail) values ('delete', ?, ?, ?)`)
         .run(id, existing.fact, existing.detail ?? null);
     }
-    this.db
-      .prepare(
-        `update facts set scope = ?, category = ?, fact = ?, detail = ?, topic_key = ?, pinned = ?, importance = ?, status = ?, source = ?, created_by = ?, updated_at = ? where id = ?`,
-      )
-      .run(
-        next.scope,
-        next.category,
-        next.fact,
-        next.detail ?? null,
-        next.topicKey ?? null,
-        next.pinned ? 1 : 0,
-        next.importance,
-        next.status,
-        next.source ?? null,
-        next.createdBy ?? null,
-        nowIso(),
-        id,
-      );
+    try {
+      this.db
+        .prepare(
+          `update facts set scope = ?, category = ?, fact = ?, detail = ?, topic_key = ?, pinned = ?, importance = ?, status = ?, origin = ?, source = ?, created_by = ?, updated_at = ? where id = ?`,
+        )
+        .run(
+          next.scope,
+          next.category,
+          next.fact,
+          next.detail ?? null,
+          next.topicKey ?? null,
+          next.pinned ? 1 : 0,
+          next.importance,
+          next.status,
+          next.origin,
+          next.source ?? null,
+          next.createdBy ?? null,
+          nowIso(),
+          id,
+        );
+    } catch (err) {
+      // The partial unique index only constrains ACTIVE rows with a topicKey.
+      // factsAdd's upsert lookup prevents this on the write path it controls,
+      // but a direct factsUpdate can still ask to (a) rename topicKey to one
+      // another active fact already holds, or (b) un-archive a fact back into
+      // a key an active fact has since claimed. Both are genuinely ambiguous —
+      // silently overwriting or silently dropping the key would hide operator
+      // intent — so this fails loudly with a resolvable message rather than
+      // duplicating a row or clobbering the other fact.
+      if (
+        err instanceof Error &&
+        /unique constraint failed/i.test(err.message) &&
+        /topic_key/i.test(err.message)
+      ) {
+        throw new StoreError(
+          `cannot set fact ${id} active with topicKey "${next.topicKey}" in scope "${next.scope}" — ` +
+            `another active fact already holds that key; archive or re-key it first`,
+        );
+      }
+      throw err;
+    }
     if (textChanged) {
       this.db
         .prepare(`insert into fts_facts(rowid, fact, detail) values (?, ?, ?)`)

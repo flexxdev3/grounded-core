@@ -13,6 +13,10 @@ create table if not exists facts (
   -- default of 0.6 is applied in factsAdd (sqlite.ts), not here.
   importance real not null default 0,
   status text not null default 'active',
+  -- 'stated' = written by an operator/agent that meant it (every current write
+  -- path). 'derived' is reserved for Phase 8 synthesis, which must never be
+  -- able to present its inferences as operator truth.
+  origin text not null default 'stated' check (origin in ('stated', 'derived')),
   created_by text,
   source text,
   created_at text not null,

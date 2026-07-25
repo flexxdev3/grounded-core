@@ -126,7 +126,7 @@ export function FactsView() {
           pinned={f.pinned}
           status={f.status}
           statusColor={STATUS_COLOR[f.status]}
-          meta={`${f.scope}${f.importance ? ` · ${f.importance.toFixed(2)}` : ""}`}
+          meta={`${f.scope}${f.importance ? ` · ${f.importance.toFixed(2)}` : ""}${f.origin === "derived" ? " · derived" : ""}`}
           onClick={() => openRecord(`fact:${f.id}`)}
         />
       ))}

@@ -103,6 +103,46 @@ describe("@grounded/api fact status", () => {
     const body = await res.json();
     expect(body.code).toBe("VALIDATION_ERROR");
   });
+
+  it("defaults origin to 'stated' on POST /facts, and accepts an explicit 'derived'", async () => {
+    const defaulted = await (await post("/facts", { fact: "no origin given" })).json();
+    expect(defaulted.origin).toBe("stated");
+
+    const derived = await (
+      await post("/facts", { fact: "explicitly derived", origin: "derived" })
+    ).json();
+    expect(derived.origin).toBe("derived");
+  });
+
+  it("rejects an invalid origin on POST /facts and stores nothing", async () => {
+    const before = await (await get("/facts?status=all")).json();
+    const res = await post("/facts", { fact: "bogus origin fact", origin: "guessed" });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("VALIDATION_ERROR");
+    const after = await (await get("/facts?status=all")).json();
+    expect(after.data.length).toBe(before.data.length);
+  });
+
+  it("PATCH accepts an explicit origin change and rejects an invalid one", async () => {
+    const created = await (await post("/facts", { fact: "origin patch target" })).json();
+    expect(created.origin).toBe("stated");
+
+    const patched = await patch(`/facts/${created.id}`, { origin: "derived" });
+    expect(patched.status).toBe(200);
+    const patchedBody = await patched.json();
+    expect(patchedBody.origin).toBe("derived");
+
+    const rejected = await patch(`/facts/${created.id}`, { origin: "bogus" });
+    expect(rejected.status).toBe(400);
+    const rejectedBody = await rejected.json();
+    expect(rejectedBody.code).toBe("VALIDATION_ERROR");
+
+    // the invalid PATCH must not have half-applied.
+    const unchanged = await (await get(`/facts?status=all`)).json();
+    const stillDerived = unchanged.data.find((f: { id: number }) => f.id === created.id);
+    expect(stillDerived.origin).toBe("derived");
+  });
 });
 
 describe("@grounded/api docs scope/source", () => {

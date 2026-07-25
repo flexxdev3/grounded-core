@@ -83,18 +83,36 @@ export interface GroundedClient {
     delete(id: number): Promise<{ deleted: boolean; id: number }>;
   };
   facts: {
-    /** Returns the created fact plus its `delivery` position (rank among
+    /**
+     * Returns the created fact plus its `delivery` position (rank among
      * active facts in its scope, `ofActive`, and a warning when the rank
-     * falls outside the typical consumer limit). */
+     * falls outside the typical consumer limit).
+     *
+     * `input.topicKey` doubles as an upsert key: if it matches an already-
+     * ACTIVE fact in the same scope, this edits that fact in place
+     * (merge-patch — any field you omit keeps its stored value) instead of
+     * creating a second, competing row. Restating a pinned fact through
+     * `add` without repeating `pinned: true` will NOT unpin it. An archived
+     * fact holding the same key does not block a fresh active row from
+     * claiming it — un-archiving into a key an active row already holds
+     * throws instead of silently merging.
+     *
+     * `input.origin` defaults to `"stated"` (an operator or agent asserting
+     * this outright) when omitted. `"derived"` is reserved for synthesis —
+     * never set it to make an inference look like operator truth.
+     */
     add(input: FactInput): Promise<FactWriteResponse>;
     /** `meta.available` is the true match count before limit/offset (never
      * derived from `data.length`); `meta.truncated` says whether more exist
      * than were returned. */
     list(opts?: ListOptions): Promise<ListResult<Fact>>;
     delete(id: number): Promise<{ deleted: boolean; id: number }>;
-    /** Edit fact `id` in place (partial patch). Returns the updated fact
-     * plus its `delivery` position — see `add`. `delivery` is omitted when
-     * the patched fact is archived (no delivery position exists). */
+    /**
+     * Edit fact `id` in place (partial patch — omitted fields keep their
+     * stored value, including `origin`). Returns the updated fact plus its
+     * `delivery` position — see `add`. `delivery` is omitted when the
+     * patched fact is archived (no delivery position exists).
+     */
     update(id: number, patch: Partial<FactInput>): Promise<FactWriteResponse>;
   };
   sessions: {

@@ -10,6 +10,7 @@ import type {
   DeliveryRank,
   Fact,
   FactInput,
+  FactOrigin,
   FactStatus,
   FactWriteResponse,
   IngestOptions,
@@ -89,6 +90,16 @@ function optFactStatus(v: unknown, field: string): FactStatus | undefined {
   return v as FactStatus;
 }
 
+const FACT_ORIGINS = ["stated", "derived"] as const;
+
+function optFactOrigin(v: unknown, field: string): FactOrigin | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string" || !FACT_ORIGINS.includes(v as (typeof FACT_ORIGINS)[number])) {
+    throw new ValidationError(`"${field}" must be one of ${FACT_ORIGINS.join(", ")}`);
+  }
+  return v as FactOrigin;
+}
+
 function optStringArray(v: unknown, field: string): string[] | undefined {
   if (v === undefined || v === null) return undefined;
   if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) {
@@ -134,6 +145,7 @@ function factInput(body: unknown): FactInput {
     pinned: optBool(body.pinned, "pinned"),
     importance: optNumber(body.importance, "importance"),
     status: optFactStatus(body.status, "status"),
+    origin: optFactOrigin(body.origin, "origin"),
     createdBy: optString(body.createdBy, "createdBy"),
     source: optString(body.source, "source"),
   };
@@ -150,6 +162,7 @@ function factPatch(body: unknown): Partial<FactInput> {
   if (body.pinned !== undefined) patch.pinned = optBool(body.pinned, "pinned");
   if (body.importance !== undefined) patch.importance = optNumber(body.importance, "importance");
   if (body.status !== undefined) patch.status = optFactStatus(body.status, "status");
+  if (body.origin !== undefined) patch.origin = optFactOrigin(body.origin, "origin");
   if (body.createdBy !== undefined) patch.createdBy = optString(body.createdBy, "createdBy");
   if (body.source !== undefined) patch.source = optString(body.source, "source");
   return patch;
