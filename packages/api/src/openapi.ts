@@ -263,6 +263,41 @@ export const openApiDocument = {
           snippet: { type: "string" },
         },
       },
+      ImpactResult: {
+        type: "object",
+        required: ["sourceType", "id", "typedId", "title", "score", "matchedBy", "citation", "snippet", "inScope", "scope"],
+        description:
+          "A RecallResult card plus the lane verdict. When inScope is false the hit is citation-only: title and snippet are null (never omitted) — the caller learns THAT a dependency exists and where, but not what it says. Lane gating applies to docs only; facts and sessions are always inScope:true with scope:\"global\".",
+        properties: {
+          sourceType: { type: "string", enum: ["fact", "session", "doc"] },
+          id: { type: "integer" },
+          typedId: { type: "string" },
+          title: {
+            type: ["string", "null"],
+            description: "Null exactly when inScope is false — withheld across a lane boundary.",
+          },
+          score: { type: "number" },
+          matchedBy: { type: "string", enum: ["vector", "lexical", "both"] },
+          createdAt: { type: ["string", "null"] },
+          updatedAt: { type: ["string", "null"] },
+          path: { type: ["string", "null"] },
+          source: { type: ["string", "null"] },
+          citation: { type: "string" },
+          snippet: {
+            type: ["string", "null"],
+            description: "Null exactly when inScope is false — withheld across a lane boundary.",
+          },
+          inScope: {
+            type: "boolean",
+            description: "False only for docs outside ImpactOptions.scopes.",
+          },
+          scope: {
+            type: "string",
+            description:
+              'The doc lane this hit lives in — always present, including when withheld. Facts and sessions are not laned and always report "global".',
+          },
+        },
+      },
       IngestReport: {
         type: "object",
         required: ["scanned", "added", "updated", "skipped", "retagged", "removed", "paths"],
@@ -751,6 +786,60 @@ export const openApiDocument = {
                   required: ["data", "meta"],
                   properties: {
                     data: { type: "array", items: { $ref: "#/components/schemas/RecallResult" } },
+                    meta: { $ref: "#/components/schemas/DeliveryMeta" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/impact": {
+      post: {
+        summary: "Reverse lookup — what depends on this? (dependency pre-flight)",
+        description:
+          "Lexical-only by construction: a subject is a literal token (a container name, a port, a path), not a natural-language query. Impact deliberately CROSSES lane boundaries — it is the only operation that does. Out-of-lane doc hits are still returned (not filtered out) with inScope:false and title/snippet set to null: citation-only, content withheld. meta.available counts withheld hits too. Run this before stopping, removing, deleting, or renaming infrastructure.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["subject"],
+                properties: {
+                  subject: {
+                    type: "string",
+                    description: "A literal token to search for — e.g. a container name, a port, a path. Not a natural-language question.",
+                  },
+                  limit: { type: "integer" },
+                  project: { type: "string" },
+                  sources: {
+                    type: "array",
+                    items: { type: "string", enum: ["fact", "session", "doc"] },
+                  },
+                  scopes: {
+                    type: "array",
+                    items: { type: "string" },
+                    description:
+                      'Doc lanes whose CONTENT the caller may see. Defaults to ["global"] when omitted. Unlike /recall\'s scopes, this does NOT filter the result set — out-of-lane hits are still returned with inScope:false and withheld content. Routing, not enforcement — self-declared by the caller.',
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description:
+              "Reverse-lookup cards (citation-only when out of lane), plus delivery accounting. meta.available includes withheld hits.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["data", "meta"],
+                  properties: {
+                    data: { type: "array", items: { $ref: "#/components/schemas/ImpactResult" } },
                     meta: { $ref: "#/components/schemas/DeliveryMeta" },
                   },
                 },

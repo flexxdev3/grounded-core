@@ -1086,5 +1086,208 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.visionDelete(v1!.id);
       await store.visionDelete(v2!.id);
     });
+
+    // -----------------------------------------------------------------
+    // impact() — reverse lookup, lexical-only, crosses lane boundaries by
+    // FLAGGING out-of-lane docs instead of DROPPING them (recall's behavior).
+    // Every test here is written to fail against a fake that either (a)
+    // quietly reuses recall's filter-then-drop semantics, or (b) falls back
+    // to vector search, or (c) undercounts withheld hits in `meta.available`.
+    // -----------------------------------------------------------------
+
+    it("impact: lexical reverse lookup works with no embeddings (matchedBy === 'lexical')", async () => {
+      const uniqueToken = "zzqimpactlexicaltoken";
+      const f = await store.factsAdd({
+        fact: `${uniqueToken} depends on this subject`,
+        category: "impact-test",
+      });
+
+      const result = await store.impact(uniqueToken, { sources: ["fact"] });
+      expect(result.data.length).toBeGreaterThan(0);
+      for (const r of result.data) {
+        expect(r.matchedBy).toBe("lexical");
+        expect(r.citation).toBeTruthy();
+      }
+
+      await store.factsDelete(f.id);
+    });
+
+    it("impact: citation-only across a lane boundary — the out-of-lane doc is present, flagged, content withheld", async () => {
+      const uniqueToken = "zzqimpactlaneboundarytoken";
+      const globalDir = mkdtempSync(join(tmpdir(), "grounded-impact-global-test-"));
+      const adminDir = mkdtempSync(join(tmpdir(), "grounded-impact-admin-test-"));
+      writeFileSync(
+        join(globalDir, "impact-global-doc.md"),
+        `# Impact Global Doc\n\n${uniqueToken} engineering corpus prose that depends on the subject.\n`,
+        "utf8",
+      );
+      writeFileSync(
+        join(adminDir, "impact-admin-doc.md"),
+        `# Impact Admin Doc\n\n${uniqueToken} administration business prose that also depends on it.\n`,
+        "utf8",
+      );
+
+      await store.docsIngest([globalDir], { source: "impact-lane-test" });
+      await store.docsIngest([adminDir], { source: "impact-lane-test", scope: "administration" });
+
+      // default scopes → ['global']
+      const result = await store.impact(uniqueToken, { sources: ["doc"], limit: 10 });
+
+      const adminHit = result.data.find((r) => r.scope === "administration");
+      expect(adminHit).toBeTruthy(); // NOT dropped — this is the whole point
+      expect(adminHit!.inScope).toBe(false);
+      expect(adminHit!.title).toBeNull();
+      expect(adminHit!.snippet).toBeNull();
+      expect(adminHit!.citation).toBeTruthy();
+      expect(adminHit!.path).toBeTruthy();
+      expect(adminHit!.scope).toBe("administration");
+
+      // the in-scope global doc, same call: content intact
+      const globalHit = result.data.find((r) => r.scope === "global");
+      expect(globalHit).toBeTruthy();
+      expect(globalHit!.inScope).toBe(true);
+      expect(globalHit!.title).not.toBeNull();
+      expect(globalHit!.snippet).not.toBeNull();
+      expect(globalHit!.snippet).toContain(uniqueToken);
+
+      // declaring the lane reveals the content
+      const declared = await store.impact(uniqueToken, {
+        sources: ["doc"],
+        limit: 10,
+        scopes: ["global", "administration"],
+      });
+      const revealed = declared.data.find((r) => r.scope === "administration");
+      expect(revealed).toBeTruthy();
+      expect(revealed!.inScope).toBe(true);
+      expect(revealed!.title).not.toBeNull();
+      expect(revealed!.snippet).not.toBeNull();
+      expect(revealed!.snippet).toContain(uniqueToken);
+
+      // recall() is UNCHANGED: the administration doc must not appear at all,
+      // not even withheld — this guarantees the filter-then-flag change did
+      // not leak into recall's filter-then-drop path.
+      const recalled = await store.recall(uniqueToken, { sources: ["doc"], limit: 10 });
+      expect(recalled.data.some((r) => r.path === adminHit!.path)).toBe(false);
+      expect(recalled.data.every((r) => r.scope !== "administration")).toBe(true);
+      // recall's own available accounting must not count the doc it dropped
+      expect(recalled.meta.bySource?.doc?.available).toBe(1);
+
+      rmSync(globalDir, { recursive: true, force: true });
+      rmSync(adminDir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("impact: meta.available counts a withheld hit even when it is the ONLY match (a found-but-hidden doc is not an absent one)", async () => {
+      const uniqueToken = "zzqimpactwithheldonlytoken";
+      const dir = mkdtempSync(join(tmpdir(), "grounded-impact-withheld-only-test-"));
+      writeFileSync(
+        join(dir, "impact-withheld-only-doc.md"),
+        `# Impact Withheld Only Doc\n\n${uniqueToken} lives only in the administration lane.\n`,
+        "utf8",
+      );
+      await store.docsIngest([dir], { source: "impact-withheld-only-test", scope: "administration" });
+
+      const result = await store.impact(uniqueToken, { sources: ["doc"], limit: 10 });
+      expect(result.data.length).toBe(1);
+      expect(result.data[0]!.inScope).toBe(false);
+      expect(result.data[0]!.title).toBeNull();
+      // the doc was found — a fake that computes available from in-scope
+      // hits only would report 0 here.
+      expect(result.meta.available).toBe(1);
+      expect(result.meta.bySource?.doc?.available).toBe(1);
+      expect(result.meta.returned).toBe(1);
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("impact: facts and sessions are never laned — always inScope:true, scope:'global', regardless of declared doc scopes", async () => {
+      const uniqueToken = "zzqimpactunlanedtoken";
+      const f = await store.factsAdd({
+        fact: `${uniqueToken} fact that some other thing depends on`,
+        category: "impact-test",
+      });
+      const s = await store.sessionsAdd({
+        summary: `${uniqueToken} session that some other thing depends on`,
+      });
+
+      // declare a doc scope that isn't "global" at all — facts/sessions must
+      // be unaffected, because `scopes` means the DOC lane, not a general filter.
+      const result = await store.impact(uniqueToken, {
+        sources: ["fact", "session"],
+        scopes: ["some-unrelated-lane"],
+      });
+
+      const factHit = result.data.find((r) => r.sourceType === "fact" && r.id === f.id);
+      const sessionHit = result.data.find((r) => r.sourceType === "session" && r.id === s.id);
+      expect(factHit).toBeTruthy();
+      expect(sessionHit).toBeTruthy();
+      expect(factHit!.inScope).toBe(true);
+      expect(factHit!.scope).toBe("global");
+      expect(sessionHit!.inScope).toBe(true);
+      expect(sessionHit!.scope).toBe("global");
+
+      await store.factsDelete(f.id);
+    });
+
+    it("impact: limit and truncated accounting — available reflects the true match count, returned is capped, truncated is honest", async () => {
+      const uniqueToken = "zzqimpactlimittoken";
+      const scope = "test:impact-limit";
+      const seedCount = 12;
+      const limit = 4;
+      const ids: number[] = [];
+      for (let i = 0; i < seedCount; i++) {
+        const f = await store.factsAdd({
+          fact: `${uniqueToken} candidate ${i}`,
+          scope,
+          importance: 0.5,
+        });
+        ids.push(f.id);
+      }
+
+      const result = await store.impact(uniqueToken, { sources: ["fact"], limit });
+      expect(result.data.length).toBeLessThanOrEqual(limit);
+      expect(result.meta.returned).toBeLessThanOrEqual(limit);
+      expect(result.meta.available).toBe(seedCount);
+      expect(result.meta.truncated).toBe(true);
+
+      for (const id of ids) await store.factsDelete(id);
+    });
+
+    it("impact: limit overrides recall's sourceCaps — a dependency pre-flight is not a top-10 reading list", async () => {
+      // recall.sourceCaps defaults to 10 per source. A caller asking what
+      // depends on a subject must be able to see all of it; capping a
+      // pre-flight at an unrelated ranking constant is the wrong answer even
+      // with truncated:true saying so.
+      const uniqueToken = "zzqimpactcapoverridetoken";
+      const scope = "test:impact-cap";
+      const seedCount = 14; // > the default sourceCap of 10
+      const ids: number[] = [];
+      for (let i = 0; i < seedCount; i++) {
+        const f = await store.factsAdd({ fact: `${uniqueToken} dependent ${i}`, scope });
+        ids.push(f.id);
+      }
+
+      const result = await store.impact(uniqueToken, { sources: ["fact"], limit: seedCount });
+      expect(result.meta.available).toBe(seedCount);
+      expect(result.data.length).toBe(seedCount); // NOT clamped to 10
+      expect(result.meta.returned).toBe(seedCount);
+      expect(result.meta.truncated).toBe(false);
+
+      for (const id of ids) await store.factsDelete(id);
+    });
+
+    it("impact: no-match subject returns empty data without throwing; a punctuation-only subject exercises the FTS sanitiser", async () => {
+      const noMatch = await store.impact("zzqimpactnosuchsubjectatall999");
+      expect(noMatch.data).toEqual([]);
+      expect(noMatch.meta.returned).toBe(0);
+      expect(noMatch.meta.available).toBe(0);
+      expect(noMatch.meta.truncated).toBe(false);
+
+      // punctuation-only subject must not throw (sqlite FTS5 query sanitiser)
+      await expect(store.impact("---")).resolves.not.toThrow();
+      const punctuationOnly = await store.impact("---");
+      expect(Array.isArray(punctuationOnly.data)).toBe(true);
+    });
   });
 }

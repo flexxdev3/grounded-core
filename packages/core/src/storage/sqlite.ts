@@ -18,6 +18,8 @@ import type {
   FullRecord,
   GroundedConfig,
   HealthReport,
+  ImpactOptions,
+  ImpactResult,
   IngestOptions,
   IngestReport,
   ListOptions,
@@ -1052,10 +1054,38 @@ export class SqliteStore implements Store {
     return map;
   }
 
-  private docsMeta(ids: number[], scopes: string[]): Map<number, CandidateMeta> {
+  /**
+   * `flagMode` (used only by `impact()`) fetches EVERY row in `ids` — no scope
+   * predicate — and instead records `.scope`/`.inScope` per row so the caller
+   * can flag out-of-lane docs rather than dropping them. Defaults to false so
+   * `recall()`'s call site (filter-then-drop, unchanged) is untouched.
+   */
+  private docsMeta(
+    ids: number[],
+    scopes: string[],
+    flagMode = false,
+  ): Map<number, CandidateMeta> {
     const map = new Map<number, CandidateMeta>();
     if (ids.length === 0) return map;
     const placeholders = ids.map(() => "?").join(",");
+    if (flagMode) {
+      const rows = this.db
+        .prepare(
+          `select id, status, scope from docs where id in (${placeholders})`,
+        )
+        .all(...ids) as Row[];
+      for (const r of rows) {
+        const scope = String(r.scope);
+        map.set(Number(r.id), {
+          sourceType: "doc",
+          id: Number(r.id),
+          active: String(r.status) === "active",
+          scope,
+          inScope: scopes.includes(scope),
+        });
+      }
+      return map;
+    }
     // scope-filtered: a lane hit outside the caller's declared scopes must not
     // survive recall — filtering here (not just demoting) means a lane hit with
     // no meta entry can be dropped by the caller. Mirrors the facts active-only filter.
@@ -1199,6 +1229,126 @@ export class SqliteStore implements Store {
       bySource,
     };
     return { data, meta };
+  }
+
+  /**
+   * Reverse lookup: "what depends on this subject?" — see Store.impact's doc
+   * comment in contract.ts. Lexical-only by construction (no vector lane, no
+   * embedding call). Docs are fetched across ALL lanes (flag-mode `docsMeta`)
+   * and flagged `inScope`/`scope` rather than dropped, so an agent learns THAT
+   * an out-of-lane doc depends on the subject without seeing its content.
+   */
+  async impact(subject: string, opts?: ImpactOptions): Promise<ListResult<ImpactResult>> {
+    const sources: SourceType[] = opts?.sources ?? ["fact", "session", "doc"];
+    const limit = opts?.limit ?? 20;
+    const laneN = Math.max(limit * 3, 20);
+    const matchExpr = sanitizeFts(subject);
+    const declaredScopes = opts?.scopes && opts.scopes.length > 0 ? opts.scopes : ["global"];
+    // `limit` is authoritative for impact — recall's sourceCaps are a RANKING
+    // cap (a top-N reading list) and must not bound a dependency pre-flight.
+    // "42 things depend on this, here are 10" is the wrong answer to give an
+    // agent about to delete something, even with truncated:true saying so.
+    const impactCfg: GroundedConfig = {
+      ...this.cfg,
+      recall: {
+        ...this.cfg.recall,
+        sourceCaps: { fact: limit, session: limit, doc: limit },
+      },
+    };
+
+    const fused: FusedItem[] = [];
+    const orderMeta = new Map<string, CandidateMeta>();
+    const bySource: NonNullable<DeliveryMeta["bySource"]> = {};
+
+    for (const st of sources) {
+      const [ftsTable, mainTable] =
+        st === "fact" ? ["fts_facts", "facts"]
+        : st === "session" ? ["fts_sessions", "sessions"]
+        : ["fts_docs", "docs"];
+      const lex = this.lexicalLane(
+        ftsTable,
+        mainTable,
+        matchExpr,
+        st === "session" ? opts?.project : undefined,
+        laneN,
+      );
+      if (lex.length === 0) continue;
+      const ids = lex.map((h) => h.id);
+      const meta =
+        st === "doc"
+          ? this.docsMeta(ids, declaredScopes, true)
+          : st === "fact"
+            ? this.factsMeta(ids)
+            : this.sessionsMeta(ids);
+      // re-rank densely over ids present in meta — mirrors recall()'s
+      // filter-then-drop idiom, except for docs (flag-mode: every hit has a
+      // meta entry, none are dropped here — the withholding happens in
+      // toImpactResult via meta.inScope).
+      const lexFiltered = lex
+        .filter((h) => meta.has(h.id))
+        .map((h, i) => ({ id: h.id, rank: i }));
+      const laneFused = fuseLane(st, [], lexFiltered, meta, impactCfg).slice(0, limit);
+      for (const f of laneFused) {
+        fused.push(f);
+        const m = meta.get(f.id);
+        if (m) orderMeta.set(`${st}:${f.id}`, m);
+      }
+      const available = meta.size;
+      bySource[st] = {
+        returned: laneFused.length,
+        available,
+        truncated: laneFused.length < available || lex.length >= laneN,
+      };
+    }
+
+    const ordered = orderResults(fused, orderMeta);
+    const data: ImpactResult[] = [];
+    for (const f of ordered) {
+      const r = this.toImpactResult(f, orderMeta);
+      if (r) data.push(r);
+    }
+    const totalAvailable = Object.values(bySource).reduce((sum, s) => sum + (s?.available ?? 0), 0);
+    const anyTruncated = Object.values(bySource).some((s) => s?.truncated);
+    const meta: DeliveryMeta = {
+      returned: data.length,
+      available: totalAvailable,
+      truncated: anyTruncated,
+      limit,
+      bySource,
+    };
+    return { data, meta };
+  }
+
+  /**
+   * Hydrates a fused impact hit into an `ImpactResult`. Defensive: returns
+   * null (never throws) when the row vanished between the meta query and this
+   * fetch — mirrors the postgres adapter. Facts/sessions are always in scope;
+   * out-of-scope docs get their title/snippet withheld.
+   */
+  private toImpactResult(
+    f: FusedItem,
+    orderMeta: Map<string, CandidateMeta>,
+  ): ImpactResult | null {
+    // toRecallResult is NOT null-guarded (known latent issue, out of scope —
+    // see the impact() spec) — it throws if the row vanished between the meta
+    // query and this fetch. Guard it here instead of touching that method.
+    let base: RecallResult;
+    try {
+      base = this.toRecallResult(f);
+    } catch {
+      return null;
+    }
+    if (!base) return null;
+    if (f.sourceType !== "doc") {
+      return { ...base, scope: "global", inScope: true };
+    }
+    const m = orderMeta.get(`doc:${f.id}`);
+    const scope = m?.scope ?? "global";
+    const inScope = m?.inScope !== false;
+    if (inScope) {
+      return { ...base, scope, inScope: true };
+    }
+    return { ...base, scope, inScope: false, title: null, snippet: null };
   }
 
   private filterSessionVecByProject(

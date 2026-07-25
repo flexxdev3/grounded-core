@@ -15,6 +15,8 @@ import type {
   FullRecord,
   GroundedConfig,
   HealthReport,
+  ImpactOptions,
+  ImpactResult,
   IngestOptions,
   IngestReport,
   ListOptions,
@@ -1061,6 +1063,112 @@ export class PostgresStore implements Store {
     };
   }
 
+  /**
+   * Reverse lookup: "what depends on this subject?" — lexical-only (no vector
+   * lane, no embed call), and crosses doc-lane boundaries by flagging
+   * out-of-lane hits instead of dropping them (filter-then-flag, vs recall's
+   * filter-then-drop). See Store.impact's doc comment in contract.ts.
+   */
+  async impact(subject: string, opts?: ImpactOptions): Promise<ListResult<ImpactResult>> {
+    const sources: SourceType[] = opts?.sources ?? ["fact", "session", "doc"];
+    const limit = opts?.limit ?? 20;
+    const laneN = Math.max(limit * 3, 20);
+    const declaredScopes = opts?.scopes && opts.scopes.length > 0 ? opts.scopes : ["global"];
+    // `limit` is authoritative for impact — recall's sourceCaps are a RANKING
+    // cap (a top-N reading list) and must not bound a dependency pre-flight.
+    // "42 things depend on this, here are 10" is the wrong answer to give an
+    // agent about to delete something, even with truncated:true saying so.
+    const impactCfg: GroundedConfig = {
+      ...this.cfg,
+      recall: {
+        ...this.cfg.recall,
+        sourceCaps: { fact: limit, session: limit, doc: limit },
+      },
+    };
+
+    const tableFor: Record<SourceType, string> = {
+      fact: "facts",
+      session: "sessions",
+      doc: "docs",
+    };
+
+    const fused: FusedItem[] = [];
+    const orderMeta = new Map<string, CandidateMeta>();
+    const bySource: NonNullable<DeliveryMeta["bySource"]> = {};
+
+    for (const st of sources) {
+      const table = tableFor[st];
+      const proj = st === "session" ? opts?.project : undefined;
+      const lex = await this.lexicalLane(table, subject, proj, laneN);
+      if (lex.length === 0) continue;
+      const ids = lex.map((h) => h.id);
+
+      let meta: Map<number, CandidateMeta>;
+      if (st === "doc") {
+        // Flag-mode fetch: NO scope predicate — unlike metaFor's recall-path
+        // query, out-of-lane docs are kept (and flagged inScope:false below),
+        // never dropped. This is the one place impact() diverges from recall's
+        // scope-filtered metaFor query.
+        meta = new Map<number, CandidateMeta>();
+        const res = await this.pool.query(
+          `select id, status, scope from ${this.q("docs")} where id = any($1)`,
+          [ids],
+        );
+        for (const r of res.rows as Row[]) {
+          const rowScope = String(r.scope);
+          meta.set(Number(r.id), {
+            sourceType: "doc",
+            id: Number(r.id),
+            active: String(r.status) === "active",
+            scope: rowScope,
+            inScope: declaredScopes.includes(rowScope),
+          });
+        }
+      } else {
+        // fact/session paths UNCHANGED — facts still filter status='active',
+        // sessions unfiltered. Reused as-is from recall().
+        meta = await this.metaFor(st, ids);
+      }
+
+      // Drop any lane hit whose id has no meta entry and re-rank so RRF ranks
+      // stay dense — same idiom recall() uses for its fact/doc filtering.
+      const lexFiltered = lex
+        .filter((h) => meta.has(h.id))
+        .map((h, i) => ({ id: h.id, rank: i }));
+
+      const laneFused = fuseLane(st, [], lexFiltered, meta, impactCfg).slice(0, limit);
+      for (const f of laneFused) {
+        fused.push(f);
+        const m = meta.get(f.id);
+        if (m) orderMeta.set(`${st}:${f.id}`, m);
+      }
+      bySource[st] = {
+        returned: laneFused.length,
+        available: meta.size,
+        truncated: laneFused.length < meta.size || lex.length >= laneN,
+      };
+    }
+
+    const ordered = orderResults(fused, orderMeta);
+    const out: ImpactResult[] = [];
+    for (const f of ordered) {
+      const r = await this.toImpactResult(f, orderMeta);
+      if (r) out.push(r);
+    }
+    const available = Object.values(bySource).reduce((sum, s) => sum + (s?.available ?? 0), 0);
+    const truncated = Object.values(bySource).some((s) => s?.truncated);
+    return {
+      data: out,
+      meta: {
+        returned: out.length,
+        available,
+        truncated,
+        limit,
+        bySource,
+      },
+    };
+  }
+
   private async toRecallResult(f: FusedItem): Promise<RecallResult | null> {
     if (f.sourceType === "fact") {
       const fact = await this.factsGet(f.id);
@@ -1114,6 +1222,28 @@ export class PostgresStore implements Store {
       citation: `doc:${d.source}/${d.path}#chunk${d.chunkIdx}`,
       snippet: truncate(d.body, 200),
     };
+  }
+
+  /**
+   * Decorate a fused item into an ImpactResult by reusing toRecallResult and
+   * adding the lane verdict. Facts/sessions are always in-scope/"global".
+   * Out-of-lane docs keep everything except title/snippet, which are withheld.
+   */
+  private async toImpactResult(
+    f: FusedItem,
+    orderMeta: Map<string, CandidateMeta>,
+  ): Promise<ImpactResult | null> {
+    const r = await this.toRecallResult(f);
+    if (!r) return null;
+    if (f.sourceType !== "doc") {
+      return { ...r, inScope: true, scope: "global" };
+    }
+    const m = orderMeta.get(`doc:${f.id}`);
+    const scope = m?.scope ?? "global";
+    if (m?.inScope === false) {
+      return { ...r, title: null, snippet: null, inScope: false, scope };
+    }
+    return { ...r, inScope: true, scope };
   }
 
   async get(typedId: TypedId): Promise<FullRecord | null> {

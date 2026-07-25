@@ -155,6 +155,22 @@ describe("@grounded/client against in-process createApp", () => {
     for (const r of results.data) expect(r.citation).toBeTruthy();
   });
 
+  it("impact reverse-looks-up a subject and reports withheld out-of-lane hits", async () => {
+    const token = `impact-subject-${Date.now()}`;
+    await client.facts.add({ fact: `Depends on ${token} for startup`, scope: "global" });
+    const results = await client.impact(token);
+    expect(Array.isArray(results.data)).toBe(true);
+    expect(results.meta).toHaveProperty("available");
+    for (const r of results.data) {
+      expect(r.citation).toBeTruthy();
+      expect(typeof r.inScope).toBe("boolean");
+      if (!r.inScope) {
+        expect(r.title).toBeNull();
+        expect(r.snippet).toBeNull();
+      }
+    }
+  });
+
   it("brief assembles context", async () => {
     const b = await client.brief({ project: "demo", format: "json" });
     expect(b.startupNote).toBeTruthy();

@@ -283,6 +283,36 @@ describe("@grounded/api docs scope/source", () => {
       store.recall = originalRecall;
     }
   });
+
+  it("POST /impact forwards subject and scopes to the store, and returns the envelope unwrapped", async () => {
+    const calls: Array<[string, unknown]> = [];
+    const originalImpact = store.impact.bind(store);
+    store.impact = (async (subject, opts) => {
+      calls.push([subject, opts]);
+      return originalImpact(subject, opts);
+    }) as typeof store.impact;
+    try {
+      const res = await post("/impact", {
+        subject: "grounded-postgres",
+        scopes: ["global", "administration"],
+      });
+      expect(res.status).toBe(200);
+      expect(calls.length).toBe(1);
+      expect(calls[0][0]).toBe("grounded-postgres");
+      const opts = calls[0][1] as Record<string, unknown>;
+      expect(opts.scopes).toEqual(["global", "administration"]);
+      const body = await res.json();
+      expect(body).toHaveProperty("data");
+      expect(body).toHaveProperty("meta");
+    } finally {
+      store.impact = originalImpact;
+    }
+  });
+
+  it("POST /impact rejects an invalid sources entry", async () => {
+    const res = await post("/impact", { subject: "x", sources: ["nope"] });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("@grounded/api delivery envelope", () => {

@@ -13,6 +13,7 @@ import type {
   FactOrigin,
   FactStatus,
   FactWriteResponse,
+  ImpactOptions,
   IngestOptions,
   ListOptions,
   RecallOptions,
@@ -413,6 +414,23 @@ export function createApp(
       scopes: optStringArray(body.scopes, "scopes"),
     };
     return c.json(await store.recall(query, recallOpts));
+  });
+
+  app.post("/impact", async (c) => {
+    const body = await readJson(c);
+    if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+    const subject = asString(body.subject, "subject");
+    const sources = optStringArray(body.sources, "sources");
+    if (sources && sources.some((s) => !SOURCE_TYPES.includes(s as SourceType))) {
+      throw new ValidationError(`"sources" must contain only ${SOURCE_TYPES.join(", ")}`);
+    }
+    const impactOpts: ImpactOptions = {
+      limit: optNumber(body.limit, "limit"),
+      project: optString(body.project, "project"),
+      sources: sources as SourceType[] | undefined,
+      scopes: optStringArray(body.scopes, "scopes"),
+    };
+    return c.json(await store.impact(subject, impactOpts));
   });
 
   app.post("/brief", async (c) => {

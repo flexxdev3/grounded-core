@@ -6,6 +6,7 @@ import { computeDeliveryRank } from "@grounded/core/delivery";
 import type {
   Store,
   RecallResult,
+  ImpactResult,
   SourceType,
   TypedId,
   BriefOptions,
@@ -49,6 +50,21 @@ function renderCard(r: RecallResult): string {
   const meta = [r.matchedBy, `score=${r.score.toFixed(4)}`].join(" · ");
   const where = r.path ?? r.source ?? "";
   const tail = where ? `  (${where})` : "";
+  return `[${r.typedId}] ${r.title}${tail}\n  ${meta} · ${r.citation}\n  ${r.snippet}`;
+}
+
+/**
+ * Compact one-line render of an impact card. Out-of-lane hits are withheld —
+ * they must read as "a dependency exists, here's where" rather than a blank
+ * or nulled-out card, so this does NOT delegate to renderCard.
+ */
+function renderImpactCard(r: ImpactResult): string {
+  const meta = [r.matchedBy, `score=${r.score.toFixed(4)}`].join(" · ");
+  const where = r.path ?? r.source ?? "";
+  const tail = where ? `  (${where})` : "";
+  if (!r.inScope) {
+    return `[${r.typedId}] (content withheld — lane: ${r.scope})${tail}\n  ${meta} · ${r.citation}`;
+  }
   return `[${r.typedId}] ${r.title}${tail}\n  ${meta} · ${r.citation}\n  ${r.snippet}`;
 }
 
@@ -113,6 +129,52 @@ export function createServer(store: Store, opts: { typicalFactLimit?: number } =
         `${meta.returned} of ${meta.available} matched` +
         (bySourceParts.length ? ` (${bySourceParts.join(" · ")}${meta.truncated ? ", truncated" : ""})` : "");
       const cards = data.map(renderCard).join("\n\n");
+      const body = `${metaLine}\n\n${cards}\n\n--- raw JSON (pick typedId) ---\n${JSON.stringify(data)}`;
+      return text(body);
+    }),
+  );
+
+  server.registerTool(
+    "ground_impact",
+    {
+      title: "Impact",
+      description:
+        "Reverse lookup — 'what depends on X?'. Call this BEFORE stopping, removing, deleting, or " +
+        "renaming infrastructure (a container, a port, a path, a service) as a dependency pre-flight, " +
+        "not a search. Lexical-only by construction: subject is a literal token, not a natural-language " +
+        "query. Deliberately crosses lane boundaries — out-of-lane doc hits are still returned, but " +
+        "content-withheld: you learn THAT a dependency exists and where, not what it says.",
+      inputSchema: {
+        subject: z.string().describe("literal token to search for — a container name, a port, a path"),
+        limit: z.number().int().positive().optional().describe("total results across sources (default 20)"),
+        project: z.string().optional().describe("scope filter for facts/sessions"),
+        sources: z.array(z.enum(SOURCE_TYPES)).optional().describe("restrict to these source types"),
+        scopes: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'doc lanes whose CONTENT you may see; defaults to ["global"]. Does NOT filter the result ' +
+              "set — out-of-lane hits are still returned, content withheld.",
+          ),
+      },
+    },
+    guard(async ({ subject, limit, project, sources, scopes }) => {
+      const { data, meta } = await store.impact(subject, {
+        ...(limit !== undefined ? { limit } : {}),
+        ...(project !== undefined ? { project } : {}),
+        ...(sources !== undefined ? { sources: sources as SourceType[] } : {}),
+        ...(scopes !== undefined ? { scopes } : {}),
+      });
+      if (data.length === 0) {
+        return { content: [{ type: "text", text: "No dependents found.\n\n[]" }] };
+      }
+      const bySourceParts = SOURCE_TYPES.filter((s) => (meta.bySource?.[s]?.available ?? 0) > 0).map(
+        (s) => `${s} ${meta.bySource![s]!.returned}/${meta.bySource![s]!.available}`,
+      );
+      const metaLine =
+        `${meta.returned} of ${meta.available} matched` +
+        (bySourceParts.length ? ` (${bySourceParts.join(" · ")}${meta.truncated ? ", truncated" : ""})` : "");
+      const cards = data.map(renderImpactCard).join("\n\n");
       const body = `${metaLine}\n\n${cards}\n\n--- raw JSON (pick typedId) ---\n${JSON.stringify(data)}`;
       return text(body);
     }),

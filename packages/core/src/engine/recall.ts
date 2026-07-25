@@ -18,6 +18,15 @@ export interface CandidateMeta {
   createdAt?: string | null;
   /** docs: active vs archived/missing. */
   active?: boolean;
+  /** docs: the lane the row lives in. Populated only by the flag-mode meta
+   * fetch used by `impact()`; `recall()` never needs it, because recall drops
+   * out-of-lane rows in SQL and so never sees one. */
+  scope?: string;
+  /** docs: false when the row's lane is outside the caller's declared lanes.
+   * `impact()` keeps such rows and withholds their content; `recall()` never
+   * sets this — see the filter-then-drop vs filter-then-flag note on
+   * Store.impact. */
+  inScope?: boolean;
 }
 
 export interface FusedItem {

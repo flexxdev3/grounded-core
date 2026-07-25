@@ -300,6 +300,62 @@ export interface RecallOptions {
   scopes?: string[];
 }
 
+/**
+ * Options for `Store.impact()` — the reverse lookup ("what depends on X?").
+ *
+ * Deliberately has no `lexicalOnly` flag: impact is ALWAYS lexical. A subject
+ * is a literal token (a container name, a port, a path), and a nearest-neighbour
+ * search would return things that merely resemble it. A tripwire that fires on
+ * resemblance is worse than none.
+ */
+export interface ImpactOptions {
+  /** total result limit across all sources (default 20). */
+  limit?: number;
+  /** restrict to these source types (default all). */
+  sources?: SourceType[];
+  /** scope filter for facts/sessions, e.g. project name. */
+  project?: string;
+  /**
+   * Doc lanes whose CONTENT the caller may see. Defaults to `['global']`.
+   *
+   * Unlike `RecallOptions.scopes`, this does NOT filter the result set — hits
+   * in other lanes are still returned, with `inScope: false` and their content
+   * withheld. That is the whole point: an agent about to delete something must
+   * learn that an out-of-lane document depends on it, without that document's
+   * contents leaking across the boundary.
+   */
+  scopes?: string[];
+}
+
+/**
+ * One reverse-lookup hit. A `RecallResult` card plus the lane verdict.
+ *
+ * When `inScope` is false the card is citation-only: `title` and `snippet` are
+ * null and `citation`/`path`/`scope` survive, so the caller learns THAT a
+ * dependency exists and where to look, but not what it says.
+ *
+ * Lane gating applies to DOCS only. Facts and sessions are always `inScope:
+ * true` — `scopes` means the doc lane everywhere else in the contract
+ * (`RecallOptions.scopes`, `IngestOptions.scope`), and impact does not invent a
+ * second meaning for it. A fact's `scope` ("global" / "project:x") is a
+ * different axis and is filtered by `project`, exactly as in recall.
+ */
+export type ImpactResult = Omit<RecallResult, "title" | "snippet"> & {
+  /** null when `inScope` is false — withheld across a lane boundary. */
+  title: string | null;
+  /** null when `inScope` is false — withheld across a lane boundary. */
+  snippet: string | null;
+  /** false only for docs outside `ImpactOptions.scopes`. */
+  inScope: boolean;
+  /**
+   * The doc lane this hit lives in — always present, including when withheld.
+   * Facts and sessions are not laned and always report `"global"`; a fact's own
+   * `scope` ("project:x") is the other axis and is reported in `path`, exactly
+   * as `recall()` does. Reporting it here would blur the two.
+   */
+  scope: string;
+};
+
 export interface BriefOptions {
   agent?: string;
   project?: string;
@@ -495,6 +551,25 @@ export interface Store {
 
   // retrieval
   recall(query: string, opts?: RecallOptions): Promise<ListResult<RecallResult>>;
+  /**
+   * Reverse lookup: "what depends on this subject?" — the pre-flight an agent
+   * runs before stopping, removing or deleting infrastructure.
+   *
+   * Lexical-only by construction (see ImpactOptions), so it holds on the
+   * zero-LLM path and with `embeddings=none`.
+   *
+   * **Crosses lane boundaries by design, and is the ONLY operation that does.**
+   * `recall()` filters out-of-lane docs in SQL and never sees them
+   * (filter-then-drop); `impact()` fetches them and flags them
+   * (filter-then-flag), returning a citation with the content withheld. Recall's
+   * behaviour is unchanged and must stay unchanged — the narrow bridge is here,
+   * and only here, which is what keeps Doctrine 6 safe.
+   *
+   * `meta.available` counts withheld hits too: they were found, and a count that
+   * hid them would be the exact silent-omission defect this contract exists to
+   * remove.
+   */
+  impact(subject: string, opts?: ImpactOptions): Promise<ListResult<ImpactResult>>;
   get(typedId: TypedId): Promise<FullRecord | null>;
   brief(opts?: BriefOptions): Promise<BriefResult>;
 

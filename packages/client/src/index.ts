@@ -13,6 +13,8 @@ import type {
   Doc,
   RecallResult,
   RecallOptions,
+  ImpactResult,
+  ImpactOptions,
   BriefResult,
   BriefOptions,
   ListOptions,
@@ -61,6 +63,18 @@ export interface GroundedClient {
    * exist than were returned. See `meta.bySource` for per-source accounting.
    */
   recall(query: string, opts?: RecallOptions): Promise<ListResult<RecallResult>>;
+  /**
+   * Reverse lookup — "what depends on X?" — the pre-flight before stopping,
+   * removing, deleting, or renaming infrastructure. Lexical-only by
+   * construction: `subject` is a literal token, not a natural-language query.
+   *
+   * Deliberately crosses lane boundaries: `opts.scopes` controls which doc
+   * lanes' CONTENT you may see (defaults to `['global']`), not which hits are
+   * returned — out-of-lane doc hits still come back with `inScope: false` and
+   * `title`/`snippet` set to `null` (citation-only). `meta.available` counts
+   * withheld hits too.
+   */
+  impact(subject: string, opts?: ImpactOptions): Promise<ListResult<ImpactResult>>;
   /**
    * `opts.docScopes` sets the explicit doc-lane scope set for the
    * related-docs recall call (defaults to `['global']` when omitted/empty).
@@ -184,6 +198,8 @@ export function createClient(options: ClientOptions): GroundedClient {
   return {
     health: () => request<HealthReport>("GET", "/health"),
     recall: (query, opts = {}) => request<ListResult<RecallResult>>("POST", "/recall", { query, ...opts }),
+    impact: (subject, opts = {}) =>
+      request<ListResult<ImpactResult>>("POST", "/impact", { subject, ...opts }),
     brief: (opts = {}) => request<BriefResult>("POST", "/brief", opts),
     get: (typedId) => request<FullRecord>("GET", `/get/${typedId}`),
     vision: {
