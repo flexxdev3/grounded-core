@@ -15,6 +15,27 @@ export interface Gateway {
   close(): Promise<void>;
 }
 
+/** Methods that mutate state — gated on the token's `write` scope. */
+const MUTATING_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+
+/**
+ * Enforce `api_tokens.scopes` for a bearer-token request. Returns a 403 error body
+ * (matching the `{ error, code }` shape `packages/api`'s onError uses) if the
+ * token's scopes don't cover the request, or null if the request may proceed.
+ * Missing `read` blocks everything (the deliberate-revocation case); missing
+ * `write` only blocks mutating methods. Session-authenticated (browser) requests
+ * aren't scoped — this only applies to `grnd_…` API tokens.
+ */
+function scopeCheck(scopes: string[], method: string): { error: string; code: string } | null {
+  if (!scopes.includes("read")) {
+    return { error: 'token lacks the "read" scope', code: "FORBIDDEN" };
+  }
+  if (MUTATING_METHODS.has(method) && !scopes.includes("write")) {
+    return { error: 'token lacks the "write" scope', code: "FORBIDDEN" };
+  }
+  return null;
+}
+
 /**
  * Assemble the full cloud gateway:
  *   /auth/*     — better-auth (signup/login/oauth/session)
@@ -49,6 +70,8 @@ export function createGateway(pool: pg.Pool, cfg: CloudConfig): Gateway {
     if (bearer.startsWith("grnd_")) {
       const verified = await tokens.verify(bearer);
       if (!verified) return c.json({ error: "invalid token", code: "UNAUTHORIZED" }, 401);
+      const forbidden = scopeCheck(verified.scopes, c.req.method);
+      if (forbidden) return c.json(forbidden, 403);
       const cabinet = await tenants.cabinetById(verified.cabinetId);
       schema = cabinet?.schema ?? null;
     } else {
