@@ -95,16 +95,31 @@ Defined in `contract.ts`. All timestamps are ISO-8601 strings. Typed-id format:
 `` `${SourceType}:${number}` `` where `SourceType = "fact" | "session" | "doc"` (`contract.ts:85`) —
 e.g. `fact:2`, `session:274`, `doc:1091`.
 
-**Fact** (`contract.ts:16-37`): `id, scope, category, fact, detail?, topicKey?, pinned, importance(0..1),
-status("active"|"archived"), createdBy?, source?, createdAt, updatedAt`. `importance` defaults to `0.6`
-on insert (both adapters) — it feeds `factsList` ordering (`pinned desc, importance desc, updated_at
-desc`); at `0` a defaulted fact sorted dead last. `status` is writable via `factsAdd`/`factsUpdate`
-(`FactInput.status?: FactStatus`) — archiving is not deleting; `factsDelete` remains a hard delete.
+**Fact** (`contract.ts:21-52`): `id, scope, category, fact, detail?, topicKey?, pinned, importance(0..1),
+status("active"|"archived"), origin("stated"|"derived"), createdBy?, source?, createdAt, updatedAt`.
+`importance` defaults to `0.6` on insert (both adapters) — it feeds `factsList` ordering (`pinned desc,
+importance desc, updated_at desc`); at `0` a defaulted fact sorted dead last. `status` is writable via
+`factsAdd`/`factsUpdate` (`FactInput.status?: FactStatus`) — archiving is not deleting; `factsDelete`
+remains a hard delete. `origin` defaults to `"stated"` on every current write path (human/agent asserting
+the fact outright); `"derived"` is reserved for synthesis (Phase 8, not built) and no live caller sets it
+— kept in a column, not a convention, so synthesis can never present an inference as operator truth.
 
-**Vision**: `id, scope("global"|"project:<name>"), content(markdown), createdBy?, source?, createdAt,
-updatedAt`. Exactly one record per scope (`unique(scope)`); `visionSet` edits it in place, inserting only
-when none exists — no status, no supersede, no history. **Excluded from recall** — no embedding, no FTS
-row, not a `SourceType`. Always injected into the brief.
+`topicKey` is a per-scope upsert key among **active** rows only: `factsAdd` called with a `(scope,
+topicKey)` matching an already-active fact routes to `factsUpdate` instead of inserting a second row —
+**MERGE-PATCH semantics**, any field the caller omits keeps its stored value (`pinned`/`importance`
+included — restating a pinned fact without repeating `pinned:true` does not unpin it). Archived rows are
+exempt from the lookup and from the enforcing index, so a retired key can be reused by a fresh active
+fact; asking `factsUpdate` to reactivate a fact into a key an active row already holds throws rather than
+silently merging two facts. Enforced by a partial unique index, not just application logic — see §4.1/§4.2.
+
+**Vision** (`contract.ts:60-76`): `id, scope("global"|"project:<name>"), summary(string|null),
+details(markdown), createdBy?, source?, createdAt, updatedAt`. `details` is the narrative — recalled via
+`ground_recall`/`/recall`, never injected. `summary` is the short form injected at SessionStart — never
+recalled; a null `summary` (rows written before the column existed) falls back to truncated `details` for
+injection (`visionInjectedText`, `brief.ts:191-193`), so no backfill was required. Exactly one record per
+scope (`unique(scope)`); `visionSet` edits it in place, inserting only when none exists — no status, no
+supersede, no history. **Excluded from recall** — no embedding, no FTS row, not a `SourceType`. Always
+injected into the brief.
 
 **Session** (`contract.ts:40-54`): `id, machine?, project?, workspace?, agent?, summary, details?,
 tags?(string[]), source("manual"|"hook"|"import"|…), createdAt`.
@@ -118,15 +133,50 @@ status("active"|"archived"|"missing"), kind?, machine?, scope, ingestedAt`. `sco
 matchedBy("vector"|"lexical"|"both"), createdAt?, updatedAt?, path?, source?, citation, snippet`
 (snippet ≤ 200 chars). No full bodies.
 
-**BriefResult**: `startupNote, vision({global, project} — Vision|null each), recentSessions(Session[]),
-facts(Fact[]), relatedDocs(RecallResult[]), text?` (`text` filled when `format != "json"`).
+**BriefResult** (`contract.ts:376-399`): `startupNote, vision({global, project} — Vision|null each),
+recentSessions(Session[]), facts(Fact[]), relatedDocs(RecallResult[]), meta({vision, facts, sessions} —
+each `DeliveryMeta`), droppedItems(TypedId[]), text?` (`text` filled when `format != "json"`). See §7 for
+how `meta`/`droppedItems` are populated.
 
-**Store interface** — 23 methods:
+**`ListResult<T>` / `DeliveryMeta`** (`contract.ts:162-176`): every list-shaped `Store` method —
+`factsList, sessionsList, docsList, visionList, recall, impact` — returns `{data: T[], meta: DeliveryMeta}`.
+`DeliveryMeta = {returned, available, truncated, limit, bySource?}`. `available` is a real computed count
+(a `count(*)` query, or an explicit accumulation for the recall/brief lanes) — **never** derived from
+`data.length`; that is the defect this type exists to make structurally impossible. `truncated` means
+"there may be more than `available`" as well as "more than `returned`" — see recall's lane-saturation
+note (§6). `bySource` (recall/impact only) repeats the three fields per `SourceType`.
+**One deliberate exception: `sessionsTimeline` returns a bare `Session[]`**, not `ListResult<Session>`
+— it has window semantics (before/after an anchor), not limit/offset truncation, so there is nothing
+`available`/`truncated` would mean for it. This is intentional; do not wrap it.
+
+**Fact writes** (`FactWriteResponse = Fact & {delivery: DeliveryRank}`, `contract.ts:178-181`):
+`POST /facts` and `PATCH /facts/:id` return the plain `Fact` plus a computed `delivery` position.
+`DeliveryRank = {rank, ofActive, delivered, warning?}` (`contract.ts:178`), built by
+`computeDeliveryRank(rank, ofActive, typicalFactLimit)` (`engine/delivery.ts`): `rank` is the fact's
+1-based position in `factsList`'s own ordering within its scope + `active` status, `delivered` is
+`rank <= typicalFactLimit` (`config.delivery.typicalFactLimit`, default `8` — mirrors the live hook's
+`FACTS_LIMIT`), and past that threshold `warning` names the assumption the write violates. `delivery` is
+omitted entirely — not nulled — when the written fact is archived (`Store.factsDeliveryRank` returns
+`null`; an archived fact has no delivery position). `Store.factsAdd`/`factsUpdate` themselves return a
+plain `Fact`; `FactWriteResponse` is assembled one layer up at the API/MCP surface (`app.ts:246-251`,
+`server.ts:353-356`, §10/§11), computed via the separate `Store.factsDeliveryRank(id)` call.
+
+**ImpactResult** (`contract.ts:343-357`): `Omit<RecallResult,"title"|"snippet"> & {title: string|null,
+snippet: string|null, inScope: boolean, scope: string}`. `title`/`snippet` are `null` exactly when
+`inScope` is `false` — content withheld across a doc-lane boundary; `path`/`citation`/`scope` always
+survive, so the caller learns THAT a dependency exists and where, never silently dropped. Lane gating
+applies to **docs only** — facts and sessions always report `inScope: true, scope: "global"` (a fact's
+own `scope`, e.g. `"project:x"`, is a different axis and surfaces in `path`, exactly as in `recall()`).
+See §6.2.
+
+**Store interface** — 25 methods:
 `init · visionGet · visionList · visionSet · visionDelete · factsAdd · factsList · factsGet ·
-factsDelete · factsUpdate · sessionsAdd · sessionsList · sessionsGet · sessionsTimeline ·
-docsIngest · docsList · docsGet · docsPrune · recall · get · brief · health · close`.
+factsDelete · factsUpdate · factsDeliveryRank · sessionsAdd · sessionsList · sessionsGet ·
+sessionsTimeline · docsIngest · docsList · docsGet · docsPrune · recall · impact · get · brief ·
+health · close`.
 `factsUpdate(id, patch: Partial<FactInput>)` edits a fact in place (re-embeds when the text changes) —
-there is no separate supersede call.
+there is no separate supersede call. `factsDeliveryRank(id)` returns `{rank, ofActive} | null` (§ above);
+it is a plain data query, not itself part of the `FactWriteResponse` wire shape.
 
 **Errors** (`contract.ts:332-358`): `GroundedError` (base, `code="GROUNDED_ERROR"`) →
 `EmbedError("EMBED_ERROR")`, `StoreError("STORE_ERROR")`, `ConfigError("CONFIG_ERROR")`.
@@ -145,9 +195,11 @@ One file. Four base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts`.
 
 **Base tables** (column names are snake_case; mapped to camelCase records):
 - `facts(id INTEGER PK AUTOINCREMENT, scope, category, fact, detail, topic_key, pinned INT, importance REAL,
-  status, created_by, source, created_at, updated_at)`
-- `vision(id, scope, content, created_by, source, created_at, updated_at)`
-  — no FTS/vec rows (vision is injected, never searched).
+  status, origin, created_by, source, created_at, updated_at)`
+- `vision(id, scope, details, summary, created_by, source, created_at, updated_at)`
+  — no FTS/vec rows (vision is injected, never searched). Pre-split cabinets get `content` renamed to
+  `details` non-destructively (`migrateVisionSummarySplit`, `sqlite.ts:150-162`) plus a nullable `summary`
+  column added; a null `summary` falls back to truncated `details` for injection (§3).
 - `sessions(id, machine, project, workspace, agent, summary, details, tags, source, created_at)`
   — `tags` stored as serialized text.
 - `docs(id, source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine,
@@ -159,9 +211,19 @@ One file. Four base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts`.
   column for fresh cabinets, this path is only for pre-stage-3 ones.
 
 **Indexes**: `facts(status)`, `facts(scope)`, `facts(topic_key)`,
-`sessions(project)`, `sessions(created_at)`, `docs(path)`, `docs(status)`, `docs(scope)`
-(`idx_docs_scope`), **`docs(path, chunk_idx)` UNIQUE**, **`vision(scope)` UNIQUE** (the one-record-per-scope
-invariant).
+`facts(scope, status, pinned desc, importance desc, updated_at desc)` (`idx_facts_rank`, covers
+`factsList`'s own ordering), `sessions(project)`, `sessions(created_at)`, `docs(path)`, `docs(status)`,
+`docs(scope)` (`idx_docs_scope`), **`docs(path, chunk_idx)` UNIQUE**, **`vision(scope)` UNIQUE** (the
+one-record-per-scope invariant), **`idx_facts_topic_active_unique` on `facts(scope, topic_key) where
+topic_key is not null and status='active'`** (`migrations/sqlite.ts:226-228`) — the partial unique index
+that makes the `(scope, topicKey)` MERGE-PATCH upsert (§3) atomic rather than advisory; archived rows fall
+outside it, so a retired key never blocks a fresh active row.
+
+**Fact-identity backfill** (stage 2b, `sqlite.ts:185-228`), one-shot, runs before the index above is
+created: for each pre-existing `(scope, topic_key)` collision among **active** rows, the newest row (by
+`updated_at`) keeps the key; every older row in the group gets `topic_key` set to `null` — not deleted,
+not archived, it survives intact and simply becomes unaddressable by that key. Without this, creating the
+partial unique index on a cabinet with a pre-existing collision would fail outright and block `init()`.
 
 **Lexical — FTS5 external-content** (`migrations/sqlite.ts:60-70`), `tokenize='porter unicode61'`:
 - `fts_facts(fact, detail)` content=`facts`
@@ -196,11 +258,27 @@ Same logical columns as SQLite, plus per-table:
 
 **Indexes** (`migrations/postgres.ts:67-76`): same b-tree set as SQLite + `docs(scope)` (`idx_docs_scope`)
 + **`docs(path,chunk_idx)` UNIQUE** + GIN on each `search_tsv` (`idx_facts_tsv`, `idx_sessions_tsv`,
-`idx_docs_tsv`).
+`idx_docs_tsv`) + **`idx_facts_topic_key` on `facts(scope, topic_key) where topic_key is not null and
+status='active'`** (`migrations/postgres.ts:140-142`) — Postgres's equivalent of SQLite's
+`idx_facts_topic_active_unique` (§4.1), same partial-unique semantics.
 
 **`docs.scope` migration** (`migrations/postgres.ts:69-70`, stage 3): Postgres has native
 `add column if not exists`, so it's a plain idempotent statement — no probe needed, unlike SQLite:
 `alter table "{{SCHEMA}}".docs add column if not exists scope text not null default 'global'`.
+
+**`facts.origin` migration** (`migrations/postgres.ts:79`, stage 2b): same idempotent shape —
+`alter table "{{SCHEMA}}".facts add column if not exists origin text not null default 'stated' check
+(origin in ('stated','derived'))`. The same fact-identity backfill as SQLite (§4.1) runs first
+(`migrations/postgres.ts:81-96`) — MUST precede the `idx_facts_topic_key` create, or a cabinet with a
+pre-existing active-row collision fails the migration outright.
+
+**`factsAdd` upsert strategy** (`postgres.ts:159-170`): considered and rejected a single
+`insert … on conflict (scope, topic_key) where topic_key is not null and status='active' do update …`
+(verified it works against a real Postgres targeting the partial index) in favor of a transactional
+`select … for update` + conditional insert/update — the same read-then-branch idiom SQLite uses. Reason:
+a blind `ON CONFLICT` would have to compute the embedding before knowing whether the write collides,
+paying an Ollama round trip on what may turn out to be a no-op text update; the explicit branch only
+re-embeds when `fact`/`detail` text actually changed, matching `factsUpdate`'s existing guard.
 
 **Recall SQL:**
 - Lexical (`postgres.ts:492-495`): `ts_rank_cd(search_tsv, websearch_to_tsquery('english', $1))`,
@@ -258,12 +336,19 @@ Concrete code path. Semantics/ordering rationale → CONTRACT.md §"Hybrid recal
 
 Embeddings off/unavailable → lexical-only, `matchedBy="lexical"`, no error.
 
+`recall()` returns `ListResult<RecallResult>` (§3) — `meta.available` is the true pre-cap match count,
+`meta.bySource` breaks it down per `SourceType`. Truncation here has a subtlety beyond the usual
+limit/offset case: source caps mean `available` can itself be a floor rather than an exact count when a
+lane is saturated before ranking — the honesty rule is "never *under*-report", not "always exact".
+
 ### 6.1 Doc-lane scoping (stage 3)
 
 Every doc row carries a `scope` (lane), e.g. `"global"` (default) or `"administration"`. Scoping is
-**routing, not enforcement**: self-host runs one static `GROUNDED_API_TOKEN` and `agent`/`scope` are
-self-declared by the caller, not authenticated. Per-token scope gating (`api_tokens.scopes`, hosted layer
-§14) is not armed on the open-core surface — nothing stops a caller from passing any scope string it wants.
+**routing, not enforcement** on the self-hosted, open-core surface: `packages/api` has exactly one auth
+concept — a single static `GROUNDED_API_TOKEN` — and `agent`/`scope` are self-declared by the caller, not
+authenticated. That has not changed. Per-token scope gating (`api_tokens.scopes`) is now armed, but only
+on the private hosted gateway (`@grounded/cloud`, §14, stage 4b) — see §14 for what it enforces and why
+that does not contradict this paragraph.
 
 - **`recall()`** (`RecallOptions.scopes`) and **`brief()`** (`BriefOptions.docScopes`) filter the doc lane
   and both default to `['global']` when the caller passes nothing (sqlite.ts:922, mirrored in postgres.ts).
@@ -278,6 +363,33 @@ self-declared by the caller, not authenticated. Per-token scope gating (`api_tok
   "source" for docs. `ListOptions` now carries an explicit `source?: string` (docs-only, logical
   source/collection) separate from `scope`/`scopes` (lane, facts and docs both).
 
+### 6.2 Impact — `Store.impact()` (stage 4)
+
+The reverse lookup: "what depends on `subject`?" — the pre-flight before stopping, removing, deleting, or
+renaming infrastructure. **The only Store operation that crosses a lane boundary.** `recall()` is
+filter-then-drop (out-of-lane docs never leave SQL); `impact()` is filter-then-flag (out-of-lane docs are
+fetched and returned with content withheld, not dropped) — see `ImpactResult` (§3).
+
+- **Lexical-only by construction, deliberately.** `ImpactOptions` has no `lexicalOnly` flag — there is
+  nothing to toggle. `subject` is a literal token (a container name, a port, a path); a nearest-neighbour
+  vector search would return things that merely *resemble* it, and a tripwire that fires on resemblance
+  is worse than none. Works unchanged with `embeddings=none`.
+- **Lane gating applies to docs only.** Facts and sessions are never laned — always `inScope: true,
+  scope: "global"` regardless of `ImpactOptions.scopes`. A fact's own `scope` (e.g. `"project:x"`) is a
+  different axis, filtered by `ImpactOptions.project`, exactly as in `recall()`.
+  `ImpactOptions.scopes` defaults to `['global']` and controls which doc lanes' *content* the caller may
+  see — it does not filter which hits come back.
+- **`limit` is authoritative and overrides `recall.sourceCaps` for impact only** (`sqlite.ts:1247-1256`,
+  mirrored in postgres.ts): impact builds a per-call config with `sourceCaps: {fact:limit, session:limit,
+  doc:limit}`. Recall's caps are a ranking cap — a bounded top-N reading list — and must not bound a
+  dependency pre-flight; "42 things depend on this, here are 10" is the wrong answer to give an agent
+  about to delete something, even truthfully flagged `truncated:true`. Default `limit` is `20` (vs
+  recall's `10`).
+- **`meta.available` counts withheld (out-of-lane) hits too** — they were found, and a count that hid them
+  would be the exact silent-omission defect `DeliveryMeta` exists to prevent.
+- **Citations are chunk-grained**: `doc:{source}/{path}#chunk{N}` — no line numbers. Line-level citation
+  was considered and deferred (no chunk-to-line map exists yet).
+
 ---
 
 ## 7. Brief assembly — `engine/brief.ts`
@@ -288,6 +400,27 @@ self-declared by the caller, not authenticated. Per-token scope gating (`api_tok
 `BriefOptions` from the API/MCP/hook). An explicit `factScopes` array overrides the derivation. Related docs come from
 `recall(query ?? cwd, {sources:["doc"], limit:5})` when a hint exists (`sqlite.ts:834-836`).
 Default recent-session count 8 (`contract.ts:209`).
+
+**Reserved-slice budgeting** (Doctrine 3, `brief.ts:62-162`): each of `vision`/`facts`/`sessions` gets a
+fixed token share (`cfg.brief.reserve.{vision,facts,sessions}`, chars÷4 approximation, `CHARS_PER_TOK=4`
+— no BPE dependency, the engine has no tokenizer for this) and truncates **within its own slice only** —
+a long facts section can never eat into the sessions budget. `truncateToReserve` (facts/sessions) consumes
+items strictly in their existing significance order (pinned/importance/recency for facts, newest-first for
+sessions); once the budget is exceeded everything after is dropped in order, never cherry-picked. The
+first item in a lane is never dropped even if it alone exceeds the reserve — a single long pinned fact
+must not produce an empty facts section. Vision has no addressable sub-items, so `truncateVisionSection`
+truncates *text*, not rows: it cuts the **project** vision first, then **global** if still over budget,
+appending an ellipsis; `meta.vision` is measured in **characters**, not items. The static preamble (header
++ startup note + vision apply-note) has its own fixed, non-configurable `PREAMBLE_RESERVE_TOK=200`
+(`brief.ts:78`) — documented bookkeeping only, nothing to truncate.
+
+`BriefResult.meta = {vision, facts, sessions}` (each `DeliveryMeta`, §3) and `BriefResult.droppedItems:
+TypedId[]` — facts' dropped ids first, then sessions', in that order. `droppedItems` never includes vision
+(no vision arm in `SourceType`/`TypedId`) or `relatedDocs` (unreserved — bounded only by `limit:5` + the
+200-char snippet cap, no reserve/meta key of its own). The markdown renderer surfaces a drop as a
+`droppedNote` line — `"… N more <kind> in scope, not shown this budget — ground_get any of: …"` — capped
+at `MAX_NAMED_DROPPED=8` named ids so a very large drop can't itself blow the remaining budget it's
+reporting on.
 
 Markdown render mirrors the live `labwork-hook.sh`, plus the vision section:
 ```
@@ -407,7 +540,7 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 (`GROUNDED_API_TOKEN`, `bin.ts:10`); off by default. `/health` always exempt. Mismatch → 401
 `{error:"unauthorized", code:"UNAUTHORIZED"}`.
 
-**19 routes** (9 GET / 7 POST / 1 PATCH / 2 DELETE):
+**20 routes** (9 GET / 8 POST / 1 PATCH / 2 DELETE):
 
 | Method | Path | Store call |
 |---|---|---|
@@ -417,9 +550,9 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 | POST | `/vision` | `visionSet` (201, edits the one record for the scope in place) |
 | DELETE | `/vision/:id` | `visionDelete` |
 | GET | `/facts` `?scope&scopes&limit&offset&status` | `factsList` (`scopes` comma-separated, takes precedence over `scope`) |
-| POST | `/facts` | `factsAdd` (201) |
+| POST | `/facts` | `factsAdd` (201, returns `FactWriteResponse` — §3) |
 | DELETE | `/facts/:id` | `factsDelete` |
-| PATCH | `/facts/:id` | `factsUpdate` |
+| PATCH | `/facts/:id` | `factsUpdate` (returns `FactWriteResponse` — §3) |
 | GET | `/sessions` `?project&limit` | `sessionsList` |
 | POST | `/sessions` | `sessionsAdd` (201) |
 | GET | `/sessions/:id` | `sessionsGet` |
@@ -428,6 +561,7 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 | GET | `/docs` `?source&scope&scopes&limit&offset&documents` | `docsList` — `source` filters logical source/collection, `scope`/`scopes` filter lane; **unfiltered by default on both axes** (§6.1) |
 | GET | `/docs/:id` | `docsGet` |
 | POST | `/recall` | `recall` — body may include `scopes` (doc-lane filter, defaults `["global"]`) |
+| POST | `/impact` | `impact` — body `{subject, limit?, sources?, project?, scopes?}` (field is `subject`, not `query` — §6.2) |
 | POST | `/brief` | `brief` — body may include `docScopes` (defaults `["global"]`) |
 | GET | `/get/:typedId` | `get` |
 
@@ -443,7 +577,9 @@ unparseable JSON.
 **`GET /facts` status default** (`app.ts:203-213`): `?status` defaults to `active` when omitted.
 `archived` and `all` are the explicit filters; `all` is handled in the route and never forwarded to the
 store as a literal status value. Any other value → 400. `POST /facts` and `PATCH /facts/:id` validate
-`status` the same way (`app.ts:126,142`) — 400 on anything other than `active`/`archived`.
+`status` the same way (`app.ts:126,142`) — 400 on anything other than `active`/`archived`. `origin`, when
+present in the body, is validated the same way — 400 on anything other than `stated`/`derived`
+(`optFactOrigin`, `app.ts:94-102`); omitted defaults to `"stated"` at the store layer, not the route.
 
 ---
 
@@ -455,24 +591,29 @@ store as a literal status value. Any other value → 400. `POST /facts` and `PAT
 **Transports** (`bin.ts:13-18`): stdio default (`StdioServerTransport`); if `GROUNDED_MCP_HTTP_PORT` set →
 `StreamableHTTPServerTransport` (stateless, `sessionIdGenerator: undefined`) on `127.0.0.1`.
 
-**14 tools:**
+**15 tools:**
 
 | Tool | Key inputs | Store call |
 |---|---|---|
 | `ground_recall` | `query, limit?, project?, sources?, lexicalOnly?, scopes?` | `recall` → cited cards + JSON (`scopes` filters the doc lane, defaults `["global"]`, §6.1) |
-| `ground_timeline` | `around?, query?, project?, window?` | `sessionsTimeline` |
+| `ground_impact` | `subject, limit?, project?, sources?, scopes?` | `impact` → cited cards + JSON, out-of-lane hits content-withheld not dropped (§6.2) |
+| `ground_timeline` | `around?, query?, project?, window?` | `sessionsTimeline` (bare `Session[]`, not `ListResult` — §3) |
 | `ground_get` | `typedId` (`^(fact\|session\|doc):\d+$`) | `get` |
 | `ground_brief` | `agent?, project?, machine?, cwd?, query?, format?, docScopes?` | `brief` (`docScopes` filters related-docs lane, defaults `["global"]`, §6.1) |
 | `ground_vision_get` | `project?` | `visionGet` ×2 → `{global, project}` |
-| `ground_vision_set` | `content, scope?` | `visionSet` |
-| `ground_facts_add` | `fact, scope?, category?, detail?, topicKey?, pinned?, importance?, status?` | `factsAdd` |
-| `ground_facts_update` | `id, fact?, scope?, category?, detail?, topicKey?, pinned?, importance?, status?` | `factsUpdate` |
+| `ground_vision_set` | `details, summary?, scope?` | `visionSet` (`details` narrative markdown, `summary` short SessionStart form — §3) |
+| `ground_facts_add` | `fact, scope?, category?, detail?, topicKey?, pinned?, importance?, status?, origin?` | `factsAdd` → `Fact & {delivery?}` (`topicKey` MERGE-PATCH upserts an active match — §3) |
+| `ground_facts_update` | `id, fact?, scope?, category?, detail?, topicKey?, pinned?, importance?, status?, origin?` | `factsUpdate` → `Fact & {delivery?}` |
 | `ground_facts_list` | `scope?, limit?, status?` (defaults to `"active"`; `"all"` returns every status) | `factsList` |
 | `ground_facts_delete` | `id` | `factsDelete` |
 | `ground_session_add` | `summary, details?, project?, agent?, machine?, tags?` | `sessionsAdd` |
 | `ground_docs_ingest` | `paths[]≥1, source?, kind?, machine?, scope?, dryRun?` | `docsIngest` (`scope` tags the batch's lane, default `"global"`; `machine` newly exposed at this surface in stage 3) |
 | `ground_docs_prune` | `remove?` (default false) | `docsPrune` → `{missing, removed}` — reconciles rows against disk; distinct from `IngestReport.removed` (§8) |
 | `ground_health` | `{}` | `health` |
+
+`ground_facts_add`/`ground_facts_update` compute `delivery` the same way the API does (§3/§10): a second
+`store.factsDeliveryRank` call plus `computeDeliveryRank`, at the MCP layer (`server.ts:353-356,395-398`),
+omitted when the written fact is archived.
 
 **Install snippets** (`installConfig.ts`): `installSnippet(target, env?)` /
 `allInstallSnippets(env?)` for targets `claude-code | codex | cursor | generic`. Server key `grounded`,
@@ -501,12 +642,14 @@ Surfaced by `grounded hooks print [target]` (resolves the shipped script via `im
 `../../hooks/`, prints script + per-target wiring). Env knobs: `GROUNDED_BIN`, `GROUNDED_AGENT`.
 
 **Client lib** — `@grounded/client` `createClient({baseUrl, token?, fetch?, headers?}) → GroundedClient`
-with `health · recall · brief · get · vision.{set,list,delete} · facts.{add,list,update,delete} ·
+with `health · recall · impact · brief · get · vision.{set,list,delete} · facts.{add,list,update,delete} ·
 sessions.{add,list,get} · docs.{list,get,ingest,prune}` (`packages/client/src/index.ts:49-106`); each is one
 `fetch` against the API, JSON in/out, throws `GroundedHttpError(status, code, message)` on non-2xx. Doc-lane
 scoping mirrors the engine: `docs.list` stays unfiltered by default (`opts.scope`/`scopes` optional),
-`recall`/`brief` default `scopes`/`docScopes` to `['global']` (§6.1). Types-only dep on
-`@grounded/core/contract` (nothing from core loaded at runtime).
+`recall`/`brief` default `scopes`/`docScopes` to `['global']`, `impact.scopes` defaults `['global']` for
+CONTENT visibility only, never filtering hits (§6.1/§6.2). `client.impact(subject, opts)` mirrors the
+Store signature — `subject`, not `query`. `facts.add`/`facts.update` return `FactWriteResponse` (§3).
+Types-only dep on `@grounded/core/contract` (nothing from core loaded at runtime).
 
 **Local install** — `pnpm pack` each package (rewrites `workspace:*` → version) then
 `npm i -g <all tarballs together>` puts `ground`/`grounded-api`/`grounded-mcp` on PATH (inter-deps resolve
@@ -537,6 +680,11 @@ hooks → grounded-mcp `tools/list`.
 | indexable exts | `.md .markdown .mdx .txt` | `ingest/walker.ts:15` |
 | default doc scope (lane) | `"global"` | `contract.ts:297`, `migrations/{sqlite,postgres}.ts` |
 | default recall/brief doc scopes | `["global"]` | `sqlite.ts:922` (mirrored postgres.ts), §6.1 |
+| default impact scopes (content) | `["global"]` | `sqlite.ts:1246` (mirrored postgres.ts), §6.2 |
+| impact default limit | `20` (vs recall's `10`) | `contract.ts:313`, `sqlite.ts:1243` |
+| brief reserve (vision/facts/sessions) | `400` / `900` / `500` tok | `config.ts:43` |
+| brief preamble reserve (fixed, not configurable) | `200` tok | `brief.ts:78` |
+| typical fact delivery limit | `8` (mirrors hook `FACTS_LIMIT`) | `config.ts:46` |
 | API port | `7437` | `api/bin.ts` |
 | RRF formula | `1 / (k + rank)` | `recall.ts:32` |
 | recency formula | `0.5 ^ (ageDays / halfLife)` | `recall.ts:104` |
@@ -558,9 +706,24 @@ Open-core boundary: everything account/multi-tenant is in `@grounded/cloud` (`pr
 `pnpm publish -r`. The per-tenant `/api/*` exposes the **same** routes a self-hoster runs — only base
 URL + token differ.
 
+**Per-token scope enforcement** (stage 4b, `gateway.ts:18-37`): `api_tokens.scopes` (`text[]`, default
+`['read','write']`, `tokens.ts:52`) is now enforced at the gateway, ahead of the proxied `createApp(store)`
+call. `scopeCheck(scopes, method)` rejects with **403** `{error, code:"FORBIDDEN"}` when a `grnd_…`
+bearer token's scopes lack `"read"` (blocks every method — the deliberate-revocation case) or, for a
+mutating method (`POST`/`PATCH`/`PUT`/`DELETE`), lack `"write"`. Session-cookie (browser console) auth is
+untouched — `scopeCheck` only runs on the `grnd_…` token branch of `/api/*`'s resolver.
+
+This is **hosted-only**. It does not change anything about self-host: `packages/api` still has exactly one
+auth concept — a single static `GROUNDED_API_TOKEN` bearer, checked in full or not at all (§10) — and
+`agent`/`scope` remain self-declared by the caller, not authenticated (§6.1). The line "routing, not
+enforcement" describes the open-core surface specifically and remains true there; stage 4b adds a second,
+separate enforcement point in the private gateway that open-core never sees or depends on.
+
 ---
 
 *Reflects the implementation as of Phases 0–5 (engine + cli/api/mcp/client, hooks, install wiring; tests
-green; locally installable) plus the hosted layer §14 (2026-07-13, `accounts` branch) and doc-lane scoping
-stage 3 (§6.1, 2026-07-25). Behavioral guarantees live in [`CONTRACT.md`](packages/core/CONTRACT.md);
-roadmap in [`../CLAUDE.md`](../CLAUDE.md).*
+green; locally installable) plus the hosted layer §14 (2026-07-13, `accounts` branch), doc-lane scoping
+stage 3 (§6.1), the `ListResult`/`DeliveryMeta` delivery-accounting envelope (stage 2, §3/§7), `ground_impact`
+(stage 4, §6.2/§10/§11), and cloud-gateway per-token scope enforcement (stage 4b, §14) — all 2026-07-25.
+Behavioral guarantees live in [`CONTRACT.md`](packages/core/CONTRACT.md); roadmap in
+[`../CLAUDE.md`](../CLAUDE.md).*

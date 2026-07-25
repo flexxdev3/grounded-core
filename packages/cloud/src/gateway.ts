@@ -42,9 +42,13 @@ function scopeCheck(scopes: string[], method: string): { error: string; code: st
  *   /account/*  — control-plane (cabinet, tokens, connect, delete) [session-gated]
  *   /api/*      — the FULL self-hosted Grounded API, per-tenant [token OR session]
  *
- * /api/* is the whole point: a hosted user's agents call the exact same 18 routes a
+ * /api/* is the whole point: a hosted user's agents call the exact same 20 routes a
  * self-hoster runs, only the base URL + auth differ. We resolve the tenant, fetch its
  * cached Store, and delegate to a memoized createApp(store) — the open-core API, unchanged.
+ *
+ * The one hosted-only behaviour is the scope check below: a token whose scopes lack
+ * "write" cannot reach a mutating route. Self-host has no token table and no per-scope
+ * check — there, scopes remain routing, not enforcement.
  */
 export function createGateway(pool: pg.Pool, cfg: CloudConfig): Gateway {
   const auth = createAuth(pool, cfg);
