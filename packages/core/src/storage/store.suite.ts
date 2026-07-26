@@ -959,11 +959,12 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.factsDelete(original.id);
     });
 
-    it("brief reserve: facts lane truncates within its own budget, names the dropped tail, and the rendered text omits them", async () => {
+    it("brief reserve: facts lane truncates within its own budget, indexes the tail instead of dropping it, and the rendered text carries index lines not full text", async () => {
       const scope = "test:brief-reserve-facts";
       const ids: number[] = [];
       // Each rendered line is well over 20 chars, so a tiny reserve (5 tok =
-      // 20 chars) keeps only the first fact and drops the rest, in order.
+      // 20 chars) keeps only the first fact full-text and pushes the rest
+      // into the index tier (they're all well under the 300-tok index cap).
       // Distinct descending importance forces a deterministic factsList order
       // (pinned desc, importance desc, updated_at desc) matching insertion
       // order, regardless of same-millisecond updated_at ties.
@@ -997,24 +998,137 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       // guard: the first item is never dropped, even though it alone busts the budget
       expect(brief.facts.length).toBeGreaterThanOrEqual(1);
       expect(brief.facts[0]!.id).toBe(facts[0]!.id);
-      expect(brief.droppedItems.length).toBeGreaterThan(0);
+      // Spec change: a fact that doesn't fit the full-text budget degrades to
+      // an index line rather than vanishing. `droppedItems` keeps its strict
+      // meaning (truly absent from brief.text) and is empty here because
+      // every overflow fact fits comfortably inside the much larger
+      // (300-tok) index budget; the overflow instead lands in
+      // `indexedItems`. `meta.facts.indexed` counts those index-only rows.
+      expect(brief.droppedItems.length).toBe(0);
+      expect(brief.indexedItems.length).toBeGreaterThan(0);
+      expect(brief.meta.facts.indexed).toBe(brief.indexedItems.length);
 
       const keptIds = new Set(brief.facts.map((f) => f.id));
-      const droppedFactIds = ids.filter((id) => !keptIds.has(id));
-      expect(brief.droppedItems).toEqual(droppedFactIds.map((id) => `fact:${id}`));
+      const indexedFactIds = ids.filter((id) => !keptIds.has(id));
+      expect(brief.indexedItems).toEqual(indexedFactIds.map((id) => `fact:${id}`));
 
-      for (const id of droppedFactIds) {
-        const dropped = facts.find((f) => f.id === id)!;
-        expect(brief.text).not.toContain(dropped.fact);
+      // Indexed facts are present in the rendered text as compressed index
+      // lines (topicKey/detail — never set here, so they fall back to `fact`
+      // and the placeholder detail text), never as their full rendered line.
+      for (const id of indexedFactIds) {
+        const indexed = facts.find((f) => f.id === id)!;
+        expect(brief.text).toContain(`${indexed.fact} — (no trigger detail) (fact:${indexed.id})`);
       }
 
-      // droppedItems name real, fetchable records — not placeholders.
-      const resolved = await store.get(brief.droppedItems[0]!);
+      // indexedItems name real, fetchable records — not placeholders.
+      const resolved = await store.get(brief.indexedItems[0]!);
       expect(resolved).not.toBeNull();
       expect(resolved!.sourceType).toBe("fact");
       expect((resolved!.record as { id: number }).id).toBe(
-        Number(brief.droppedItems[0]!.split(":")[1]),
+        Number(brief.indexedItems[0]!.split(":")[1]),
       );
+
+      for (const id of ids) await store.factsDelete(id);
+    });
+
+    it("brief reserve: facts beyond the index tier's own cap are still truly dropped", async () => {
+      const scope = "test:brief-reserve-facts-index-cap";
+      const ids: number[] = [];
+      // FACTS_INDEX_MAX_TOK is 300 tok = 1200 chars. Each index line here
+      // (`fact — (no trigger detail) (fact:NN)`) runs ~75-80 chars, so ~30
+      // overflow facts (31 total, minus the one kept full-text) comfortably
+      // blow the 1200-char index budget and force a real drop tail.
+      for (let i = 0; i < 31; i++) {
+        const f = await store.factsAdd({
+          fact: `index cap fact number ${i} with enough text to blow a tiny budget`,
+          scope,
+          importance: 0.9 - i * 0.01,
+        });
+        ids.push(f.id);
+      }
+
+      const facts = (await store.factsList({ scope })).data;
+      const cfg = kase.makeConfig();
+      cfg.brief.reserve.facts = 5; // first fact only, full-text
+
+      const brief = assembleBrief(
+        {
+          vision: { global: null, project: null },
+          recentSessions: [],
+          facts,
+          relatedDocs: [],
+          factsAvailable: facts.length,
+          recentSessionsAvailable: 0,
+        },
+        { format: "markdown" },
+        cfg,
+      );
+
+      // Every fact is accounted for exactly once, across the three tiers.
+      const accountedFor =
+        brief.facts.length + brief.indexedItems.length + brief.droppedItems.length;
+      expect(accountedFor).toBe(facts.length);
+      // The index tier's own cap bites: some overflow facts are indexed,
+      // others (beyond ~1200 chars of index lines) are truly dropped.
+      expect(brief.indexedItems.length).toBeGreaterThan(0);
+      expect(brief.droppedItems.length).toBeGreaterThan(0);
+      // Indexed rows never inflate the full-text `returned` count.
+      expect(brief.meta.facts.returned).toBe(brief.facts.length);
+      expect(brief.meta.facts.indexed).toBe(brief.indexedItems.length);
+      // Truly dropped facts leave no trace in the rendered text.
+      for (const id of brief.droppedItems) {
+        const droppedId = Number(id.split(":")[1]);
+        const dropped = facts.find((f) => f.id === droppedId)!;
+        expect(brief.text).not.toContain(dropped.fact);
+      }
+
+      for (const id of ids) await store.factsDelete(id);
+    });
+
+    it("brief reserve: a pinned fact survives full-text even when the reserve is exhausted by earlier facts", async () => {
+      const scope = "test:brief-reserve-facts-pinned";
+      const ids: number[] = [];
+      // Highest importance (and thus first in significance order) but NOT
+      // pinned — its cost alone nearly exhausts the tiny reserve.
+      const filler = await store.factsAdd({
+        fact: "filler fact with enough text to consume almost the whole reserve budget here",
+        scope,
+        importance: 0.9,
+      });
+      ids.push(filler.id);
+      // Pinned, lower importance, so it sorts AFTER the filler — the exact
+      // case the old "only item 0 survives" guard did not cover.
+      const pinned = await store.factsAdd({
+        fact: "pinned fact that must render in full text no matter the budget",
+        scope,
+        importance: 0.1,
+        pinned: true,
+      });
+      ids.push(pinned.id);
+
+      const facts = (await store.factsList({ scope })).data;
+      const cfg = kase.makeConfig();
+      cfg.brief.reserve.facts = 20; // 80 chars — enough for the filler alone, not both
+
+      const brief = assembleBrief(
+        {
+          vision: { global: null, project: null },
+          recentSessions: [],
+          facts,
+          relatedDocs: [],
+          factsAvailable: facts.length,
+          recentSessionsAvailable: 0,
+        },
+        { format: "markdown" },
+        cfg,
+      );
+
+      const keptIds = brief.facts.map((f) => f.id);
+      expect(keptIds).toContain(pinned.id);
+      expect(brief.text).toContain(pinned.fact);
+      // The pinned guarantee can blow the budget outright — that must be
+      // visible in `truncated`, not silently absorbed.
+      expect(brief.meta.facts.truncated).toBe(true);
 
       for (const id of ids) await store.factsDelete(id);
     });

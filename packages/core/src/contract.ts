@@ -180,6 +180,13 @@ export interface DeliveryMeta {
    * char count, `available` the pre-truncation one. Absent on row-limited
    * lanes. Never mix these with the row counts above. */
   chars?: { returned: number; available: number };
+  /** Facts lane only. Count of facts rendered as INDEX LINES (`topicKey —
+   * detail (fact:NN)`) rather than full text — present when the reserve's
+   * index tier rendered at least one such line, absent otherwise. `returned`
+   * stays a count of full-text rows only; this is never folded into it. An
+   * indexed fact is NOT in `droppedItems` (it survived, just compressed) —
+   * see `BriefResult.indexedItems`. */
+  indexed?: number;
   bySource?: Partial<Record<SourceType, { returned: number; available: number; truncated: boolean }>>;
 }
 
@@ -413,6 +420,15 @@ export interface BriefResult {
    * they were dropped. Never includes vision (no vision arm in SourceType) or
    * relatedDocs (unreserved). Each id resolves via Store.get(). */
   droppedItems: TypedId[];
+  /** typed ids of facts rendered as INDEX LINES only (`topicKey — detail
+   * (fact:NN)`) because they didn't fit the facts reserve's full-text budget
+   * but did fit the index tier's own (smaller) budget — see
+   * `FACTS_INDEX_MAX_TOK` in engine/brief.ts. These facts are NOT absent from
+   * `brief.text` (that's what `droppedItems` means) — they're present in
+   * compressed form so the agent knows they exist and can `ground_get` the
+   * full record. Sessions have no index tier, so this only ever contains
+   * `fact:` ids. */
+  indexedItems: TypedId[];
   /** rendered text when format=markdown. */
   text?: string;
 }

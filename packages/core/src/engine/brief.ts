@@ -161,6 +161,128 @@ function truncateToReserve<T>(
   };
 }
 
+interface FactsReserveResult {
+  kept: Fact[];
+  droppedIds: TypedId[];
+  indexedIds: TypedId[];
+  /** Same rows as `indexedIds`, kept as full `Fact` records purely so
+   * `renderMarkdown` can render their index lines — `BriefResult` itself only
+   * ever exposes the id form (`indexedItems`). */
+  indexedFacts: Fact[];
+  meta: DeliveryMeta;
+}
+
+/**
+ * Facts-lane counterpart to `truncateToReserve`, with two behaviors sessions
+ * don't have:
+ *
+ * 1. `pinned` is a delivery GUARANTEE, not a rank boost: every pinned fact
+ *    (plus, as before, `items[0]` regardless of pinned) renders in FULL TEXT
+ *    no matter the budget. Because a pinned fact can in principle sit
+ *    anywhere in `facts` (already-significance-ordered, but pinned isn't
+ *    assumed contiguous), this does a full pass rather than stopping at the
+ *    first overflow — unlike the generic `truncateToReserve`.
+ * 2. Facts that don't survive the full-text cut get a second chance at a
+ *    cheap INDEX LINE (`renderFactIndexLine`) inside their own, smaller
+ *    `FACTS_INDEX_MAX_TOK` budget, consumed in the same order they overflowed
+ *    in. Only what still doesn't fit THAT budget is truly dropped.
+ *
+ * `droppedItems`'s existing meaning is preserved exactly: it names only what
+ * is truly absent from `brief.text`. Indexed facts are reported separately
+ * via `indexedIds` (surfaced as `BriefResult.indexedItems`) — present in the
+ * rendered text, just compressed.
+ */
+function truncateFactsToReserve(
+  facts: Fact[],
+  availableFromStore: number,
+  reserveTok: number,
+): FactsReserveResult {
+  const budget = reserveTok * CHARS_PER_TOK;
+  const indexBudget = FACTS_INDEX_MAX_TOK * CHARS_PER_TOK;
+
+  const kept: Fact[] = [];
+  const overflow: Fact[] = [];
+  let used = 0;
+  // Once a non-pinned item overflows, every later non-pinned item overflows
+  // too — the "never cherry-picked" rule `truncateToReserve` documents.
+  // Without this flag a full scan (needed so a pinned item further down the
+  // list still gets found) would let a later, SHORTER non-pinned item slip
+  // into room a dropped earlier one didn't fit, which is exactly the
+  // cherry-picking the reserve contract forbids.
+  let overflowStarted = false;
+
+  for (let i = 0; i < facts.length; i++) {
+    const f = facts[i]!;
+    const cost = renderFactLine(f).length;
+    const mustKeep = i === 0 || f.pinned;
+    if (mustKeep) {
+      kept.push(f);
+      used += cost;
+      continue;
+    }
+    if (overflowStarted || used + cost > budget) {
+      overflowStarted = true;
+      overflow.push(f);
+      continue;
+    }
+    kept.push(f);
+    used += cost;
+  }
+
+  // Consume the index budget in the same order items overflowed, IN ORDER —
+  // once it's exceeded, everything after is truly dropped, mirroring
+  // `truncateToReserve`'s own in-order cutoff rule.
+  let indexUsed = 0;
+  let cutIndex = overflow.length;
+  for (let i = 0; i < overflow.length; i++) {
+    const cost = renderFactIndexLine(overflow[i]!).length;
+    if (indexUsed + cost > indexBudget) {
+      cutIndex = i;
+      break;
+    }
+    indexUsed += cost;
+  }
+  const indexed = overflow.slice(0, cutIndex);
+  const trulyDropped = overflow.slice(cutIndex);
+
+  const available = Math.max(availableFromStore, facts.length);
+  const budgetBlownByGuarantee = used > budget;
+  const truncated = kept.length < facts.length || available > facts.length || budgetBlownByGuarantee;
+
+  const meta: DeliveryMeta = {
+    returned: kept.length,
+    available,
+    truncated,
+    limit: null,
+    ...(indexed.length > 0 ? { indexed: indexed.length } : {}),
+  };
+
+  return {
+    kept,
+    droppedIds: trulyDropped.map((f) => `fact:${f.id}` as TypedId),
+    indexedIds: indexed.map((f) => `fact:${f.id}` as TypedId),
+    indexedFacts: indexed,
+    meta,
+  };
+}
+
+/**
+ * The pinned facts' write-time delivery-warning input: how many rendered
+ * chars the pinned set alone costs against the facts reserve. Lives here
+ * (not delivery.ts) because it needs `renderFactLine`/`CHARS_PER_TOK`, the
+ * same render+budget primitives the reserve itself uses — callers pass the
+ * result straight into `computeDeliveryRank`'s `pinnedReserve` param.
+ */
+export function pinnedFactsReserveStatus(
+  facts: Fact[],
+  reserveTok: number,
+): { renderedChars: number; reserveChars: number } {
+  const renderedChars = facts
+    .filter((f) => f.pinned)
+    .reduce((sum, f) => sum + renderFactLine(f).length, 0);
+  return { renderedChars, reserveChars: reserveTok * CHARS_PER_TOK };
+}
+
 /**
  * Per-category floor pre-pass (runs before `truncateToReserve`). `facts` is
  * already in significance order; this reorders — never adds/removes/dedups —
@@ -199,6 +321,32 @@ function renderFactLine(f: Fact): string {
   const detail = f.detail && f.detail.trim() ? ` — ${collapseWhitespace(f.detail)}` : "";
   return `${pin}${f.fact}${detail} (fact:${f.id})`;
 }
+
+/**
+ * Compressed form of a fact that didn't fit the facts reserve's full-text
+ * budget: `topicKey — detail (fact:NN)`. `detail` on a fact IS its trigger
+ * clause (e.g. "when about to stop, remove, delete or rename a container"),
+ * so this line still tells the agent WHEN the fact matters, just not what it
+ * says — enough to justify a `ground_get fact:NN` follow-up instead of the
+ * fact vanishing outright. Falls back to `fact` when `topicKey` is unset
+ * (older rows predate the column) and to a fixed placeholder when `detail`
+ * is unset, so the line is never empty.
+ */
+function renderFactIndexLine(f: Fact): string {
+  const topic = f.topicKey && f.topicKey.trim() ? f.topicKey : f.fact;
+  const detail = f.detail && f.detail.trim() ? collapseWhitespace(f.detail) : "(no trigger detail)";
+  return `${topic} — ${detail} (fact:${f.id})`;
+}
+
+/**
+ * Index-tier budget, in the same tokens-as-chars÷4 unit as `brief.reserve.*`.
+ * Facts that overflow the full-text reserve still get a shot at a cheap
+ * index line (see `renderFactIndexLine`) up to this cap; anything beyond it
+ * is truly dropped. A module constant, not a config key — the operator asked
+ * for less surface area, not more, and this tier is meant to be cheap and
+ * fixed, not tuned per deployment.
+ */
+const FACTS_INDEX_MAX_TOK = 300;
 
 /**
  * Sessions render SUMMARY ONLY in the brief. `details` is a full session log —
@@ -309,12 +457,10 @@ export function assembleBrief(
   opts: BriefOptions,
   cfg: GroundedConfig = defaultConfig(),
 ): BriefResult {
-  const factsReserve = truncateToReserve(
+  const factsReserve = truncateFactsToReserve(
     applyCategoryFloors(parts.facts, cfg.brief.factCategoryFloors ?? {}),
     parts.factsAvailable,
     cfg.brief.reserve.facts,
-    renderFactLine,
-    (f) => `fact:${f.id}` as TypedId,
   );
   const sessionsReserve = truncateToReserve(
     parts.recentSessions,
@@ -340,9 +486,10 @@ export function assembleBrief(
       sessions: sessionsReserve.meta,
     },
     droppedItems,
+    indexedItems: factsReserve.indexedIds,
   };
   if (opts.format !== "json") {
-    result.text = renderMarkdown(result, opts, cfg);
+    result.text = renderMarkdown(result, opts, cfg, factsReserve.indexedFacts);
   }
   return result;
 }
@@ -367,6 +514,12 @@ export function renderMarkdown(
   brief: BriefResult,
   opts: BriefOptions,
   cfg: GroundedConfig = defaultConfig(),
+  /** Full `Fact` records for `brief.indexedItems`, so their index lines can
+   * be rendered. Only `assembleBrief` has these on hand (`BriefResult` itself
+   * only carries the id form); external callers re-rendering a fetched
+   * `BriefResult` won't have index lines to show, which is fine — they can
+   * still `ground_get` any id in `indexedItems`. */
+  indexedFacts: Fact[] = [],
 ): string {
   const lines: string[] = [];
   lines.push("=== STARTUP CONTEXT ===");
@@ -407,11 +560,17 @@ export function renderMarkdown(
   lines.push("");
 
   lines.push(`=== DYNAMIC FACTS (curated · scope: ${factsScopeLabel(opts)}) ===`);
-  if (brief.facts.length === 0) {
+  if (brief.facts.length === 0 && indexedFacts.length === 0) {
     lines.push("(none)");
   } else {
     for (const f of brief.facts) {
       lines.push(renderFactLine(f));
+    }
+    // Index tier: facts that didn't fit the full-text budget but did fit the
+    // (smaller) index budget render as a compressed line rather than
+    // vanishing — see `renderFactIndexLine`/`FACTS_INDEX_MAX_TOK`.
+    for (const f of indexedFacts) {
+      lines.push(renderFactIndexLine(f));
     }
   }
   if (brief.meta.facts.truncated && factDropped.length > 0) {
