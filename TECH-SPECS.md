@@ -68,6 +68,10 @@ stripPrivate = true
 stripFrontmatter = true
 chunkChars = 1200
 chunkOverlap = 150
+
+[brief]
+reserve = { vision = 400, facts = 900, sessions = 500 }
+factCategoryFloors = { commit-rule = 1, convention = 2, playbook = 1 }
 ```
 
 **Default home:** `~/.grounded` (`config.ts:11`). **Default db:** `{home}/cabinet/grounded.db`.
@@ -438,6 +442,21 @@ Apply this: flag any plan, play, or design that conflicts with the vision before
 Both adapters' `brief()` fetch `visionGet("global")` + `visionGet("project:<p>")` (when project set).
 `format=json` returns the structured object; `format=markdown` also fills `.text`.
 
+**`brief.factCategoryFloors`** (`Record<string, number>`, default `{ "commit-rule": 1, "convention": 2,
+"playbook": 1 }`, `config.ts:44`) — `applyCategoryFloors(facts, floors)` (`engine/brief.ts`), a pure
+function called immediately before the facts `truncateToReserve` step in `assembleBrief`. It is a
+**reordering pre-pass, not a filter**: output is a strict permutation of the input. For each floored
+category, the first `n` facts of that category (in their existing significance order) are lifted into a
+guaranteed prefix ahead of the truncator; everything else follows in original order. Empty floors (`{}`)
+is byte-identical to the pre-existing behavior — no SQL change, no migration, no new dependency; the
+grouping happens in memory over the ≤200 rows `brief()` already fetches.
+
+**The problem this fixes** (measured 2026-07-25, live homelab stack): the 8 pinned global facts cost 897
+tokens against the 900-token `brief.reserve.facts` budget — the pinned band alone consumed the entire
+reserve, so no unpinned fact could ever be delivered regardless of importance. A 45-token `commit-rule`
+fact ranked 17th and had never once been delivered in a brief. With a `commit-rule` floor of 1, it is now
+guaranteed a slot ahead of the truncation cut.
+
 Bodies are rendered, not just titles: fact `detail`, session `details`, and the related-doc `snippet`
 are each whitespace-collapsed (`collapseWhitespace`, `brief.ts:39-41`) and appended after an em dash,
 with the `(fact:N)` / `(session:N)` / doc citation suffix intact — see the `<Global Vision content>` block
@@ -684,6 +703,7 @@ hooks → grounded-mcp `tools/list`.
 | default impact scopes (content) | `["global"]` | `sqlite.ts:1246` (mirrored postgres.ts), §6.2 |
 | impact default limit | `20` (vs recall's `10`) | `contract.ts:313`, `sqlite.ts:1243` |
 | brief reserve (vision/facts/sessions) | `400` / `900` / `500` tok | `config.ts:43` |
+| brief default fact category floors | `commit-rule:1, convention:2, playbook:1` | `config.ts:44` |
 | brief preamble reserve (fixed, not configurable) | `200` tok | `brief.ts:78` |
 | typical fact delivery limit | `8` (mirrors hook `FACTS_LIMIT`) | `config.ts:46` |
 | API port | `7437` | `api/bin.ts` |

@@ -136,6 +136,16 @@ truncation are listed in `BriefResult.droppedItems` (typed ids, resolvable via `
 measured in chars (no `SourceType` arm, so it never appears in `droppedItems`); `relatedDocs` is
 unreserved — bounded only by its own `limit` + snippet length — and also never appears there.
 
+**`brief.factCategoryFloors`** (`GroundedConfig.brief.factCategoryFloors: Record<string, number>`,
+default `{ "commit-rule": 1, "convention": 2, "playbook": 1 }`) runs via the exported pure function
+`applyCategoryFloors(facts, floors)` (`engine/brief.ts`), called immediately before the facts
+`truncateToReserve` step. It is a **reordering pre-pass, not a filter**: the output is a strict
+permutation of the input, never a subset. For each category with a floor `n`, the first `n` facts of
+that category (in their existing significance order — pinned desc, importance desc, updated_at desc)
+are lifted into a guaranteed prefix; every other fact follows after, in its original order. The
+unmodified token-budget truncator then runs exactly as before. Empty floors (`{}`) is byte-identical to
+prior behavior — this is the identity case, not a special-cased bypass.
+
 ## Citations
 Every `RecallResult` (and `ImpactResult`, even when withheld) carries a `citation` and `typedId`. No
 result without a resolvable source.
