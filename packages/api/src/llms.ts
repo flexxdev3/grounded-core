@@ -45,6 +45,8 @@ If two lanes both fit, the more specific one wins and the other gets a pointer, 
   everything.
 - **Recall cards are truncated on purpose.** They are for choosing, not reading. Get the full
   record with \`GET /get/:typedId\`.
+- **\`POST /recall\` answers in the same envelope** — cards are in \`.data\`, not \`.results\`. \`.meta.returned\`
+  is the honest count, so \`meta.returned > 0\` with an empty read means you used the wrong key.
 - **Recall card fields** (\`RecallResult\`, no \`.summary\`):
   - \`sourceType\` -> "fact" | "session" | "doc"
   - \`id\` / \`typedId\` -> numeric id / "type:id" (e.g. "doc:1091")
