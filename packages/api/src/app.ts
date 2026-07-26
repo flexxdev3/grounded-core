@@ -27,8 +27,13 @@ import type {
 // its database drivers in just to render a delivery warning.
 import { computeDeliveryRank } from "@grounded/core/delivery";
 import { openApiDocument } from "./openapi.js";
+import { LLMS_TXT } from "./llms.js";
 
 const SOURCE_TYPES: readonly SourceType[] = ["fact", "session", "doc"];
+
+// Public without a token: liveness, and the agent-facing manual (an agent
+// needs it to learn how to call Grounded before it has a token to call with).
+const PUBLIC_PATHS = new Set(["/health", "/llms.txt"]);
 
 /** Fallback for `createApp(store)` callers that pass no config. Kept in sync
  *  with defaultConfig().delivery.typicalFactLimit by the api test suite. */
@@ -250,10 +255,10 @@ export function createApp(
     return { ...fact, delivery };
   }
 
-  // Auth: when a token is configured, require it on every route except /health.
+  // Auth: when a token is configured, require it on every route except PUBLIC_PATHS.
   if (token) {
     app.use("*", async (c, next) => {
-      if (c.req.path === "/health") return next();
+      if (PUBLIC_PATHS.has(c.req.path)) return next();
       const header = c.req.header("authorization") ?? "";
       const expected = `Bearer ${token}`;
       if (header !== expected) {
@@ -266,6 +271,10 @@ export function createApp(
   app.get("/health", async (c) => c.json(await store.health()));
 
   app.get("/openapi.json", (c) => c.json(openApiDocument));
+
+  app.get("/llms.txt", (c) =>
+    c.text(LLMS_TXT, 200, { "content-type": "text/markdown; charset=utf-8" }),
+  );
 
   // ---- facts ----
   app.get("/facts", async (c) => {

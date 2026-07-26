@@ -161,6 +161,39 @@ function truncateToReserve<T>(
   };
 }
 
+/**
+ * Per-category floor pre-pass (runs before `truncateToReserve`). `facts` is
+ * already in significance order; this reorders — never adds/removes/dedups —
+ * so that the first `n` facts of each floored category are guaranteed to
+ * survive the reserve's strict in-order cutoff, even if a high-volume
+ * unfloored category would otherwise fill the whole budget first.
+ *
+ * Floored facts keep their relative order, followed by everyone else in
+ * their relative order. A category missing from `facts`, or a floor bigger
+ * than what's available, is a no-op for that category — never throws.
+ */
+export function applyCategoryFloors(facts: Fact[], floors: Record<string, number>): Fact[] {
+  if (!floors || Object.keys(floors).length === 0) return [...facts];
+
+  const takenPerCategory = new Map<string, number>();
+  const floored: Fact[] = [];
+  const flooredIndices = new Set<number>();
+
+  for (let i = 0; i < facts.length; i++) {
+    const f = facts[i]!;
+    const limit = floors[f.category];
+    if (!limit || limit <= 0) continue;
+    const taken = takenPerCategory.get(f.category) ?? 0;
+    if (taken >= limit) continue;
+    takenPerCategory.set(f.category, taken + 1);
+    floored.push(f);
+    flooredIndices.add(i);
+  }
+
+  const rest = facts.filter((_, i) => !flooredIndices.has(i));
+  return [...floored, ...rest];
+}
+
 function renderFactLine(f: Fact): string {
   const pin = f.pinned ? "* " : "- ";
   const detail = f.detail && f.detail.trim() ? ` — ${collapseWhitespace(f.detail)}` : "";
@@ -268,7 +301,7 @@ export function assembleBrief(
   cfg: GroundedConfig = defaultConfig(),
 ): BriefResult {
   const factsReserve = truncateToReserve(
-    parts.facts,
+    applyCategoryFloors(parts.facts, cfg.brief.factCategoryFloors ?? {}),
     parts.factsAvailable,
     cfg.brief.reserve.facts,
     renderFactLine,

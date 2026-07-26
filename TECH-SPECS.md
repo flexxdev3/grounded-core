@@ -537,14 +537,15 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 `GROUNDED_API_HOST` (default `127.0.0.1`). SIGINT/SIGTERM graceful shutdown.
 
 **Auth** (`app.ts:143-156`): bearer middleware active only when a token is set
-(`GROUNDED_API_TOKEN`, `bin.ts:10`); off by default. `/health` always exempt. Mismatch → 401
-`{error:"unauthorized", code:"UNAUTHORIZED"}`.
+(`GROUNDED_API_TOKEN`, `bin.ts:10`); off by default. `/health` and `/llms.txt` always exempt. Mismatch →
+401 `{error:"unauthorized", code:"UNAUTHORIZED"}`.
 
-**20 routes** (9 GET / 8 POST / 1 PATCH / 2 DELETE):
+**21 routes** (10 GET / 8 POST / 1 PATCH / 2 DELETE):
 
 | Method | Path | Store call |
 |---|---|---|
 | GET | `/health` | `health` |
+| GET | `/llms.txt` | static agent-facing manual (`llms.ts`), plain text/markdown |
 | GET | `/openapi.json` | static OpenAPI 3.1 doc (`openapi.ts`) |
 | GET | `/vision` `?scope&limit&offset` | `visionList` |
 | POST | `/vision` | `visionSet` (201, edits the one record for the scope in place) |

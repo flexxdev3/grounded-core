@@ -120,7 +120,7 @@ OAuth state) are exactly where hand-rolled code leaks. Vetted lib = less securit
 | `/api/*` | **API token OR session** | resolve cabinet → cached Store → `createApp(store).fetch()` — the full existing API |
 | `/` (+ console assets) | session-gated shell | cloud UI (account pages + embedded console) |
 
-`/api/*` is the same 20 routes the self-hosted API exposes — a hosted user's agents talk to Grounded
+`/api/*` is the same 21 routes the self-hosted API exposes — a hosted user's agents talk to Grounded
 identically to a self-hoster, only the base URL + token differ. That keeps MCP/hook/client config a
 one-line change between self-hosted and hosted.
 

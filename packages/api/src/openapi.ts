@@ -909,5 +909,17 @@ export const openApiDocument = {
         responses: { "200": { description: "OpenAPI 3.1 document" } },
       },
     },
+    "/llms.txt": {
+      get: {
+        summary: "Agent-facing manual for this instance (llms.txt convention)",
+        security: [],
+        responses: {
+          "200": {
+            description: "Plain-text markdown manual",
+            content: { "text/markdown": { schema: { type: "string" } } },
+          },
+        },
+      },
+    },
   },
 } as const;

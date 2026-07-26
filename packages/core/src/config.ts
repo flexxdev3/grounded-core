@@ -41,6 +41,7 @@ export function defaultConfig(home?: string): GroundedConfig {
     },
     brief: {
       reserve: { vision: 400, facts: 900, sessions: 500 },
+      factCategoryFloors: { "commit-rule": 1, "convention": 2, "playbook": 1 },
     },
     delivery: {
       typicalFactLimit: 8,

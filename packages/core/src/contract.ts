@@ -266,6 +266,15 @@ export interface GroundedConfig {
       facts: number;
       sessions: number;
     };
+    /**
+     * Minimum number of facts guaranteed a slot per `category`, applied
+     * BEFORE the facts reserve is consumed — so a high-volume category (e.g.
+     * many `homelab` facts) can't push every fact of a rarer but important
+     * category (e.g. `commit-rule`) out of the truncated window. Categories
+     * not listed have no floor. Optional — missing/omitted is treated as `{}`
+     * (today's behavior, unchanged).
+     */
+    factCategoryFloors: Record<string, number>;
   };
   /**
    * `typicalFactLimit` mirrors the hardcoded `FACTS_LIMIT=8` in the live

@@ -575,3 +575,52 @@ describe("@grounded/api delivery defaults", () => {
     }
   });
 });
+
+describe("@grounded/api /llms.txt", () => {
+  it("serves the manual as text/markdown", async () => {
+    const home = mkdtempSync(join(tmpdir(), "grounded-api-"));
+    const store = await openStore(sqliteConfig(home));
+    const app = createApp(store);
+    try {
+      const res = await app.fetch(new Request("http://local.test/llms.txt"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/markdown");
+      const body = await res.text();
+      expect(body.length).toBeGreaterThan(0);
+      expect(body).toContain("# Grounded");
+    } finally {
+      await store.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("is exempt from bearer auth while other routes still require it", async () => {
+    const home = mkdtempSync(join(tmpdir(), "grounded-api-"));
+    const store = await openStore(sqliteConfig(home));
+    const app = createApp(store, { token: "s3cret" });
+    try {
+      const llms = await app.fetch(new Request("http://local.test/llms.txt"));
+      expect(llms.status).toBe(200);
+
+      const facts = await app.fetch(new Request("http://local.test/facts"));
+      expect(facts.status).toBe(401);
+    } finally {
+      await store.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("appears in the served /openapi.json", async () => {
+    const home = mkdtempSync(join(tmpdir(), "grounded-api-"));
+    const store = await openStore(sqliteConfig(home));
+    const app = createApp(store);
+    try {
+      const res = await app.fetch(new Request("http://local.test/openapi.json"));
+      const doc = (await res.json()) as { paths: Record<string, unknown> };
+      expect(doc.paths).toHaveProperty("/llms.txt");
+    } finally {
+      await store.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
