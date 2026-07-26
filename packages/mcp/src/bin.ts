@@ -10,6 +10,7 @@ async function main(): Promise<void> {
   const store = await openStore(config);
   const server = createServer(store, {
     typicalFactLimit: config.delivery.typicalFactLimit,
+    factsReserveTok: config.brief.reserve.facts,
   });
 
   const portRaw = process.env["GROUNDED_MCP_HTTP_PORT"];

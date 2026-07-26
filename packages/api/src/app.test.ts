@@ -442,6 +442,43 @@ describe("@grounded/api delivery envelope", () => {
     expect("delivery" in body).toBe(false);
   });
 
+  it("POST /facts warns once the pinned set crosses 75% of the facts reserve, not below it", async () => {
+    // A dedicated app with a tiny facts reserve so a couple of pinned facts
+    // can deterministically cross the 75% threshold without huge fixtures.
+    const pinHome = mkdtempSync(join(tmpdir(), "grounded-api-pinned-reserve-"));
+    const pinCfg = sqliteConfig(pinHome);
+    pinCfg.brief.reserve = { vision: 400, facts: 40, sessions: 500 };
+    const pinStore = await openStore(pinCfg);
+    const pinApp = createApp(pinStore, { typicalFactLimit: 8, factsReserveTok: 40 });
+    const pinPost = (body: unknown): Promise<Response> =>
+      pinApp.fetch(
+        new Request("http://local.test/facts", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    try {
+      const first = await (
+        await pinPost({ fact: "small pinned fact", scope: "pin-reserve-test", pinned: true })
+      ).json();
+      // One short pinned fact shouldn't crowd a 40-token reserve on its own.
+      expect(first.delivery.warning).toBeUndefined();
+
+      const second = await (
+        await pinPost({
+          fact: "a second pinned fact with enough padding text to push the pinned set well past most of the reserve",
+          scope: "pin-reserve-test",
+          pinned: true,
+        })
+      ).json();
+      expect(second.delivery.warning).toMatch(/pinned facts use \d+% of the facts reserve/);
+    } finally {
+      await pinStore.close();
+      rmSync(pinHome, { recursive: true, force: true });
+    }
+  });
+
   it("PATCH /facts/:id with an explicit createdBy actually persists it", async () => {
     // The field is untouched on an ordinary patch, so a preservation-only test
     // would pass against the unfixed factPatch() that never reads body.createdBy.
@@ -489,7 +526,7 @@ describe("@grounded/api brief delivery accounting", () => {
     );
   }
 
-  it("POST /brief reports meta.{vision,facts,sessions} and real, resolvable droppedItems", async () => {
+  it("POST /brief reports meta.{vision,facts,sessions} truncation", async () => {
     await post("/vision", { details: "x".repeat(500), scope: "global" });
     for (let i = 0; i < 5; i++) {
       await post("/facts", {
@@ -508,16 +545,79 @@ describe("@grounded/api brief delivery accounting", () => {
     expect(body.meta.vision.truncated).toBe(true);
     expect(body.meta.facts.truncated).toBe(true);
 
-    expect(Array.isArray(body.droppedItems)).toBe(true);
-    expect(body.droppedItems.length).toBeGreaterThan(0);
     // vision has no arm in SourceType/TypedId — it must never appear here.
+    expect(Array.isArray(body.droppedItems)).toBe(true);
     expect(body.droppedItems.every((id: string) => !id.startsWith("vision"))).toBe(true);
+  });
 
-    // droppedItems must be real ids, not decorative — GET /get/:typedId resolves them.
-    const getRes = await app.fetch(new Request(`http://local.test/get/${body.droppedItems[0]}`));
-    expect(getRes.status).toBe(200);
-    const record = await getRes.json();
-    expect(record.sourceType).toBe("fact");
+  it("POST /brief accounts for overflow facts across facts/indexedItems/droppedItems", async () => {
+    // A reserve this small (5 tok = 20 chars) only fits the mandatory
+    // item[0] in full text; everything else overflows into the index tier,
+    // and enough facts here blow even the 300-tok index budget so some are
+    // truly dropped too — exercising all three tiers at once.
+    const briefHome = mkdtempSync(join(tmpdir(), "grounded-api-brief-overflow-"));
+    const cfg = sqliteConfig(briefHome);
+    cfg.brief.reserve = { vision: 20, facts: 5, sessions: 20 };
+    const overflowStore = await openStore(cfg);
+    const overflowApp = createApp(overflowStore);
+    const overflowPost = (path: string, body: unknown): Promise<Response> =>
+      overflowApp.fetch(
+        new Request(`http://local.test${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    try {
+      for (let i = 0; i < 31; i++) {
+        await overflowPost("/facts", {
+          fact: `index cap fact number ${i} with enough text to blow a tiny budget`,
+          scope: "global",
+          importance: 0.9 - i * 0.01,
+        });
+      }
+
+      const res = await overflowPost("/brief", {});
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      // Every fact is accounted for exactly once, across the three tiers.
+      const accountedFor = body.facts.length + body.indexedItems.length + body.droppedItems.length;
+      expect(accountedFor).toBe(31);
+      expect(body.indexedItems.length).toBeGreaterThan(0);
+      expect(body.droppedItems.length).toBeGreaterThan(0);
+
+      // meta.facts.returned counts only full-text rows, never inflated by
+      // indexed ones; meta.facts.indexed mirrors indexedItems.length.
+      expect(body.meta.facts.returned).toBe(body.facts.length);
+      expect(body.meta.facts.indexed).toBe(body.indexedItems.length);
+
+      // droppedItems are real, resolvable ids and truly absent from the text.
+      const getRes = await overflowApp.fetch(
+        new Request(`http://local.test/get/${body.droppedItems[0]}`),
+      );
+      expect(getRes.status).toBe(200);
+      const record = await getRes.json();
+      expect(record.sourceType).toBe("fact");
+      for (const id of body.droppedItems as string[]) {
+        const dropped = record.id === Number(id.split(":")[1]) ? record : await (
+          await overflowApp.fetch(new Request(`http://local.test/get/${id}`))
+        ).json();
+        expect(body.text).not.toContain(dropped.fact);
+      }
+
+      // indexedItems ARE present in the text, but only as their compressed
+      // index line — never the full fact text.
+      for (const id of body.indexedItems as string[]) {
+        const indexedRes = await overflowApp.fetch(new Request(`http://local.test/get/${id}`));
+        const indexedRecord = await indexedRes.json();
+        expect(body.text).not.toContain(indexedRecord.fact);
+        expect(body.text).toContain(`(${id})`);
+      }
+    } finally {
+      await overflowStore.close();
+      rmSync(briefHome, { recursive: true, force: true });
+    }
   });
 });
 

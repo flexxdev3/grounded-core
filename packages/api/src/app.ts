@@ -25,7 +25,7 @@ import type {
 } from "@grounded/core/contract";
 // Narrow subpath, not the barrel: the route layer must not drag openStore and
 // its database drivers in just to render a delivery warning.
-import { computeDeliveryRank } from "@grounded/core/delivery";
+import { computeDeliveryRank, pinnedFactsReserveStatus } from "@grounded/core/delivery";
 import { openApiDocument } from "./openapi.js";
 import { LLMS_TXT } from "./llms.js";
 
@@ -38,6 +38,15 @@ const PUBLIC_PATHS = new Set(["/health", "/llms.txt"]);
 /** Fallback for `createApp(store)` callers that pass no config. Kept in sync
  *  with defaultConfig().delivery.typicalFactLimit by the api test suite. */
 const DEFAULT_TYPICAL_FACT_LIMIT = 8;
+
+/** Fallback for `createApp(store)` callers that pass no config. Kept in sync
+ *  with defaultConfig().brief.reserve.facts by the api test suite. */
+const DEFAULT_FACTS_RESERVE_TOK = 900;
+
+/** Large enough to pull every active fact for the pinned-reserve warning
+ *  check; not a real pagination limit — just avoids the store's normal
+ *  ~100-row default silently truncating the pinned set it scans. */
+const PINNED_SCAN_LIMIT = 100_000;
 
 /** Thrown by request guards; mapped to HTTP 400 in onError. */
 class ValidationError extends GroundedError {
@@ -234,7 +243,7 @@ async function readJsonOptional(c: {
 
 export function createApp(
   store: Store,
-  opts: { token?: string; typicalFactLimit?: number } = {},
+  opts: { token?: string; typicalFactLimit?: number; factsReserveTok?: number } = {},
 ): Hono {
   const app = new Hono();
   const token = opts.token;
@@ -243,6 +252,9 @@ export function createApp(
   // createApp(store) directly still gets the signal rather than silently
   // losing it.
   const typicalFactLimit = opts.typicalFactLimit ?? DEFAULT_TYPICAL_FACT_LIMIT;
+  // Same threading pattern, for the pinned-reserve warning: matches
+  // defaultConfig().brief.reserve.facts.
+  const factsReserveTok = opts.factsReserveTok ?? DEFAULT_FACTS_RESERVE_TOK;
 
   /** Assembles the write-time delivery signal for a fact write response.
    * Omits `delivery` entirely for an archived fact (factsDeliveryRank
@@ -251,7 +263,17 @@ export function createApp(
   async function factWithDelivery(fact: Fact): Promise<Fact | FactWriteResponse> {
     const rankInfo = await store.factsDeliveryRank(fact.id);
     if (!rankInfo) return fact;
-    const delivery = computeDeliveryRank(rankInfo.rank, rankInfo.ofActive, typicalFactLimit);
+    const { data: activeFacts } = await store.factsList({
+      status: "active",
+      limit: PINNED_SCAN_LIMIT,
+    });
+    const pinnedReserve = pinnedFactsReserveStatus(activeFacts, factsReserveTok);
+    const delivery = computeDeliveryRank(
+      rankInfo.rank,
+      rankInfo.ofActive,
+      typicalFactLimit,
+      pinnedReserve,
+    );
     return { ...fact, delivery };
   }
 

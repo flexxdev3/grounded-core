@@ -15,6 +15,11 @@ export interface StartServerOptions {
    *  Threaded from the resolved config by the bin; omitting it falls back to the
    *  shipped default rather than silently disabling the signal. */
   typicalFactLimit?: number;
+  /** `cfg.brief.reserve.facts` — the facts reserve budget (tokens) the
+   *  pinned-reserve write-time warning checks the pinned set's rendered size
+   *  against. Threaded from the resolved config by the bin, same pattern as
+   *  `typicalFactLimit`. */
+  factsReserveTok?: number;
 }
 
 export interface RunningServer {
@@ -31,6 +36,9 @@ export function startServer(opts: StartServerOptions): Promise<RunningServer> {
     ...(opts.token ? { token: opts.token } : {}),
     ...(opts.typicalFactLimit !== undefined
       ? { typicalFactLimit: opts.typicalFactLimit }
+      : {}),
+    ...(opts.factsReserveTok !== undefined
+      ? { factsReserveTok: opts.factsReserveTok }
       : {}),
   });
 

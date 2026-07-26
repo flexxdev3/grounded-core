@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GroundedError, defaultConfig } from "@grounded/core";
-import { computeDeliveryRank } from "@grounded/core/delivery";
+import { computeDeliveryRank, pinnedFactsReserveStatus } from "@grounded/core/delivery";
 import type {
   Store,
   RecallResult,
@@ -79,8 +79,22 @@ const TYPED_ID_RE = /^(fact|session|doc):\d+$/;
  * defaulting here only so an embedder calling `createServer(store)` still gets
  * correct out-of-the-box behaviour.
  */
-export function createServer(store: Store, opts: { typicalFactLimit?: number } = {}): McpServer {
+export function createServer(
+  store: Store,
+  opts: { typicalFactLimit?: number; factsReserveTok?: number } = {},
+): McpServer {
   const typicalFactLimit = opts.typicalFactLimit ?? defaultConfig().delivery.typicalFactLimit;
+  // Same threading pattern as typicalFactLimit, for the pinned-reserve
+  // write-time warning: matches cfg.brief.reserve.facts.
+  const factsReserveTok = opts.factsReserveTok ?? defaultConfig().brief.reserve.facts;
+
+  /** Active facts scanned to compute the pinned set's share of the facts
+   *  reserve. Large limit — this must see every active fact, not the
+   *  store's normal ~100-row list default. */
+  async function pinnedReserve(): Promise<{ renderedChars: number; reserveChars: number }> {
+    const { data: activeFacts } = await store.factsList({ status: "active", limit: 100_000 });
+    return pinnedFactsReserveStatus(activeFacts, factsReserveTok);
+  }
   const server = new McpServer(
     { name: "grounded", version: "0.1.0" },
     {
@@ -351,7 +365,9 @@ export function createServer(store: Store, opts: { typicalFactLimit?: number } =
         ...(origin !== undefined ? { origin } : {}),
       });
       const rank = await store.factsDeliveryRank(created.id);
-      const delivery = rank ? computeDeliveryRank(rank.rank, rank.ofActive, typicalFactLimit) : null;
+      const delivery = rank
+        ? computeDeliveryRank(rank.rank, rank.ofActive, typicalFactLimit, await pinnedReserve())
+        : null;
       return json(delivery ? { ...created, delivery } : created);
     }),
   );
@@ -393,7 +409,9 @@ export function createServer(store: Store, opts: { typicalFactLimit?: number } =
         ...(origin !== undefined ? { origin } : {}),
       });
       const rank = await store.factsDeliveryRank(updated.id);
-      const delivery = rank ? computeDeliveryRank(rank.rank, rank.ofActive, typicalFactLimit) : null;
+      const delivery = rank
+        ? computeDeliveryRank(rank.rank, rank.ofActive, typicalFactLimit, await pinnedReserve())
+        : null;
       return json(delivery ? { ...updated, delivery } : updated);
     }),
   );

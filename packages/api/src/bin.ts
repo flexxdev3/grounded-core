@@ -32,6 +32,7 @@ async function main(): Promise<void> {
     host,
     ui,
     typicalFactLimit: config.delivery.typicalFactLimit,
+    factsReserveTok: config.brief.reserve.facts,
   });
   console.log(`grounded-api listening on ${server.url}`);
   console.log(server.ui ? `console: ${server.url}/` : "console: not built (headless)");

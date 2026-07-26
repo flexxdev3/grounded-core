@@ -1,5 +1,12 @@
 import type { DeliveryRank } from "../contract.js";
 
+// Re-exported here (not just from engine/brief.ts) so write-path callers can
+// import the whole pinned-reserve-warning signal from the same narrow
+// "@grounded/core/delivery" subpath they already use for computeDeliveryRank,
+// without dragging in openStore/database drivers via the full brief.js module
+// graph. brief.ts remains the source of truth; this is a pure re-export.
+export { pinnedFactsReserveStatus } from "./brief.js";
+
 /**
  * Fraction of the facts reserve the PINNED set alone must reach, by rendered
  * chars, before a fact write earns a warning. Pinned facts are a delivery
