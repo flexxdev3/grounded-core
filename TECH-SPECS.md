@@ -35,7 +35,7 @@ Consumers (cli/api/mcp/client/ui) depend only on the `Store` interface + the rec
 
 ## 2. Config (`config.toml`)
 
-Parsed via `smol-toml`. File lives at `{home}/config.toml`. Shape → `contract.ts:139-184`,
+Parsed via `smol-toml`. File lives at `{home}/config.toml`. Shape → `contract.ts:217-299`,
 defaults → `config.ts:10-42`.
 
 ```toml
@@ -76,10 +76,10 @@ factCategoryFloors = { commit-rule = 1, convention = 2, playbook = 1 }
 
 **Default home:** `~/.grounded` (`config.ts:11`). **Default db:** `{home}/cabinet/grounded.db`.
 
-**Load order** (`config.ts:107-117`): hardcoded defaults → `config.toml` → env vars → direct overrides →
+**Load order** (`config.ts:115-125`): hardcoded defaults → `config.toml` → env vars → direct overrides →
 `home` pinned to resolved value.
 
-**Env overrides** (`config.ts:84-105`):
+**Env overrides** (`config.ts:92-113`):
 
 | Env var | Maps to |
 |---|---|
@@ -96,7 +96,7 @@ factCategoryFloors = { commit-rule = 1, convention = 2, playbook = 1 }
 ## 3. Records & types
 
 Defined in `contract.ts`. All timestamps are ISO-8601 strings. Typed-id format:
-`` `${SourceType}:${number}` `` where `SourceType = "fact" | "session" | "doc"` (`contract.ts:85`) —
+`` `${SourceType}:${number}` `` where `SourceType = "fact" | "session" | "doc"` (`contract.ts:127`) —
 e.g. `fact:2`, `session:274`, `doc:1091`.
 
 **Fact** (`contract.ts:21-52`): `id, scope, category, fact, detail?, topicKey?, pinned, importance(0..1),
@@ -116,56 +116,59 @@ exempt from the lookup and from the enforcing index, so a retired key can be reu
 fact; asking `factsUpdate` to reactivate a fact into a key an active row already holds throws rather than
 silently merging two facts. Enforced by a partial unique index, not just application logic — see §4.1/§4.2.
 
-**Vision** (`contract.ts:60-76`): `id, scope("global"|"project:<name>"), summary(string|null),
+**Vision** (`contract.ts:60-75`): `id, scope("global"|"project:<name>"), summary(string|null),
 details(markdown), createdBy?, source?, createdAt, updatedAt`. `details` is the narrative — recalled via
 `ground_recall`/`/recall`, never injected. `summary` is the short form injected at SessionStart — never
 recalled; a null `summary` (rows written before the column existed) falls back to truncated `details` for
-injection (`visionInjectedText`, `brief.ts:191-193`), so no backfill was required. Exactly one record per
+injection (`visionInjectedText`, `brief.ts:224-226`), so no backfill was required. Exactly one record per
 scope (`unique(scope)`); `visionSet` edits it in place, inserting only when none exists — no status, no
 supersede, no history. **Excluded from recall** — no embedding, no FTS row, not a `SourceType`. Always
 injected into the brief.
 
-**Session** (`contract.ts:40-54`): `id, machine?, project?, workspace?, agent?, summary, details?,
+**Session** (`contract.ts:79-93`): `id, machine?, project?, workspace?, agent?, summary, details?,
 tags?(string[]), source("manual"|"hook"|"import"|…), createdAt`.
 
-**Doc** (`contract.ts:76-95`): `id, source, path, title, body, chunkIdx, totalChunks, bodyHash, mtime?,
+**Doc** (`contract.ts:98-117`): `id, source, path, title, body, chunkIdx, totalChunks, bodyHash, mtime?,
 status("active"|"archived"|"missing"), kind?, machine?, scope, ingestedAt`. `scope` is the doc **lane**
 (default `"global"`), batch-level — every chunk from one `docsIngest` call carries the same scope
 (`IngestOptions.scope`, §8). See §6.1 for how lanes interact with recall/brief defaults.
 
-**RecallResult** (`contract.ts:89-107`): compact card — `sourceType, id, typedId, title, score,
+**RecallResult** (`contract.ts:130-148`): compact card — `sourceType, id, typedId, title, score,
 matchedBy("vector"|"lexical"|"both"), createdAt?, updatedAt?, path?, source?, citation, snippet`
 (snippet ≤ 200 chars). No full bodies.
 
-**BriefResult** (`contract.ts:376-399`): `startupNote, vision({global, project} — Vision|null each),
+**BriefResult** (`contract.ts:395-417`): `startupNote, vision({global, project} — Vision|null each),
 recentSessions(Session[]), facts(Fact[]), relatedDocs(RecallResult[]), meta({vision, facts, sessions} —
 each `DeliveryMeta`), droppedItems(TypedId[]), text?` (`text` filled when `format != "json"`). See §7 for
 how `meta`/`droppedItems` are populated.
 
-**`ListResult<T>` / `DeliveryMeta`** (`contract.ts:162-176`): every list-shaped `Store` method —
+**`ListResult<T>` / `DeliveryMeta`** (`contract.ts:186`/`contract.ts:162-184`): every list-shaped `Store` method —
 `factsList, sessionsList, docsList, visionList, recall, impact` — returns `{data: T[], meta: DeliveryMeta}`.
-`DeliveryMeta = {returned, available, truncated, limit, bySource?}`. `available` is a real computed count
-(a `count(*)` query, or an explicit accumulation for the recall/brief lanes) — **never** derived from
-`data.length`; that is the defect this type exists to make structurally impossible. `truncated` means
-"there may be more than `available`" as well as "more than `returned`" — see recall's lane-saturation
+`DeliveryMeta = {returned, available, truncated, limit, chars?, bySource?}`. `available` is a real computed
+count (a `count(*)` query, or an explicit accumulation for the recall/brief lanes) — **never** derived from
+`data.length`; that is the defect this type exists to make structurally impossible. `returned`/`available`
+are **rows on every lane, without exception**; a lane that truncates text rather than dropping rows reports
+its character arithmetic in `chars: {returned, available}` (today only the brief's `vision` lane, §7) and
+never in the row fields. `truncated` means "there may be more than `available`" as well as "more than
+`returned`", and also covers text cut inside a kept row — see recall's lane-saturation
 note (§6). `bySource` (recall/impact only) repeats the three fields per `SourceType`.
 **One deliberate exception: `sessionsTimeline` returns a bare `Session[]`**, not `ListResult<Session>`
 — it has window semantics (before/after an anchor), not limit/offset truncation, so there is nothing
 `available`/`truncated` would mean for it. This is intentional; do not wrap it.
 
-**Fact writes** (`FactWriteResponse = Fact & {delivery: DeliveryRank}`, `contract.ts:178-181`):
+**Fact writes** (`FactWriteResponse = Fact & {delivery: DeliveryRank}`, `contract.ts:191`):
 `POST /facts` and `PATCH /facts/:id` return the plain `Fact` plus a computed `delivery` position.
-`DeliveryRank = {rank, ofActive, delivered, warning?}` (`contract.ts:178`), built by
+`DeliveryRank = {rank, ofActive, delivered, warning?}` (`contract.ts:188`), built by
 `computeDeliveryRank(rank, ofActive, typicalFactLimit)` (`engine/delivery.ts`): `rank` is the fact's
 1-based position in `factsList`'s own ordering within its scope + `active` status, `delivered` is
 `rank <= typicalFactLimit` (`config.delivery.typicalFactLimit`, default `8` — mirrors the live hook's
 `FACTS_LIMIT`), and past that threshold `warning` names the assumption the write violates. `delivery` is
 omitted entirely — not nulled — when the written fact is archived (`Store.factsDeliveryRank` returns
 `null`; an archived fact has no delivery position). `Store.factsAdd`/`factsUpdate` themselves return a
-plain `Fact`; `FactWriteResponse` is assembled one layer up at the API/MCP surface (`app.ts:246-251`,
+plain `Fact`; `FactWriteResponse` is assembled one layer up at the API/MCP surface (`app.ts:251-256`,
 `server.ts:353-356`, §10/§11), computed via the separate `Store.factsDeliveryRank(id)` call.
 
-**ImpactResult** (`contract.ts:343-357`): `Omit<RecallResult,"title"|"snippet"> & {title: string|null,
+**ImpactResult** (`contract.ts:362-376`): `Omit<RecallResult,"title"|"snippet"> & {title: string|null,
 snippet: string|null, inScope: boolean, scope: string}`. `title`/`snippet` are `null` exactly when
 `inScope` is `false` — content withheld across a doc-lane boundary; `path`/`citation`/`scope` always
 survive, so the caller learns THAT a dependency exists and where, never silently dropped. Lane gating
@@ -182,7 +185,7 @@ health · close`.
 there is no separate supersede call. `factsDeliveryRank(id)` returns `{rank, ofActive} | null` (§ above);
 it is a plain data query, not itself part of the `FactWriteResponse` wire shape.
 
-**Errors** (`contract.ts:332-358`): `GroundedError` (base, `code="GROUNDED_ERROR"`) →
+**Errors** (`contract.ts:604-628`): `GroundedError` (base, `code="GROUNDED_ERROR"`) →
 `EmbedError("EMBED_ERROR")`, `StoreError("STORE_ERROR")`, `ConfigError("CONFIG_ERROR")`.
 Callers map `code` → exit code / HTTP status.
 
@@ -202,12 +205,12 @@ One file. Four base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts`.
   status, origin, created_by, source, created_at, updated_at)`
 - `vision(id, scope, details, summary, created_by, source, created_at, updated_at)`
   — no FTS/vec rows (vision is injected, never searched). Pre-split cabinets get `content` renamed to
-  `details` non-destructively (`migrateVisionSummarySplit`, `sqlite.ts:150-162`) plus a nullable `summary`
+  `details` non-destructively (`migrateVisionSummarySplit`, `sqlite.ts:150-163`) plus a nullable `summary`
   column added; a null `summary` falls back to truncated `details` for injection (§3).
 - `sessions(id, machine, project, workspace, agent, summary, details, tags, source, created_at)`
   — `tags` stored as serialized text.
 - `docs(id, source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine,
-  scope, ingested_at)` — `scope text not null default 'global'` (stage 3, `migrations/sqlite.ts:48`).
+  scope, ingested_at)` — `scope text not null default 'global'` (stage 3, `migrations/sqlite.ts:52`).
   Cabinets created before stage 3 get it via a one-shot guarded migration
   (`sqlite.ts:migrateAddDocsScope`): probe `pragma_table_info('docs')` for a `scope` column, and if
   absent, `alter table docs add column scope text not null default 'global'` + create the index. SQLite
@@ -219,37 +222,37 @@ One file. Four base tables + FTS5 + vec0. Migrations at `migrations/sqlite.ts`.
 `factsList`'s own ordering), `sessions(project)`, `sessions(created_at)`, `docs(path)`, `docs(status)`,
 `docs(scope)` (`idx_docs_scope`), **`docs(path, chunk_idx)` UNIQUE**, **`vision(scope)` UNIQUE** (the
 one-record-per-scope invariant), **`idx_facts_topic_active_unique` on `facts(scope, topic_key) where
-topic_key is not null and status='active'`** (`migrations/sqlite.ts:226-228`) — the partial unique index
+topic_key is not null and status='active'`** (`storage/sqlite.ts:226-228`) — the partial unique index
 that makes the `(scope, topicKey)` MERGE-PATCH upsert (§3) atomic rather than advisory; archived rows fall
 outside it, so a retired key never blocks a fresh active row.
 
-**Fact-identity backfill** (stage 2b, `sqlite.ts:185-228`), one-shot, runs before the index above is
+**Fact-identity backfill** (stage 2b, `sqlite.ts:183-230`), one-shot, runs before the index above is
 created: for each pre-existing `(scope, topic_key)` collision among **active** rows, the newest row (by
 `updated_at`) keeps the key; every older row in the group gets `topic_key` set to `null` — not deleted,
 not archived, it survives intact and simply becomes unaddressable by that key. Without this, creating the
 partial unique index on a cabinet with a pre-existing collision would fail outright and block `init()`.
 
-**Lexical — FTS5 external-content** (`migrations/sqlite.ts:60-70`), `tokenize='porter unicode61'`:
+**Lexical — FTS5 external-content** (`migrations/sqlite.ts:87-95`), `tokenize='porter unicode61'`:
 - `fts_facts(fact, detail)` content=`facts`
 - `fts_sessions(summary, details)` content=`sessions`
 - `fts_docs(title, body)` content=`docs`
 
-**Vector — sqlite-vec vec0** (`migrations/sqlite.ts:72-78`), `{{DIMS}}` substituted at runtime from
+**Vector — sqlite-vec vec0** (`migrations/sqlite.ts:100-102`), `{{DIMS}}` substituted at runtime from
 `embedder.dims`:
 - `vec_facts / vec_sessions / vec_docs using vec0(embedding float[{{DIMS}}])`
 
-**Extension load** (`sqlite.ts:79-97`): `sqliteVec.load(this.db)`; on failure set `vectorEnabled=false` and
-run lexical-only — `health()` reports `"fts5 (lexical-only)"` (`sqlite.ts:854`). Never crashes.
+**Extension load** (`sqlite.ts:99-109`): `sqliteVec.load(this.db)`; on failure set `vectorEnabled=false` and
+run lexical-only — `health()` reports `"fts5 (lexical-only)"` (`sqlite.ts:1509`). Never crashes.
 
 **vec0 binding quirks** (the build learnings — easy to regress):
-- Bind rowid as **BigInt**, embedding as a **JSON string** (`sqlite.ts:111-116`):
+- Bind rowid as **BigInt**, embedding as a **JSON string** (`sqlite.ts:246-249`):
   `insert into {tbl}(rowid, embedding) values (?, ?)` ← `BigInt(id), JSON.stringify(vec)`.
-- KNN needs an **explicit `and k = ?`** constraint (`sqlite.ts:595-605`):
+- KNN needs an **explicit `and k = ?`** constraint (`sqlite.ts:1006`):
   `select rowid, distance from {tbl} where embedding match ? and k = ? order by distance`.
 
 ### 4.2 Postgres (scale/homelab) — `storage/postgres.ts`, `storage/migrations/postgres.ts`
 
-`pgvector` + generated `tsvector`. Schema default `"public"` (`postgres.ts:62`,
+`pgvector` + generated `tsvector`. Schema default `"public"` (`postgres.ts:70`,
 `cfg.storage.schema ?? "public"`). DDL at `migrations/postgres.ts:3-78`, `{{SCHEMA}}`/`{{DIMS}}` substituted.
 
 Same logical columns as SQLite, plus per-table:
@@ -260,7 +263,7 @@ Same logical columns as SQLite, plus per-table:
 - `tags text[]` (native array, vs SQLite's serialized text), timestamps `timestamptz default now()`.
 - `vision` mirrors the SQLite table (no embedding/tsv columns) with the same partial unique active index.
 
-**Indexes** (`migrations/postgres.ts:67-76`): same b-tree set as SQLite + `docs(scope)` (`idx_docs_scope`)
+**Indexes** (`migrations/postgres.ts:140-153`): same b-tree set as SQLite + `docs(scope)` (`idx_docs_scope`)
 + **`docs(path,chunk_idx)` UNIQUE** + GIN on each `search_tsv` (`idx_facts_tsv`, `idx_sessions_tsv`,
 `idx_docs_tsv`) + **`idx_facts_topic_key` on `facts(scope, topic_key) where topic_key is not null and
 status='active'`** (`migrations/postgres.ts:140-142`) — Postgres's equivalent of SQLite's
@@ -285,9 +288,9 @@ paying an Ollama round trip on what may turn out to be a no-op text update; the 
 re-embeds when `fact`/`detail` text actually changed, matching `factsUpdate`'s existing guard.
 
 **Recall SQL:**
-- Lexical (`postgres.ts:492-495`): `ts_rank_cd(search_tsv, websearch_to_tsquery('english', $1))`,
+- Lexical (`postgres.ts:898-900`): `ts_rank_cd(search_tsv, websearch_to_tsquery('english', $1))`,
   `where search_tsv @@ websearch_to_tsquery(...)`, order by rank.
-- Vector (`postgres.ts:515`): `order by embedding <=> $1 limit N` (cosine-distance operator).
+- Vector (`postgres.ts:921`): `order by embedding <=> $1 limit N` (cosine-distance operator).
 
 ### 4.3 Ingest idempotency
 Skip a chunk whose `body_hash` is unchanged → re-ingest is cheap. `docs(path, chunk_idx)` UNIQUE is the
@@ -319,17 +322,17 @@ Dim is recorded with the store; switching models is an explicit re-embed (CONTRA
 
 Concrete code path. Semantics/ordering rationale → CONTRACT.md §"Hybrid recall".
 
-- **RRF** (`recall.ts:31-33`): `rrf(k, rank) = 1 / (k + rank)`, k from `recall.rrfK` (default 60).
-- **fuseLane** (`recall.ts:39-92`): accumulate `score += rrf(k, rank)` across the vector lane then the
+- **RRF** (`recall.ts:40-42`): `rrf(k, rank) = 1 / (k + rank)`, k from `recall.rrfK` (default 60).
+- **fuseLane** (`recall.ts:48-101`): accumulate `score += rrf(k, rank)` across the vector lane then the
   lexical lane per item; `inVec`/`inLex` flags set `matchedBy` (`both` when in both).
-- **Boosts** (`recall.ts:70-82`):
+- **Boosts** (`recall.ts:79-91`):
   - facts: `× boosts.pinned` if pinned (1.5); `× (1 + boosts.importance × importance)`.
   - sessions: `× recencyMultiplier(createdAt, halfLifeDays, now)`.
   - docs: `× boosts.activeStatus` (1.25) if active; no boost otherwise.
-- **recencyMultiplier** (`recall.ts:95-105`): `0.5 ^ (ageDays / halfLifeDays)` — equals 0.5 at one
+- **recencyMultiplier** (`recall.ts:104-114`): `0.5 ^ (ageDays / halfLifeDays)` — equals 0.5 at one
   half-life (default 30d); returns 1 for missing/invalid dates or `halfLifeDays ≤ 0`.
-- **Source caps** (`recall.ts:90-91`): `fused.slice(0, sourceCaps[type])`.
-- **Final order** (`orderResults`, `recall.ts:111-127`): tier 0 facts → 1 sessions → 2 active docs →
+- **Source caps** (`recall.ts:99-100`): `fused.slice(0, sourceCaps[type])`.
+- **Final order** (`orderResults`, `recall.ts:120-136`): tier 0 facts → 1 sessions → 2 active docs →
   3 archived/missing docs; within a tier, score desc.
 - **Archived facts are excluded from recall entirely**, not demoted — both adapters filter fact
   candidates to `status='active'` before fusion/ranking. `archived` means *no longer true*, so it must
@@ -355,7 +358,7 @@ on the private hosted gateway (`@grounded/cloud`, §14, stage 4b) — see §14 f
 that does not contradict this paragraph.
 
 - **`recall()`** (`RecallOptions.scopes`) and **`brief()`** (`BriefOptions.docScopes`) filter the doc lane
-  and both default to `['global']` when the caller passes nothing (sqlite.ts:922, mirrored in postgres.ts).
+  and both default to `['global']` when the caller passes nothing (sqlite.ts:1190, mirrored in postgres.ts).
   A caller that wants an extra lane must declare **both**: `["global","administration"]`. Declaring only
   `["administration"]` drops the default engineering corpus out of recall/brief entirely — this is the
   single most likely caller mistake.
@@ -398,14 +401,14 @@ fetched and returned with content withheld, not dropped) — see `ImpactResult` 
 
 ## 7. Brief assembly — `engine/brief.ts`
 
-`assembleBrief` (`brief.ts:22-33`) returns `BriefResult`. Fact scopes derived from
+`assembleBrief` (`brief.ts:307-348`) returns `BriefResult`. Fact scopes derived from
 `["global", agent:{a}?, project:{p}?, machine:{m}?]` (`deriveFactScopes`) — a fact scoped
 `machine:arch1` only surfaces in briefs on arch1 (the `machine` field already flows through
 `BriefOptions` from the API/MCP/hook). An explicit `factScopes` array overrides the derivation. Related docs come from
-`recall(query ?? cwd, {sources:["doc"], limit:5})` when a hint exists (`sqlite.ts:834-836`).
-Default recent-session count 8 (`contract.ts:209`).
+`recall(query ?? cwd, {sources:["doc"], limit:5})` when a hint exists (`sqlite.ts:1460-1462`).
+Default recent-session count 8 (`contract.ts:385`).
 
-**Reserved-slice budgeting** (Doctrine 3, `brief.ts:62-162`): each of `vision`/`facts`/`sessions` gets a
+**Reserved-slice budgeting** (Doctrine 3, `brief.ts:114-162`): each of `vision`/`facts`/`sessions` gets a
 fixed token share (`cfg.brief.reserve.{vision,facts,sessions}`, chars÷4 approximation, `CHARS_PER_TOK=4`
 — no BPE dependency, the engine has no tokenizer for this) and truncates **within its own slice only** —
 a long facts section can never eat into the sessions budget. `truncateToReserve` (facts/sessions) consumes
@@ -460,7 +463,7 @@ fact ranked 17th and had never once been delivered in a brief. With a `commit-ru
 guaranteed a slot ahead of the truncation cut.
 
 Bodies are rendered, not just titles: fact `detail`, session `details`, and the related-doc `snippet`
-are each whitespace-collapsed (`collapseWhitespace`, `brief.ts:39-41`) and appended after an em dash,
+are each whitespace-collapsed (`collapseWhitespace`, `brief.ts:58-60`) and appended after an em dash,
 with the `(fact:N)` / `(session:N)` / doc citation suffix intact — see the `<Global Vision content>` block
 above and the `- ${when}… ${summary}${details} (session:${s.id})` line shape.
 
@@ -496,12 +499,12 @@ Why it matters: without it every doc's chunk 0 opens with ~15–25 tokens of nea
 space and dilutes each document's actual opening. Landed 2026-07-25 after a 250-doc frontmatter sweep
 made the effect measurable.
 
-**`IngestOptions`** (`contract.ts:289-300`): `source?, kind?, machine?, scope?, dryRun?`. `scope` tags
+**`IngestOptions`** (`contract.ts:458-469`): `source?, kind?, machine?, scope?, dryRun?`. `scope` tags
 every chunk from this call with a lane (default `"global"`) — batch-level, not per-file. `machine` was
 already on `Doc` and persisted by both adapters, but stage 3 is the first release to expose it at the
 API/MCP surfaces (`POST /docs/ingest`, `ground_docs_ingest` — §10, §11).
 
-**`IngestReport`** (`contract.ts:302-312`): `scanned, added, updated, skipped, retagged, removed, paths`.
+**`IngestReport`** (`contract.ts:471-481`): `scanned, added, updated, skipped, retagged, removed, paths`.
 `retagged` counts chunks whose body was unchanged but whose batch tags (`source`/`kind`/`machine`/`scope`)
 were rewritten via a tag-only UPDATE — no re-embed, no body/body_hash/total_chunks touch. Retagged chunks
 do **not** appear in `paths`. `removed` is unrelated to disk state: it's stale chunk indexes inside a
@@ -509,7 +512,7 @@ file that shrank on re-chunk (e.g. a file that used to produce 5 chunks now prod
 3–4 rows are deleted). `removed: 0` is not a signal that no rows are orphaned on disk — reconciling against
 disk is `docsPrune`, not `IngestReport`.
 
-**`docsPrune`** (`Store.docsPrune(opts?: {remove?: boolean})`, `contract.ts:385`): reconciles doc rows
+**`docsPrune`** (`Store.docsPrune(opts?: {remove?: boolean})`, `contract.ts:569`): reconciles doc rows
 against files on disk — a path previously ingested but now missing from disk is marked `status:"missing"`
 (default), or hard-deleted when `remove:true`. Returns `{missing, removed}`. Surfaced at `POST
 /docs/prune` (§10) and `ground_docs_prune` (§11) — before stage 3 this method existed on the contract and
@@ -552,14 +555,14 @@ non-TTY auto-picks the default). Detection (`core/src/install/detect.ts`) is lay
 
 ## 10. API surface — `@grounded/api`
 
-Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes as the console/MCP (the contract types).
+Hono. `createApp(store, { token? }) → Hono` (`app.ts:235`). Same return shapes as the console/MCP (the contract types).
 
 **Server** (`bin.ts`): `@hono/node-server`; port `GROUNDED_API_PORT` (default **7437**), host
 `GROUNDED_API_HOST` (default `127.0.0.1`). SIGINT/SIGTERM graceful shutdown.
 
-**Auth** (`app.ts:143-156`): bearer middleware active only when a token is set
-(`GROUNDED_API_TOKEN`, `bin.ts:10`); off by default. `/health` and `/llms.txt` always exempt. Mismatch →
-401 `{error:"unauthorized", code:"UNAUTHORIZED"}`.
+**Auth** (`app.ts:259-269`): bearer middleware active only when a token is set
+(`GROUNDED_API_TOKEN`, `bin.ts:23`); off by default. `/health` and `/llms.txt` always exempt. Mismatch →
+401 `{error:"unauthorized", code:"UNAUTHORIZED"}` (`app.ts:265`).
 
 **21 routes** (10 GET / 8 POST / 1 PATCH / 2 DELETE):
 
@@ -587,28 +590,28 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:1`). Same return shapes a
 | POST | `/brief` | `brief` — body may include `docScopes` (defaults `["global"]`) |
 | GET | `/get/:typedId` | `get` |
 
-`/brief` and `/docs/prune` parse the body with `readJsonOptional` (`app.ts:186-196`), which reads the raw
+`/brief` and `/docs/prune` parse the body with `readJsonOptional` (`app.ts:223-233`), which reads the raw
 text instead of gating on `content-length` — that header is absent on chunked transfer-encoding requests,
 which previously made the body parse silently short-circuit to `{}` (200 OK, `docScopes`/`remove`
 discarded). Every other POST route still uses the strict `readJson`, which throws `ValidationError` on
 unparseable JSON.
 
-**Error mapping** (`app.ts:294-312`): `ValidationError`→400, `NotFoundError`→404, `EmbedError`→503,
+**Error mapping** (`app.ts:478-497`): `ValidationError`→400, `NotFoundError`→404, `EmbedError`→503,
 `StoreError`/`ConfigError`/`GroundedError`→500. Unknown path → 404 `{code:"NOT_FOUND"}`.
 
-**`GET /facts` status default** (`app.ts:203-213`): `?status` defaults to `active` when omitted.
+**`GET /facts` status default** (`app.ts:280-296`): `?status` defaults to `active` when omitted.
 `archived` and `all` are the explicit filters; `all` is handled in the route and never forwarded to the
 store as a literal status value. Any other value → 400. `POST /facts` and `PATCH /facts/:id` validate
-`status` the same way (`app.ts:126,142`) — 400 on anything other than `active`/`archived`. `origin`, when
+`status` the same way (`app.ts:153,170`) — 400 on anything other than `active`/`archived`. `origin`, when
 present in the body, is validated the same way — 400 on anything other than `stated`/`derived`
-(`optFactOrigin`, `app.ts:94-102`); omitted defaults to `"stated"` at the store layer, not the route.
+(`optFactOrigin`, `app.ts:101-106`); omitted defaults to `"stated"` at the store layer, not the route.
 
 ---
 
 ## 11. MCP surface — `@grounded/mcp`
 
-`@modelcontextprotocol/sdk` `McpServer`, name `"grounded"` v0.1.0 (`server.ts:59-65`). Each tool wrapped in
-`guard()` — `GroundedError` returned as error text, never thrown (`server.ts:36-43`).
+`@modelcontextprotocol/sdk` `McpServer`, name `"grounded"` v0.1.0 (`server.ts:84-86`). Each tool wrapped in
+`guard()` — `GroundedError` returned as error text, never thrown (`server.ts:38-45`).
 
 **Transports** (`bin.ts:13-18`): stdio default (`StdioServerTransport`); if `GROUNDED_MCP_HTTP_PORT` set →
 `StreamableHTTPServerTransport` (stateless, `sessionIdGenerator: undefined`) on `127.0.0.1`.
@@ -665,7 +668,7 @@ Surfaced by `grounded hooks print [target]` (resolves the shipped script via `im
 
 **Client lib** — `@grounded/client` `createClient({baseUrl, token?, fetch?, headers?}) → GroundedClient`
 with `health · recall · impact · brief · get · vision.{set,list,delete} · facts.{add,list,update,delete} ·
-sessions.{add,list,get} · docs.{list,get,ingest,prune}` (`packages/client/src/index.ts:49-106`); each is one
+sessions.{add,list,get} · docs.{list,get,ingest,prune}` (`packages/client/src/index.ts:54-164`); each is one
 `fetch` against the API, JSON in/out, throws `GroundedHttpError(status, code, message)` on non-2xx. Doc-lane
 scoping mirrors the engine: `docs.list` stays unfiltered by default (`opts.scope`/`scopes` optional),
 `recall`/`brief` default `scopes`/`docScopes` to `['global']`, `impact.scopes` defaults `['global']` for
@@ -694,24 +697,24 @@ hooks → grounded-mcp `tools/list`.
 | recency half-life | `30` days | `config.ts:31` |
 | active-doc boost | `1.25` | `config.ts:32` |
 | chunk size / overlap | `1200` / `150` chars | `config.ts:38-39` |
-| recent sessions in brief | `8` | `contract.ts:209` |
-| snippet max | `200` chars | `sqlite.ts:767/785/802` |
+| recent sessions in brief | `8` | `contract.ts:385` |
+| snippet max | `200` chars | `sqlite.ts:1386/1404/1421` |
 | FTS tokenizer | `porter unicode61` | `migrations/sqlite.ts` |
 | ollama default | `nomic-embed-text` / 768 | `embedding/ollama.ts:5-7` |
 | openai default | `text-embedding-3-small` / 1536 | `embedding/openai.ts:5-7` |
 | indexable exts | `.md .markdown .mdx .txt` | `ingest/walker.ts:15` |
-| default doc scope (lane) | `"global"` | `contract.ts:297`, `migrations/{sqlite,postgres}.ts` |
-| default recall/brief doc scopes | `["global"]` | `sqlite.ts:922` (mirrored postgres.ts), §6.1 |
+| default doc scope (lane) | `"global"` | `contract.ts:464`, `migrations/{sqlite,postgres}.ts` |
+| default recall/brief doc scopes | `["global"]` | `sqlite.ts:1190` (mirrored postgres.ts), §6.1 |
 | default impact scopes (content) | `["global"]` | `sqlite.ts:1246` (mirrored postgres.ts), §6.2 |
-| impact default limit | `20` (vs recall's `10`) | `contract.ts:313`, `sqlite.ts:1243` |
+| impact default limit | `20` (vs recall's `10`) | `contract.ts:331-332`, `sqlite.ts:1243` |
 | brief reserve (vision/facts/sessions) | `400` / `900` / `500` tok | `config.ts:43` |
 | brief default fact category floors | `commit-rule:1, convention:2, playbook:1` | `config.ts:44` |
 | brief preamble reserve (fixed, not configurable) | `200` tok | `brief.ts:78` |
 | typical fact delivery limit | `8` (mirrors hook `FACTS_LIMIT`) | `config.ts:46` |
 | API port | `7437` | `api/bin.ts` |
-| RRF formula | `1 / (k + rank)` | `recall.ts:32` |
-| recency formula | `0.5 ^ (ageDays / halfLife)` | `recall.ts:104` |
-| tier order | facts → sessions → active docs → archived docs | `recall.ts:115-119` |
+| RRF formula | `1 / (k + rank)` | `recall.ts:41` |
+| recency formula | `0.5 ^ (ageDays / halfLife)` | `recall.ts:113` |
+| tier order | facts → sessions → active docs → archived docs | `recall.ts:124-129` |
 
 ---
 
