@@ -45,6 +45,16 @@ If two lanes both fit, the more specific one wins and the other gets a pointer, 
   everything.
 - **Recall cards are truncated on purpose.** They are for choosing, not reading. Get the full
   record with \`GET /get/:typedId\`.
+- **Recall card fields** (\`RecallResult\`, no \`.summary\`):
+  - \`sourceType\` -> "fact" | "session" | "doc"
+  - \`id\` / \`typedId\` -> numeric id / "type:id" (e.g. "doc:1091")
+  - \`title\` -> doc title, session title, or the fact text (NOT \`summary\`)
+  - \`score\` -> fused post-RRF/post-boost relevance, higher = better
+  - \`matchedBy\` -> how it matched (vector/lexical/both)
+  - \`citation\` -> human-readable source, e.g. "doc:homelab/network.md#chunk2"
+  - \`snippet\` -> short matched excerpt
+  - \`path\` / \`source\` -> doc path / session project / fact scope (nullable)
+  - \`createdAt\` / \`updatedAt\` -> nullable timestamps
 - **Ingest paths must be absolute on the server's filesystem.** A relative path or \`~\` returns
   \`scanned: 0\` with no error. If you get zero, check the path before checking anything else.
 - Auth, when configured, is one bearer token: \`Authorization: Bearer <token>\`.
