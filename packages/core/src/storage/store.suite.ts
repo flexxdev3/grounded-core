@@ -287,6 +287,65 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.docsPrune({ remove: true });
     });
 
+    it("docs: reingesting an unchanged file backfills a NULLed-out project column and bumps retagged; a stable no-op reports retagged: 0", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-project-backfill-test-"));
+      const corpusDir = join(dir, "corpus", "backfillco");
+      mkdirSync(corpusDir, { recursive: true });
+      writeFileSync(
+        join(corpusDir, "backfill-doc.md"),
+        "# Backfill Doc\n\nzzqprojectbackfilltoken content that never changes across re-ingests.\n",
+        "utf8",
+      );
+
+      const first = await store.docsIngest([dir], { source: "project-backfill-test" });
+      expect(first.added).toBeGreaterThan(0);
+
+      const before = (await store.docsList({ source: "project-backfill-test" })).data;
+      expect(before.length).toBeGreaterThan(0);
+      for (const d of before) expect(d.project).toBe("backfillco");
+
+      // Simulate the pre-migration state: manually NULL out the project
+      // column on the store's underlying connection, bypassing the public
+      // API (there is no docsUpdate — this mirrors the real 3500-row corpus
+      // before this fix, where project was never backfilled on unchanged
+      // bodies).
+      const raw = store as unknown as { pool?: { query: (sql: string, params: unknown[]) => Promise<unknown> }; db?: { prepare: (sql: string) => { run: (...args: unknown[]) => unknown } }; schema?: string };
+      const ids = before.map((d) => d.id);
+      if (raw.pool) {
+        const schema = raw.schema ?? "public";
+        await raw.pool.query(`update "${schema}".docs set project = null where id = any($1)`, [ids]);
+      } else if (raw.db) {
+        const stmt = raw.db.prepare(`update docs set project = null where id = ?`);
+        for (const id of ids) stmt.run(id);
+      } else {
+        throw new Error("store exposes neither .pool nor .db — cannot simulate pre-migration state");
+      }
+
+      const nulled = (await store.docsList({ source: "project-backfill-test" })).data;
+      for (const d of nulled) expect(d.project ?? null).toBeNull();
+
+      // Reingesting the unchanged file should backfill project via the
+      // tag-only retag path and bump the retagged counter.
+      const second = await store.docsIngest([dir], { source: "project-backfill-test" });
+      expect(second.retagged).toBeGreaterThan(0);
+      expect(second.updated).toBe(0);
+      expect(second.added).toBe(0);
+
+      const after = (await store.docsList({ source: "project-backfill-test" })).data;
+      for (const d of after) expect(d.project).toBe("backfillco");
+
+      // A further reingest of the now-correct, still-unchanged corpus doc
+      // is a true no-op: same → same (and, implicitly, null → null on any
+      // untouched doc elsewhere) must not count as retagged.
+      const third = await store.docsIngest([dir], { source: "project-backfill-test" });
+      expect(third.retagged).toBe(0);
+      expect(third.updated).toBe(0);
+      expect(third.added).toBe(0);
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
     it("docs: recall leak test — an administration-scoped doc is invisible to a caller declaring no scopes", async () => {
       const dir = mkdtempSync(join(tmpdir(), "grounded-scope-leak-test-"));
       writeFileSync(

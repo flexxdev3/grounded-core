@@ -790,7 +790,7 @@ export class SqliteStore implements Store {
         const project = projectFromPath(docPath);
 
         const existing = this.db
-          .prepare(`select id, chunk_idx, body_hash, source, kind, machine, scope from docs where path = ?`)
+          .prepare(`select id, chunk_idx, body_hash, source, kind, machine, scope, project from docs where path = ?`)
           .all(docPath) as Row[];
         const existingByIdx = new Map<number, Row>();
         for (const e of existing) existingByIdx.set(Number(e.chunk_idx), e);
@@ -799,23 +799,26 @@ export class SqliteStore implements Store {
         for (const chunk of chunks) {
           const prev = existingByIdx.get(chunk.idx);
           if (prev && String(prev.body_hash) === chunk.bodyHash) {
-            // body unchanged — but the batch tags (source/kind/machine/scope) may
-            // have shifted (e.g. a re-tag ingest to move a tree into a new lane).
-            // Compare and, if any differ, run a tag-only UPDATE (no body/hash/
-            // total_chunks/embedding touched) so retagging an unchanged file is
-            // not a silent no-op.
+            // body unchanged — but the batch tags (source/kind/machine/scope/
+            // project) may have shifted (e.g. a re-tag ingest to move a tree
+            // into a new lane, or a backfill of the project column added
+            // after this row was first ingested). Compare and, if any
+            // differ, run a tag-only UPDATE (no body/hash/total_chunks/
+            // embedding touched) so retagging an unchanged file is not a
+            // silent no-op.
             const tagsChanged =
               String(prev.source) !== source ||
               String(prev.kind ?? "") !== (kind ?? "") ||
               String(prev.machine ?? "") !== (machine ?? "") ||
-              String(prev.scope) !== scope;
+              String(prev.scope) !== scope ||
+              (prev.project ?? null) !== (project ?? null);
             if (tagsChanged) {
               if (!dryRun) {
                 this.db
                   .prepare(
-                    `update docs set source=?, kind=?, machine=?, scope=?, ingested_at=? where id=?`,
+                    `update docs set source=?, kind=?, machine=?, scope=?, project=?, ingested_at=? where id=?`,
                   )
-                  .run(source, kind, machine, scope, nowIso(), Number(prev.id));
+                  .run(source, kind, machine, scope, project, nowIso(), Number(prev.id));
               }
               report.retagged++;
             } else {

@@ -719,7 +719,7 @@ export class PostgresStore implements Store {
         const project = projectFromPath(docPath);
 
         const existingRes = await this.pool.query(
-          `select id, chunk_idx, body_hash, source, kind, machine, scope from ${this.q("docs")} where path = $1`,
+          `select id, chunk_idx, body_hash, source, kind, machine, scope, project from ${this.q("docs")} where path = $1`,
           [docPath],
         );
         const existingByIdx = new Map<number, Row>();
@@ -731,21 +731,24 @@ export class PostgresStore implements Store {
         for (const chunk of chunks) {
           const prev = existingByIdx.get(chunk.idx);
           if (prev && String(prev.body_hash) === chunk.bodyHash) {
-            // body unchanged — but the batch tags (source/kind/machine/scope) may
-            // have shifted (e.g. a re-tag ingest to move a tree into a new lane).
-            // Compare and, if any differ, run a tag-only UPDATE (no body/hash/
-            // total_chunks/embedding touched) so retagging an unchanged file is
-            // not a silent no-op.
+            // body unchanged — but the batch tags (source/kind/machine/scope/
+            // project) may have shifted (e.g. a re-tag ingest to move a tree
+            // into a new lane, or a backfill of the project column added
+            // after this row was first ingested). Compare and, if any
+            // differ, run a tag-only UPDATE (no body/hash/total_chunks/
+            // embedding touched) so retagging an unchanged file is not a
+            // silent no-op.
             const tagsChanged =
               String(prev.source) !== source ||
               String(prev.kind ?? "") !== (kind ?? "") ||
               String(prev.machine ?? "") !== (machine ?? "") ||
-              String(prev.scope) !== scope;
+              String(prev.scope) !== scope ||
+              (prev.project ?? null) !== (project ?? null);
             if (tagsChanged) {
               if (!dryRun) {
                 await this.pool.query(
-                  `update ${this.q("docs")} set source=$1, kind=$2, machine=$3, scope=$4, ingested_at=now() where id=$5`,
-                  [source, kind, machine, scope, Number(prev.id)],
+                  `update ${this.q("docs")} set source=$1, kind=$2, machine=$3, scope=$4, project=$5, ingested_at=now() where id=$6`,
+                  [source, kind, machine, scope, project, Number(prev.id)],
                 );
               }
               report.retagged++;
