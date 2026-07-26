@@ -115,6 +115,70 @@ exists without reading content you were not scoped to.
 
 Facts are never written by inference. Synthesis proposes; only an operator promotes.
 
+## How to write a fact
+
+**A fact is one terse, dynamically-changing environment truth that must be on screen before
+work starts.** One line, imperative, no rationale, no history. If it explains *how to use*
+something, it is a pointer — name the doc, do not summarize it.
+
+The facts lane has a **fixed token reserve**. It is written concurrently by every agent, so it
+drifts toward paragraphs on its own, and long facts evict short ones. Discipline here is not
+style, it is delivery:
+
+- **Prose belongs in docs, mechanics belong in this file.** A fact links to both.
+- **One fact, one truth.** Two truths are two facts with two \`topicKey\`s.
+- **Revise, don't append.** Supply \`topicKey\` — the write is a merge-patch on
+  \`(scope, topicKey)\`, so a rule is corrected in place. Omit it and you have added a
+  near-duplicate that now competes with the original for the same reserve.
+- **Delete what is done.** A fact describing a fixed problem is a to-do that outlived its fix.
+
+**Check your write landed.** \`POST\`/\`PATCH /facts\` return a \`delivery\` block —
+\`{ rank, ofActive, delivered, warning }\`. \`delivered: false\` means the fact you just wrote
+will **not** be in the startup brief. Read it; do not assume a 200 means visible.
+
+**What happens past the reserve**, in order: facts that fit render in full · the next ones
+render as one compact index line each (\`topicKey — detail (fact:NN)\`) and are named in
+\`indexedItems\` · anything past *that* is in \`droppedItems\` and is absent from
+\`brief.text\` entirely. \`pinned\` is a **delivery guarantee**, not a ranking boost — the whole
+pinned set survives the reserve, which is why pinning everything defeats it.
+
+If facts are being dropped, **audit the lane before raising the reserve**. Terse facts make the
+cliff unreachable; a bigger reserve only moves it.
+
+## Docs and frontmatter
+
+Frontmatter is **stripped, not parsed.** The engine removes a leading \`---\` block from the
+indexed body so it never pollutes embeddings — and it reads **no key from it**. Concretely:
+
+- \`status:\`, \`type:\`, \`updated:\` in a doc's frontmatter change **nothing**. A doc marked
+  \`status: retired\` is still ingested, still recalled, still ranked.
+- \`scope\` (the lane) is a **parameter of the ingest call**, not a document property.
+- \`project\` is derived from the **path** (\`corpus/<project>/…\`); docs outside that
+  convention get \`project: null\`.
+- Retiring a doc means moving or removing it and running \`POST /docs/prune\`. Editing its
+  frontmatter is a note to humans only.
+
+Write frontmatter for your own conventions, but never rely on it to control retrieval.
+
+## Keep the record honest
+
+Recall ranks by relevance, and **relevance is not currency** — a confidently-ranked stale doc
+is worse than no hit at all, because nothing signals it is wrong. The engine cannot detect
+this; you can, because you are the one reading the content.
+
+So, as you work: **when you find a doc, fact, or session that contradicts what you just
+observed — say so, and offer to fix it.** Name the record by typed id, state the specific
+drift, propose the correction, and let the operator decide. Do not silently work around it,
+and do not rewrite operator content unasked.
+
+Worth flagging when you see it: a doc describing a renamed or removed thing under its old name ·
+a fact whose path, port, or command no longer resolves · a fact that is a to-do for something
+already done · two records asserting different things about the same subject · a "next step"
+that was finished in a later session.
+
+Before you remove or rename anything, \`POST /impact\` first — it tells you what else refers to
+it, so the fix lands everywhere instead of leaving the next agent a dangling reference.
+
 ## Full route list
 
 | Method | Path | |

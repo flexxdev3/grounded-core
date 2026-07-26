@@ -688,6 +688,22 @@ describe("@grounded/api /llms.txt", () => {
       const body = await res.text();
       expect(body.length).toBeGreaterThan(0);
       expect(body).toContain("# Grounded");
+      // Anchor the load-bearing sections. `length > 0` and a title match would
+      // still pass with the entire guidance body deleted — and this file is the
+      // only place an agent is told how to write a fact, what frontmatter does
+      // not do, and to flag drift it walks past. Assert the claims, not the type.
+      for (const anchor of [
+        "## How to write a fact",
+        "## Docs and frontmatter",
+        "## Keep the record honest",
+        // Frontmatter is stripped, never parsed — the misconception most likely
+        // to silently corrupt a corpus if this section goes missing.
+        "Frontmatter is **stripped, not parsed.**",
+        // The write-side check that turns a 200 into a delivery guarantee.
+        "delivered: false",
+      ]) {
+        expect(body).toContain(anchor);
+      }
     } finally {
       await store.close();
       rmSync(home, { recursive: true, force: true });
