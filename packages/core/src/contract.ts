@@ -113,6 +113,10 @@ export interface Doc {
   machine?: string | null;
   /** lane, e.g. "global" | "administration". Batch-level only (see IngestOptions.scope). */
   scope: string;
+  /** owning project, derived from the corpus/<project>/ path segment at
+   * ingest (stage 4). Overridable by frontmatter `project:` at stage 5.
+   * Null when no corpus/ segment is present -- never guessed. */
+  project?: string | null;
   ingestedAt: string; // ISO-8601
 }
 

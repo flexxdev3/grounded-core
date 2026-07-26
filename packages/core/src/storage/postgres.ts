@@ -44,6 +44,7 @@ import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
 import { splitFrontmatter } from "../ingest/frontmatter.js";
 import { chunkText, deriveTitle } from "../ingest/chunk.js";
+import { projectFromPath } from "../ingest/project.js";
 import { readFileSync, existsSync } from "node:fs";
 
 type Row = Record<string, unknown>;
@@ -671,6 +672,7 @@ export class PostgresStore implements Store {
       kind: (r.kind as string | null) ?? null,
       machine: (r.machine as string | null) ?? null,
       scope: String(r.scope),
+      project: (r.project as string | null) ?? null,
       ingestedAt: new Date(r.ingested_at as string).toISOString(),
     };
   }
@@ -714,6 +716,7 @@ export class PostgresStore implements Store {
         if (chunks.length === 0) continue;
         const mtime = new Date(file.mtimeMs).toISOString();
         const docPath = file.absPath;
+        const project = projectFromPath(docPath);
 
         const existingRes = await this.pool.query(
           `select id, chunk_idx, body_hash, source, kind, machine, scope from ${this.q("docs")} where path = $1`,
@@ -763,15 +766,15 @@ export class PostgresStore implements Store {
           const embSql = emb ? pgvector.toSql(emb) : null;
           if (prev) {
             await this.pool.query(
-              `update ${this.q("docs")} set source=$1, title=$2, body=$3, total_chunks=$4, body_hash=$5, mtime=$6, status='active', kind=$7, machine=$8, scope=$9, ingested_at=now(), embedding=$10 where id=$11`,
-              [source, title, chunk.body, chunks.length, chunk.bodyHash, mtime, kind, machine, scope, embSql, Number(prev.id)],
+              `update ${this.q("docs")} set source=$1, title=$2, body=$3, total_chunks=$4, body_hash=$5, mtime=$6, status='active', kind=$7, machine=$8, scope=$9, project=$10, ingested_at=now(), embedding=$11 where id=$12`,
+              [source, title, chunk.body, chunks.length, chunk.bodyHash, mtime, kind, machine, scope, project, embSql, Number(prev.id)],
             );
             report.updated++;
           } else {
             await this.pool.query(
-              `insert into ${this.q("docs")}(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, scope, embedding)
-               values ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,$10,$11,$12)`,
-              [source, docPath, title, chunk.body, chunk.idx, chunks.length, chunk.bodyHash, mtime, kind, machine, scope, embSql],
+              `insert into ${this.q("docs")}(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, scope, project, embedding)
+               values ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,$10,$11,$12,$13)`,
+              [source, docPath, title, chunk.body, chunk.idx, chunks.length, chunk.bodyHash, mtime, kind, machine, scope, project, embSql],
             );
             report.added++;
           }

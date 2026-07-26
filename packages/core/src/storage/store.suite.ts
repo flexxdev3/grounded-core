@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openStore } from "../store.js";
 import { assembleBrief } from "../engine/brief.js";
@@ -254,6 +254,34 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const docs = (await store.docsList({ source: "default-scope-test" })).data;
       expect(docs.length).toBeGreaterThan(0);
       for (const d of docs) expect(d.scope).toBe("global");
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("docs: ingest under a corpus/<project>/ path populates doc.project; outside corpus/ it stays null", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-project-test-"));
+      const corpusDir = join(dir, "corpus", "widgetco");
+      mkdirSync(corpusDir, { recursive: true });
+      writeFileSync(
+        join(corpusDir, "project-doc.md"),
+        "# Project Doc\n\nzzqprojecttoken prose living under a corpus project dir.\n",
+        "utf8",
+      );
+      writeFileSync(
+        join(dir, "no-project-doc.md"),
+        "# No Project Doc\n\nzzqnoprojecttoken prose outside any corpus/ dir.\n",
+        "utf8",
+      );
+
+      const report = await store.docsIngest([dir], { source: "project-test" });
+      expect(report.added).toBeGreaterThan(0);
+
+      const docs = (await store.docsList({ source: "project-test" })).data;
+      const withProject = docs.find((d) => d.path.includes("project-doc.md"));
+      const withoutProject = docs.find((d) => d.path.includes("no-project-doc.md"));
+      expect(withProject?.project).toBe("widgetco");
+      expect(withoutProject?.project ?? null).toBeNull();
 
       rmSync(dir, { recursive: true, force: true });
       await store.docsPrune({ remove: true });

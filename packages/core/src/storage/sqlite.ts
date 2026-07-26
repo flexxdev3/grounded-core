@@ -47,6 +47,7 @@ import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
 import { splitFrontmatter } from "../ingest/frontmatter.js";
 import { chunkText, deriveTitle } from "../ingest/chunk.js";
+import { projectFromPath } from "../ingest/project.js";
 
 type Row = Record<string, unknown>;
 
@@ -92,6 +93,7 @@ export class SqliteStore implements Store {
     this.db.exec(SQLITE_FTS);
     this.migrateDropVisionStatus();
     this.migrateAddDocsScope();
+    this.migrateAddDocsProject();
     this.migrateVisionSummarySplit();
     this.migrateAddFactsOrigin();
     this.migrateFactsTopicKeyIdentity();
@@ -137,6 +139,24 @@ export class SqliteStore implements Store {
     this.db.exec(
       `alter table docs add column scope text not null default 'global';
        create index if not exists idx_docs_scope on docs(scope);`,
+    );
+  }
+
+  /**
+   * One-shot migration for cabinets created before docs.project existed
+   * (stage 4). SQLite has no ADD COLUMN IF NOT EXISTS, so probe
+   * pragma_table_info first. Nullable, no default -- unlike scope, an
+   * unknown project must stay NULL rather than backfilling to a guessed
+   * value.
+   */
+  private migrateAddDocsProject(): void {
+    const hasProject = this.db
+      .prepare(`select 1 from pragma_table_info('docs') where name = 'project'`)
+      .get();
+    if (hasProject) return;
+    this.db.exec(
+      `alter table docs add column project text;
+       create index if not exists idx_docs_project on docs(project);`,
     );
   }
 
@@ -722,6 +742,7 @@ export class SqliteStore implements Store {
       kind: (r.kind as string | null) ?? null,
       machine: (r.machine as string | null) ?? null,
       scope: String(r.scope),
+      project: (r.project as string | null) ?? null,
       ingestedAt: String(r.ingested_at),
     };
   }
@@ -766,6 +787,7 @@ export class SqliteStore implements Store {
         if (chunks.length === 0) continue;
         const mtime = new Date(file.mtimeMs).toISOString();
         const docPath = file.absPath;
+        const project = projectFromPath(docPath);
 
         const existing = this.db
           .prepare(`select id, chunk_idx, body_hash, source, kind, machine, scope from docs where path = ?`)
@@ -814,7 +836,7 @@ export class SqliteStore implements Store {
             const id = Number(prev.id);
             this.db
               .prepare(
-                `update docs set source=?, title=?, body=?, total_chunks=?, body_hash=?, mtime=?, status='active', kind=?, machine=?, scope=?, ingested_at=? where id=?`,
+                `update docs set source=?, title=?, body=?, total_chunks=?, body_hash=?, mtime=?, status='active', kind=?, machine=?, scope=?, project=?, ingested_at=? where id=?`,
               )
               .run(
                 source,
@@ -826,6 +848,7 @@ export class SqliteStore implements Store {
                 kind,
                 machine,
                 scope,
+                project,
                 ingestedAt,
                 id,
               );
@@ -839,8 +862,8 @@ export class SqliteStore implements Store {
           } else {
             const info = this.db
               .prepare(
-                `insert into docs(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, scope, ingested_at)
-                 values (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+                `insert into docs(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, scope, project, ingested_at)
+                 values (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
               )
               .run(
                 source,
@@ -854,6 +877,7 @@ export class SqliteStore implements Store {
                 kind,
                 machine,
                 scope,
+                project,
                 ingestedAt,
               );
             const id = Number(info.lastInsertRowid);

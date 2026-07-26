@@ -59,6 +59,7 @@ create table if not exists "${s}".docs (
   kind text,
   machine text,
   scope text not null default 'global',
+  project text,
   ingested_at timestamptz not null default now(),
   embedding vector(${dims}),
   search_tsv tsvector generated always as (
@@ -68,6 +69,13 @@ create table if not exists "${s}".docs (
 
 -- docs scope lane (stage 3): idempotent add for cabinets created before this column existed.
 alter table "${s}".docs add column if not exists scope text not null default 'global';
+
+-- docs owning project (stage 4): idempotent add for cabinets created before
+-- this column existed. Nullable, no default -- derived from the
+-- corpus/<project>/ path segment at ingest (see projectFromPath in
+-- ingest/project.ts); an unknown project must stay NULL, never a guessed
+-- value. Overridable by frontmatter at stage 5. Mirrors sessions.project.
+alter table "${s}".docs add column if not exists project text;
 
 -- fact origin (stage 2b): every current write path is explicit operator/agent
 -- input, so 'stated' is the correct default and backfill value for existing
@@ -147,6 +155,7 @@ create index if not exists idx_sessions_project on "${s}".sessions(project);
 create index if not exists idx_sessions_created on "${s}".sessions(created_at);
 create index if not exists idx_docs_status on "${s}".docs(status);
 create index if not exists idx_docs_scope on "${s}".docs(scope);
+create index if not exists idx_docs_project on "${s}".docs(project);
 
 create index if not exists idx_facts_tsv on "${s}".facts using gin(search_tsv);
 create index if not exists idx_sessions_tsv on "${s}".sessions using gin(search_tsv);
