@@ -414,7 +414,9 @@ sessions); once the budget is exceeded everything after is dropped in order, nev
 first item in a lane is never dropped even if it alone exceeds the reserve — a single long pinned fact
 must not produce an empty facts section. Vision has no addressable sub-items, so `truncateVisionSection`
 truncates *text*, not rows: it cuts the **project** vision first, then **global** if still over budget,
-appending an ellipsis; `meta.vision` is measured in **characters**, not items. The static preamble (header
+appending an ellipsis. `meta.vision.returned`/`.available` are still **rows** (0–2) like every other lane;
+the character arithmetic lives in `meta.vision.chars.{returned,available}`, and `truncated` is true when
+text was cut even though both rows survived. The static preamble (header
 + startup note + vision apply-note) has its own fixed, non-configurable `PREAMBLE_RESERVE_TOK=200`
 (`brief.ts:78`) — documented bookkeeping only, nothing to truncate.
 

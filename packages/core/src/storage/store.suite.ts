@@ -1042,7 +1042,10 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       );
 
       expect(brief.meta.vision.truncated).toBe(true);
-      expect(brief.meta.vision.available).toBeGreaterThan(brief.meta.vision.returned);
+      // chars carry the truncation arithmetic; returned/available stay rows.
+      expect(brief.meta.vision.chars!.available).toBeGreaterThan(brief.meta.vision.chars!.returned);
+      expect(brief.meta.vision.returned).toBe(1);
+      expect(brief.meta.vision.available).toBe(1);
       // no vision arm in SourceType/TypedId — it can never show up here.
       expect(brief.droppedItems.some((id) => id.startsWith("vision"))).toBe(false);
 

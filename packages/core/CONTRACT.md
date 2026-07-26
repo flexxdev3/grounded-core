@@ -132,8 +132,10 @@ The VISION section is omitted entirely when no vision records exist (zero cost t
 
 Facts and sessions each truncate within their own `config.brief.reserve.*` token budget (chars÷4,
 independent lanes — a long facts section never eats the sessions budget). Items dropped by that
-truncation are listed in `BriefResult.droppedItems` (typed ids, resolvable via `Store.get`). `vision` is
-measured in chars (no `SourceType` arm, so it never appears in `droppedItems`); `relatedDocs` is
+truncation are listed in `BriefResult.droppedItems` (typed ids, resolvable via `Store.get`). `vision`
+truncates text rather than dropping rows, so its char budget is reported in `meta.vision.chars` while
+`returned`/`available` stay row counts (no `SourceType` arm, so it never appears in `droppedItems`);
+`relatedDocs` is
 unreserved — bounded only by its own `limit` + snippet length — and also never appears there.
 
 **`brief.factCategoryFloors`** (`GroundedConfig.brief.factCategoryFloors: Record<string, number>`,

@@ -210,7 +210,7 @@ export const openApiDocument = {
       DeliveryMeta: {
         type: "object",
         description:
-          "Delivery accounting for a list-shaped response: not just what was stored, but what actually reached the caller. `available` is a real computed count, never derived from data.length.",
+          "Delivery accounting for a list-shaped response: not just what was stored, but what actually reached the caller. `available` is a real computed count, never derived from data.length. `returned`/`available` are ALWAYS row counts on every lane; a lane that truncates text instead of dropping rows reports its character arithmetic in `chars`.",
         required: ["returned", "available", "truncated", "limit"],
         properties: {
           returned: { type: "integer", description: "rows in this response's data array." },
@@ -222,9 +222,19 @@ export const openApiDocument = {
           truncated: {
             type: "boolean",
             description:
-              "returned < available, OR the candidate fetch itself was capped before available could be computed exactly — i.e. there may be more than available, not just more than returned.",
+              "returned < available, OR text was cut inside a kept row (see chars), OR the candidate fetch itself was capped before available could be computed exactly — i.e. there may be more than available, not just more than returned.",
           },
           limit: { type: ["integer", "null"] },
+          chars: {
+            type: "object",
+            description:
+              "Text-truncated lanes only (today: the brief's vision lane, budgeted in chars and with no SourceType arm to drop into). Combined character counts after and before truncation. Absent on row-limited lanes.",
+            required: ["returned", "available"],
+            properties: {
+              returned: { type: "integer" },
+              available: { type: "integer" },
+            },
+          },
           bySource: {
             type: "object",
             description: "POST /recall only: per-source-type breakdown.",

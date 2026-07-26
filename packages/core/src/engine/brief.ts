@@ -238,11 +238,13 @@ interface VisionSection {
  * doctrine's own vision-fix ordering), appending an ellipsis on whichever
  * side was cut.
  *
- * `meta` here is measured in CHARS, not items: `returned` is the
- * post-truncation combined char count, `available` is the pre-truncation
- * combined char count. Do not read `available: 1800` as "1800 records" —
- * it's characters. Vision never appears in `droppedItems`: there is no
- * vision arm in `SourceType`/`TypedId`.
+ * `meta.returned`/`meta.available` are ROWS (0–2: global and/or project), the
+ * same unit every other lane uses. The char arithmetic this function actually
+ * budgets on lives in `meta.chars`. A row counts as returned only if some of
+ * its text survived — a row truncated down to the bare ellipsis is dropped
+ * from the count. `truncated` is true when text was cut, even if both rows
+ * survived. Vision never appears in `droppedItems`: there is no vision arm in
+ * `SourceType`/`TypedId`.
  */
 function truncateVisionSection(
   gv: Vision | null,
@@ -252,10 +254,11 @@ function truncateVisionSection(
   const budget = reserveTok * CHARS_PER_TOK;
   let globalText = gv ? visionInjectedText(gv) : null;
   let projectText = pv ? visionInjectedText(pv) : null;
-  const available = (globalText?.length ?? 0) + (projectText?.length ?? 0);
+  const availableRows = (gv ? 1 : 0) + (pv ? 1 : 0);
+  const availableChars = (globalText?.length ?? 0) + (projectText?.length ?? 0);
   let truncated = false;
 
-  let total = available;
+  let total = availableChars;
   if (total > budget && projectText) {
     const keep = Math.max(0, projectText.length - (total - budget));
     if (keep < projectText.length) {
@@ -273,14 +276,20 @@ function truncateVisionSection(
     total = globalText.length + (projectText?.length ?? 0);
   }
 
+  // A row cut all the way down to the bare ellipsis delivered nothing — don't
+  // count it as returned.
+  const survived = (t: string | null) => t !== null && t !== "…";
+  const returnedRows = (survived(globalText) ? 1 : 0) + (survived(projectText) ? 1 : 0);
+
   return {
     global: globalText,
     project: projectText,
     meta: {
-      returned: total,
-      available,
+      returned: returnedRows,
+      available: availableRows,
       truncated,
       limit: null,
+      chars: { returned: total, available: availableChars },
     },
   };
 }

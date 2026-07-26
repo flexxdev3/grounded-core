@@ -160,16 +160,26 @@ export type FullRecord =
 // ---------------------------------------------------------------------------
 
 export interface DeliveryMeta {
+  /** rows that reached the caller. ALWAYS a row count — every lane, no
+   * exceptions. A lane that truncates text rather than dropping rows reports
+   * the character arithmetic in `chars`, never here. */
   returned: number;
   /** rows that matched before limit/offset/source-cap. A real computed quantity,
    * never derived from data.length. See recall()'s lane-saturation note for the
    * one case where this is a documented floor. */
   available: number;
-  /** returned < available, OR the candidate fetch itself was capped before
-   * `available` could be computed exactly — i.e. "there may be more than
-   * `available`", not just more than `returned`. */
+  /** returned < available, OR text was cut inside a kept row (see `chars`), OR
+   * the candidate fetch itself was capped before `available` could be computed
+   * exactly — i.e. "there may be more than `available`", not just more than
+   * `returned`. */
   truncated: boolean;
   limit: number | null;
+  /** Only for lanes that truncate TEXT instead of dropping rows (today: the
+   * brief's `vision` lane, whose budget is a char reserve and which has no
+   * `SourceType` arm to drop into). `returned` is the post-truncation combined
+   * char count, `available` the pre-truncation one. Absent on row-limited
+   * lanes. Never mix these with the row counts above. */
+  chars?: { returned: number; available: number };
   bySource?: Partial<Record<SourceType, { returned: number; available: number; truncated: boolean }>>;
 }
 
