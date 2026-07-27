@@ -13,7 +13,12 @@ const STATUS_COLOR: Record<Doc["status"], string> = {
   missing: "var(--copper-bright)",
 };
 
-/** Derive a project/collection label from a doc path: the file's parent dir. */
+/**
+ * Fallback grouping label for a doc with no stored `project`: the file's
+ * parent dir. `docs.project` is the authority (derived at ingest from
+ * `corpus/<project>/`) and is null for anything outside that convention —
+ * this keeps those rows grouped instead of piling into one bucket.
+ */
 function groupOf(path: string): string {
   const parts = path.split(/[/\\]+/).filter(Boolean);
   return (parts.length >= 2 ? parts[parts.length - 2] : parts[0]) ?? "misc";
@@ -47,7 +52,7 @@ export function DocsView() {
 
   const groups: DocGroup[] = Array.from(
     matched.reduce((m, d) => {
-      const key = groupOf(d.path);
+      const key = d.project ?? groupOf(d.path);
       const g = m.get(key) ?? { name: key, docs: [], chunks: 0 };
       g.docs.push(d);
       g.chunks += d.totalChunks;
