@@ -109,6 +109,15 @@ function makeFact(overrides: Partial<Fact> & { id: number; category: string }): 
   };
 }
 
+function makeSession(overrides: Partial<Session> & { id: number }): Session {
+  return {
+    summary: `session ${overrides.id}`,
+    source: "manual",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 describe("applyCategoryFloors", () => {
   it("lifts a low-ranked floored-category fact above higher-ranked unfloored facts", () => {
     const facts = [
@@ -189,5 +198,87 @@ describe("assembleBrief: category floors fix the eviction bug end-to-end", () =>
     const cfgNoFloors: GroundedConfig = { ...cfgWithFloors, brief: { ...cfgWithFloors.brief, factCategoryFloors: {} } };
     const withoutFloors = assembleBrief(parts, opts, cfgNoFloors);
     expect(withoutFloors.facts.some((f) => f.id === 99)).toBe(false);
+  });
+});
+
+// The brief's session line carries a DATE ONLY. Rendered from a UTC instant with
+// no zone, a caller west of UTC reads their own local-evening work as tomorrow —
+// which silently misdates every "what did we do yesterday" judgement made off a
+// brief. This was live: a session logged 2026-07-26 23:53 CDT rendered "2026-07-27".
+describe("assembleBrief: session dates render in the caller's timezone", () => {
+  const eveningInChicago = "2026-07-27T04:53:02.290Z"; // = 2026-07-26 23:53 CDT
+
+  const parts = {
+    recentSessions: [
+      makeSession({ id: 470, summary: "imagegen light-table shipped", createdAt: eveningInChicago }),
+    ],
+    facts: [],
+    relatedDocs: [],
+    factsAvailable: 0,
+    recentSessionsAvailable: 1,
+  };
+
+  it("without a timezone, stays UTC — byte-identical to the pre-option behavior", () => {
+    const brief = assembleBrief(parts, { format: "markdown" as const }, defaultConfig());
+    expect(brief.text).toContain("- 2026-07-27");
+    expect(brief.text).toContain("=== MOST RECENT WORK (newest first) ===");
+  });
+
+  it("with a timezone, renders the caller's local DAY, not UTC's", () => {
+    const brief = assembleBrief(
+      parts,
+      { format: "markdown" as const, timezone: "America/Chicago" },
+      defaultConfig(),
+    );
+    expect(brief.text).toContain("- 2026-07-26");
+    expect(brief.text).not.toContain("- 2026-07-27");
+  });
+
+  it("names the zone in the header, so a non-UTC date is never ambiguous", () => {
+    const brief = assembleBrief(
+      parts,
+      { format: "markdown" as const, timezone: "America/Chicago" },
+      defaultConfig(),
+    );
+    expect(brief.text).toContain("=== MOST RECENT WORK (newest first · America/Chicago) ===");
+  });
+
+  it("shifts the other way east of UTC", () => {
+    // A DIFFERENT instant from the one above: 20:00Z is still the 26th in UTC but
+    // already the 27th in Auckland (+12). Reusing 04:53Z here would have "passed"
+    // while proving nothing, since Auckland and UTC agree on that date.
+    const eastParts = {
+      ...parts,
+      recentSessions: [makeSession({ id: 471, createdAt: "2026-07-26T20:00:00.000Z" })],
+    };
+    const utc = assembleBrief(eastParts, { format: "markdown" as const }, defaultConfig());
+    expect(utc.text).toContain("- 2026-07-26");
+
+    const nz = assembleBrief(
+      eastParts,
+      { format: "markdown" as const, timezone: "Pacific/Auckland" },
+      defaultConfig(),
+    );
+    expect(nz.text).toContain("- 2026-07-27");
+  });
+
+  it("leaves the JSON createdAt as UTC ISO — this is a display option only", () => {
+    const brief = assembleBrief(
+      parts,
+      { format: "json" as const, timezone: "America/Chicago" },
+      defaultConfig(),
+    );
+    expect(brief.recentSessions[0]!.createdAt).toBe(eveningInChicago);
+  });
+
+  it("falls back to the UTC slice rather than throwing on an unknown zone", () => {
+    // The API rejects a bad zone with a 400; the engine must still never fail a
+    // whole brief assembly over one unrenderable date.
+    const brief = assembleBrief(
+      parts,
+      { format: "markdown" as const, timezone: "America/Nowhere" },
+      defaultConfig(),
+    );
+    expect(brief.text).toContain("- 2026-07-27");
   });
 });

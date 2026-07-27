@@ -4,6 +4,7 @@ import {
   EmbedError,
   GroundedError,
   StoreError,
+  isValidTimeZone,
 } from "@grounded/core/contract";
 import type {
   BriefOptions,
@@ -476,6 +477,17 @@ export function createApp(
       recentSessions: optNumber(body.recentSessions, "recentSessions"),
       factScopes: optStringArray(body.factScopes, "factScopes"),
       docScopes: optStringArray(body.docScopes, "docScopes"),
+      timezone: ((): string | undefined => {
+        const tz = optString(body.timezone, "timezone");
+        if (tz === undefined) return undefined;
+        // Reject here rather than letting the renderer fall back to UTC: a typo'd
+        // zone that silently renders UTC is the exact failure this option exists
+        // to fix, and it would look like the option simply doesn't work.
+        if (!isValidTimeZone(tz)) {
+          throw new ValidationError(`"timezone" must be a valid IANA zone (got "${tz}")`);
+        }
+        return tz;
+      })(),
       format: ((): BriefOptions["format"] => {
         const f = optString(body.format, "format");
         if (f === undefined) return undefined;

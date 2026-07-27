@@ -359,10 +359,40 @@ const FACTS_INDEX_MAX_TOK = 300;
  * is a single short retrieval trigger, not a document. The asymmetry is the
  * point: short field inline, long field behind an id.
  */
-function renderSessionLine(s: Session): string {
-  const when = s.createdAt ? s.createdAt.slice(0, 10) : "";
+function renderSessionLine(s: Session, timezone?: string): string {
+  const when = s.createdAt ? formatSessionDate(s.createdAt, timezone) : "";
   const proj = s.project ? ` [${s.project}]` : "";
   return `- ${when}${proj} ${s.summary} (session:${s.id})`;
+}
+
+/**
+ * The stored `createdAt` is UTC; this is the ONE place a brief turns it into a
+ * date a human reads. Without a `timezone` it stays a plain `slice(0, 10)` —
+ * byte-identical to every brief rendered before this option existed.
+ *
+ * `sv-SE` is not decoration: it is the locale whose short date format is already
+ * `YYYY-MM-DD`, so the zone conversion lands in the shape the line has always
+ * had without reassembling parts by hand.
+ *
+ * An unparseable date or unknown zone falls back to the UTC slice rather than
+ * throwing. A brief is startup context — degrading one date beats failing the
+ * whole assembly. The API validates the zone up front so a typo is a 400 there,
+ * not a silent UTC render here.
+ */
+function formatSessionDate(iso: string, timezone?: string): string {
+  if (!timezone) return iso.slice(0, 10);
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+    return new Intl.DateTimeFormat("sv-SE", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  } catch {
+    return iso.slice(0, 10);
+  }
 }
 
 /** The short form injected for a vision row: `summary`, falling back to
@@ -466,7 +496,7 @@ export function assembleBrief(
     parts.recentSessions,
     parts.recentSessionsAvailable,
     cfg.brief.reserve.sessions,
-    renderSessionLine,
+    (s: Session) => renderSessionLine(s, opts.timezone),
     (s) => `session:${s.id}` as TypedId,
   );
   const vision = parts.vision ?? { global: null, project: null };
@@ -546,12 +576,16 @@ export function renderMarkdown(
   const factDropped = brief.droppedItems.filter((id) => id.startsWith("fact:"));
   const sessionDropped = brief.droppedItems.filter((id) => id.startsWith("session:"));
 
-  lines.push("=== MOST RECENT WORK (newest first) ===");
+  lines.push(
+    opts.timezone
+      ? `=== MOST RECENT WORK (newest first · ${opts.timezone}) ===`
+      : "=== MOST RECENT WORK (newest first) ===",
+  );
   if (brief.recentSessions.length === 0) {
     lines.push("(none)");
   } else {
     for (const s of brief.recentSessions) {
-      lines.push(renderSessionLine(s));
+      lines.push(renderSessionLine(s, opts.timezone));
     }
   }
   if (brief.meta.sessions.truncated && sessionDropped.length > 0) {

@@ -70,13 +70,20 @@ Two calls cover most agent needs.
 
 \`\`\`
 POST /brief
-{ "agent": "<you>", "project": "<repo>", "cwd": "<abs path>", "format": "markdown" }
+{ "agent": "<you>", "project": "<repo>", "cwd": "<abs path>", "format": "markdown",
+  "timezone": "<your IANA zone>" }
 \`\`\`
 
 Returns vision + facts + recent sessions + related docs, each lane given a reserved token
 budget so no lane can evict another. \`meta\` reports what was delivered per lane and
 \`droppedItems\` names, by typed id, exactly what did not fit — so you can fetch it if you
 need it. Nothing is silently withheld.
+
+**Pass \`timezone\`.** The session line carries a DATE ONLY, rendered UTC when you omit it.
+West of UTC that means work logged in your local evening reads as TOMORROW, and you will
+date your own recent history wrong. Display only — stored instants and the JSON
+\`recentSessions[].createdAt\` are always UTC. An invalid zone is a 400, never a silent
+fall back to UTC.
 
 **Recall** — call this whenever you are about to assume something:
 

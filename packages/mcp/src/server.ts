@@ -254,9 +254,15 @@ export function createServer(
           .describe(
             'filters the related-docs lane; defaults to ["global"] — pass e.g. ["global","administration"] to also include another lane, not just the other lane alone',
           ),
+        timezone: z
+          .string()
+          .optional()
+          .describe(
+            'IANA zone (e.g. "America/Chicago") for the rendered session dates; defaults to UTC. Display only — stored instants and the JSON createdAt are always UTC. Pass your local zone: the markdown line is a DATE ONLY, so west of UTC anything logged in the local evening otherwise renders as tomorrow',
+          ),
       },
     },
-    guard(async ({ agent, project, machine, cwd, query, format, docScopes }) => {
+    guard(async ({ agent, project, machine, cwd, query, format, docScopes, timezone }) => {
       const opts: BriefOptions = {
         format: format ?? "markdown",
         ...(agent !== undefined ? { agent } : {}),
@@ -265,6 +271,7 @@ export function createServer(
         ...(cwd !== undefined ? { cwd } : {}),
         ...(query !== undefined ? { query } : {}),
         ...(docScopes !== undefined ? { docScopes } : {}),
+        ...(timezone !== undefined ? { timezone } : {}),
       };
       const brief = await store.brief(opts);
       if (opts.format === "json") return json(brief);

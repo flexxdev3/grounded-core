@@ -400,7 +400,30 @@ export interface BriefOptions {
   /** explicit doc-lane scope set for the related-docs recall call. Explicit-only — no
    * agent/project/machine derivation. Defaults to `['global']` when omitted/empty. */
   docScopes?: string[];
+  /** IANA zone (e.g. `America/Chicago`) the rendered session dates are expressed
+   * in. Omitted → UTC, which is what every brief did before this existed.
+   *
+   * This is a DISPLAY concern only: stored instants are untouched, and the JSON
+   * `recentSessions[].createdAt` stays full ISO-8601 UTC regardless. It matters
+   * because the markdown line carries a DATE ONLY — for a caller west of UTC,
+   * anything logged after local evening renders as tomorrow, which silently
+   * misdates every "what did we do yesterday" judgement made off a brief. */
+  timezone?: string;
   format?: "markdown" | "json";
+}
+
+/** True when `tz` is an IANA zone this runtime knows. `Intl` is the only
+ * authority worth trusting — a hand-rolled regex would happily accept
+ * `America/Nowhere`. Lives in contract, not the engine, so the API layer can
+ * validate `BriefOptions.timezone` without importing the engine (and with it
+ * every database driver) just to check a string. */
+export function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface BriefResult {

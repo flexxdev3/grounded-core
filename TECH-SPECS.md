@@ -357,6 +357,19 @@ authenticated. That has not changed. Per-token scope gating (`api_tokens.scopes`
 on the private hosted gateway (`@grounded/cloud`, §14, stage 4b) — see §14 for what it enforces and why
 that does not contradict this paragraph.
 
+### Brief timestamps — `BriefOptions.timezone`
+
+The rendered session line carries a **date only**. Absent `timezone` it is the UTC date, which is
+what every brief did before the option existed. Callers west of UTC must pass their IANA zone or
+local-evening work renders as tomorrow — a live case: a session logged `2026-07-26 23:53 CDT`
+rendered `2026-07-27`, quietly misdating every "what did we do yesterday" read of the brief.
+
+Display only. Stored instants are untouched and `recentSessions[].createdAt` stays full ISO-8601
+UTC in both formats. When set, the zone is named in the section header
+(`=== MOST RECENT WORK (newest first · America/Chicago) ===`) so a non-UTC date is never ambiguous.
+The API rejects an unknown zone with a 400; the engine itself falls back to the UTC slice rather
+than failing a whole brief assembly over one date.
+
 - **`recall()`** (`RecallOptions.scopes`) and **`brief()`** (`BriefOptions.docScopes`) filter the doc lane
   and both default to `['global']` when the caller passes nothing (sqlite.ts:1190, mirrored in postgres.ts).
   A caller that wants an extra lane must declare **both**: `["global","administration"]`. Declaring only
@@ -587,7 +600,7 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:235`). Same return shapes
 | GET | `/docs/:id` | `docsGet` |
 | POST | `/recall` | `recall` — body may include `scopes` (doc-lane filter, defaults `["global"]`) |
 | POST | `/impact` | `impact` — body `{subject, limit?, sources?, project?, scopes?}` (field is `subject`, not `query` — §6.2) |
-| POST | `/brief` | `brief` — body may include `docScopes` (defaults `["global"]`) |
+| POST | `/brief` | `brief` — body may include `docScopes` (defaults `["global"]`) and `timezone` (IANA, defaults UTC; invalid → 400) |
 | GET | `/get/:typedId` | `get` |
 
 `/brief` and `/docs/prune` parse the body with `readJsonOptional` (`app.ts:223-233`), which reads the raw
@@ -624,7 +637,7 @@ present in the body, is validated the same way — 400 on anything other than `s
 | `ground_impact` | `subject, limit?, project?, sources?, scopes?` | `impact` → cited cards + JSON, out-of-lane hits content-withheld not dropped (§6.2) |
 | `ground_timeline` | `around?, query?, project?, window?` | `sessionsTimeline` (bare `Session[]`, not `ListResult` — §3) |
 | `ground_get` | `typedId` (`^(fact\|session\|doc):\d+$`) | `get` |
-| `ground_brief` | `agent?, project?, machine?, cwd?, query?, format?, docScopes?` | `brief` (`docScopes` filters related-docs lane, defaults `["global"]`, §6.1) |
+| `ground_brief` | `agent?, project?, machine?, cwd?, query?, format?, docScopes?, timezone?` | `brief` (`docScopes` filters related-docs lane, defaults `["global"]`, §6.1; `timezone` renders session dates in an IANA zone, defaults UTC) |
 | `ground_vision_get` | `project?` | `visionGet` ×2 → `{global, project}` |
 | `ground_vision_set` | `details, summary?, scope?` | `visionSet` (`details` narrative markdown, `summary` short SessionStart form — §3) |
 | `ground_facts_add` | `fact, scope?, category?, detail?, topicKey?, pinned?, importance?, status?, origin?` | `factsAdd` → `Fact & {delivery?}` (`topicKey` MERGE-PATCH upserts an active match — §3) |
