@@ -368,6 +368,70 @@ describe("@grounded/api delivery envelope", () => {
     expect(body.meta.limit).toBe(5);
   });
 
+  it("PATCH /sessions/:id edits in place and keeps omitted fields", async () => {
+    const created = await (
+      await post("/sessions", { summary: "typo'd summary", project: "patch-me", workspace: "w1" })
+    ).json();
+    const res = await app.fetch(
+      new Request(`http://local.test/sessions/${created.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ summary: "fixed summary", workspace: "w2" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.summary).toBe("fixed summary");
+    expect(body.workspace).toBe("w2");
+    expect(body.project).toBe("patch-me");
+  });
+
+  it("GET /sessions filters by workspace", async () => {
+    const a = await (
+      await post("/sessions", { summary: "ws filter a", project: "wsq", workspace: "one" })
+    ).json();
+    await post("/sessions", { summary: "ws filter b", project: "wsq", workspace: "two" });
+    const body = await (await get("/sessions?project=wsq&workspace=one")).json();
+    expect(body.data.map((s: { id: number }) => s.id)).toEqual([a.id]);
+    expect(body.meta.available).toBe(1);
+  });
+
+  it("rejects unknown body keys instead of silently ignoring them", async () => {
+    // the measured failure: a caller sent scopes/limit to /brief for weeks and
+    // got a 200 while both were dropped.
+    const brief = await post("/brief", { scopes: ["global"], limit: 5 });
+    expect(brief.status).toBe(400);
+    const err = await brief.json();
+    expect(err.error).toMatch(/unknown field/);
+    expect(err.error).toMatch(/scopes/);
+
+    expect((await post("/sessions", { summary: "ok", proejct: "typo" })).status).toBe(400);
+    expect((await post("/facts", { fact: "ok", scoep: "typo" })).status).toBe(400);
+    expect((await post("/recall", { query: "x", workspace: "w" })).status).toBe(200);
+  });
+
+  it("POST /docs/ingest 400s on an unreadable path instead of reporting scanned:0", async () => {
+    const res = await post("/docs/ingest", { paths: ["/nonexistent/grounded/root"] });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("INGEST_PATH_UNREADABLE");
+    expect(body.paths).toEqual(["/nonexistent/grounded/root"]);
+  });
+
+  it("DELETE /sessions/:id removes the row, then 404s", async () => {
+    const created = await (await post("/sessions", { summary: "throwaway row", project: "del" })).json();
+    const del = await app.fetch(
+      new Request(`http://local.test/sessions/${created.id}`, { method: "DELETE" }),
+    );
+    expect(del.status).toBe(200);
+    expect(await del.json()).toEqual({ deleted: true, id: created.id });
+    expect((await get(`/sessions/${created.id}`)).status).toBe(404);
+    const again = await app.fetch(
+      new Request(`http://local.test/sessions/${created.id}`, { method: "DELETE" }),
+    );
+    expect(again.status).toBe(404);
+  });
+
   it("GET /sessions reports honest meta.available under a limit", async () => {
     for (let i = 0; i < 10; i++) {
       await post("/sessions", { summary: `env session ${i}`, project: "env-sessions" });

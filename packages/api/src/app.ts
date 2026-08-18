@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import {
   ConfigError,
   EmbedError,
+  IngestPathError,
   GroundedError,
   StoreError,
   isValidTimeZone,
@@ -150,8 +151,28 @@ function parseTypedId(raw: string): TypedId {
   return `${type as SourceType}:${n}`;
 }
 
+/**
+ * Reject body keys the route does not read. A silently-ignored key is the worst
+ * failure mode this API has: the caller gets a 200 and believes an option took
+ * effect. Measured case — a client sent `scopes`/`limit` to /brief for weeks;
+ * both are dropped here (the brief lanes are `factScopes`/`docScopes`/
+ * `recentSessions`), so its "locked lane" setting was a no-op and nothing said
+ * so. Pre-1.0: fail loudly, and name the keys the route DOES accept.
+ */
+function rejectUnknownKeys(body: Record<string, unknown>, allowed: readonly string[]): void {
+  const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
+  if (unknown.length > 0) {
+    throw new ValidationError(
+      `unknown field${unknown.length > 1 ? "s" : ""} ${unknown.map((k) => `"${k}"`).join(", ")} — this route accepts: ${allowed.join(", ")}`,
+    );
+  }
+}
+
+const FACT_KEYS = ["fact","scope","category","detail","topicKey","pinned","importance","status","origin","createdBy","source"] as const;
+
 function factInput(body: unknown): FactInput {
   if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+  rejectUnknownKeys(body, FACT_KEYS);
   return {
     fact: asString(body.fact, "fact"),
     scope: optString(body.scope, "scope"),
@@ -169,6 +190,7 @@ function factInput(body: unknown): FactInput {
 
 function factPatch(body: unknown): Partial<FactInput> {
   if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+  rejectUnknownKeys(body, FACT_KEYS);
   const patch: Partial<FactInput> = {};
   if (body.fact !== undefined) patch.fact = asString(body.fact, "fact");
   if (body.scope !== undefined) patch.scope = optString(body.scope, "scope");
@@ -192,6 +214,7 @@ function factPatch(body: unknown): Partial<FactInput> {
 // the wrong field instead of failing loudly.
 function visionInput(body: unknown): VisionInput {
   if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+  rejectUnknownKeys(body, ["details", "summary", "scope", "createdBy", "source"]);
   return {
     details: asString(body.details, "details"),
     summary: optString(body.summary, "summary"),
@@ -201,8 +224,11 @@ function visionInput(body: unknown): VisionInput {
   };
 }
 
+const SESSION_KEYS = ["summary", "details", "project", "workspace", "agent", "machine", "tags", "source"] as const;
+
 function sessionInput(body: unknown): SessionInput {
   if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+  rejectUnknownKeys(body, SESSION_KEYS);
   return {
     summary: asString(body.summary, "summary"),
     details: optString(body.details, "details"),
@@ -213,6 +239,21 @@ function sessionInput(body: unknown): SessionInput {
     tags: optStringArray(body.tags, "tags"),
     source: optString(body.source, "source"),
   };
+}
+
+function sessionPatch(body: unknown): Partial<SessionInput> {
+  if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+  rejectUnknownKeys(body, SESSION_KEYS);
+  const patch: Partial<SessionInput> = {};
+  if (body.summary !== undefined) patch.summary = asString(body.summary, "summary");
+  if (body.details !== undefined) patch.details = optString(body.details, "details");
+  if (body.project !== undefined) patch.project = optString(body.project, "project");
+  if (body.workspace !== undefined) patch.workspace = optString(body.workspace, "workspace");
+  if (body.agent !== undefined) patch.agent = optString(body.agent, "agent");
+  if (body.machine !== undefined) patch.machine = optString(body.machine, "machine");
+  if (body.tags !== undefined) patch.tags = optStringArray(body.tags, "tags");
+  if (body.source !== undefined) patch.source = optString(body.source, "source");
+  return patch;
 }
 
 async function readJson(c: { req: { json: () => Promise<unknown> } }): Promise<unknown> {
@@ -365,7 +406,9 @@ export function createApp(
   app.get("/sessions", async (c) => {
     const opts: ListOptions = {
       project: c.req.query("project"),
+      workspace: c.req.query("workspace"),
       limit: parseIntQuery(c.req.query("limit"), "limit"),
+      offset: parseIntQuery(c.req.query("offset"), "offset"),
     };
     return c.json(await store.sessionsList(opts));
   });
@@ -382,10 +425,24 @@ export function createApp(
     return c.json(session);
   });
 
+  app.patch("/sessions/:id", async (c) => {
+    const id = parseId(c.req.param("id"));
+    const patch = sessionPatch(await readJson(c));
+    return c.json(await store.sessionsUpdate(id, patch));
+  });
+
+  app.delete("/sessions/:id", async (c) => {
+    const id = parseId(c.req.param("id"));
+    const deleted = await store.sessionsDelete(id);
+    if (!deleted) throw new NotFoundError(`session ${id} not found`);
+    return c.json({ deleted: true, id });
+  });
+
   // ---- docs ----
   app.post("/docs/ingest", async (c) => {
     const body = await readJson(c);
     if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+    rejectUnknownKeys(body, ["paths", "source", "kind", "machine", "scope", "project", "dryRun"]);
     const paths = optStringArray(body.paths, "paths");
     if (!paths || paths.length === 0) {
       throw new ValidationError('"paths" must be a non-empty array of strings');
@@ -395,6 +452,7 @@ export function createApp(
       kind: optString(body.kind, "kind"),
       machine: optString(body.machine, "machine"),
       scope: optString(body.scope, "scope"),
+      project: optString(body.project, "project"),
       dryRun: optBool(body.dryRun, "dryRun"),
     };
     return c.json(await store.docsIngest(paths, ingestOpts));
@@ -403,6 +461,7 @@ export function createApp(
   app.post("/docs/prune", async (c) => {
     const body = await readJsonOptional(c);
     if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+    rejectUnknownKeys(body, ["remove"]);
     const remove = optBool(body.remove, "remove") ?? false;
     return c.json(await store.docsPrune({ remove }));
   });
@@ -433,6 +492,9 @@ export function createApp(
   app.post("/recall", async (c) => {
     const body = await readJson(c);
     if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+    rejectUnknownKeys(body, [
+      "query", "limit", "project", "workspace", "sources", "lexicalOnly", "scopes",
+    ]);
     const query = asString(body.query, "query");
     const sources = optStringArray(body.sources, "sources");
     if (sources && sources.some((s) => !SOURCE_TYPES.includes(s as SourceType))) {
@@ -442,6 +504,7 @@ export function createApp(
       limit: optNumber(body.limit, "limit"),
       project: optString(body.project, "project"),
       sources: sources as SourceType[] | undefined,
+      workspace: optString(body.workspace, "workspace"),
       lexicalOnly: optBool(body.lexicalOnly, "lexicalOnly"),
       scopes: optStringArray(body.scopes, "scopes"),
     };
@@ -451,6 +514,7 @@ export function createApp(
   app.post("/impact", async (c) => {
     const body = await readJson(c);
     if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+    rejectUnknownKeys(body, ["subject", "limit", "project", "sources", "scopes"]);
     const subject = asString(body.subject, "subject");
     const sources = optStringArray(body.sources, "sources");
     if (sources && sources.some((s) => !SOURCE_TYPES.includes(s as SourceType))) {
@@ -468,6 +532,10 @@ export function createApp(
   app.post("/brief", async (c) => {
     const body = await readJsonOptional(c);
     if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+    rejectUnknownKeys(body, [
+      "agent", "project", "machine", "cwd", "query", "recentSessions",
+      "factScopes", "docScopes", "timezone", "format",
+    ]);
     const briefOpts: BriefOptions = {
       agent: optString(body.agent, "agent"),
       project: optString(body.project, "project"),
@@ -518,6 +586,11 @@ export function createApp(
     }
     if (err instanceof EmbedError) {
       return c.json({ error: err.message, code: err.code }, 503);
+    }
+    // An unreadable ingest root is the caller's bad path, not a server fault —
+    // 400 so it can never be mistaken for "the directory was empty".
+    if (err instanceof IngestPathError) {
+      return c.json({ error: err.message, code: err.code, paths: err.paths }, 400);
     }
     if (err instanceof StoreError || err instanceof ConfigError) {
       return c.json({ error: err.message, code: err.code }, 500);

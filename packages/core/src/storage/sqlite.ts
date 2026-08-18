@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
-import { StoreError } from "../contract.js";
+import { IngestPathError, StoreError } from "../contract.js";
 import type {
   BriefOptions,
   BriefResult,
@@ -41,6 +41,7 @@ import {
   type CandidateMeta,
   type FusedItem,
   type LaneHit,
+  type SessionFilter,
 } from "../engine/recall.js";
 import { assembleBrief, deriveFactScopes, deriveDocScopes } from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
@@ -48,6 +49,7 @@ import { stripPrivateBlocks } from "../ingest/private.js";
 import { splitFrontmatter } from "../ingest/frontmatter.js";
 import { chunkText, deriveTitle } from "../ingest/chunk.js";
 import { projectFromPath } from "../ingest/project.js";
+import { isReadableDir } from "../ingest/walker.js";
 
 type Row = Record<string, unknown>;
 
@@ -657,6 +659,10 @@ export class SqliteStore implements Store {
       where.push("project = ?");
       params.push(opts.project);
     }
+    if (opts?.workspace) {
+      where.push("workspace = ?");
+      params.push(opts.workspace);
+    }
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
     const limit = opts?.limit ?? 50;
     const offset = opts?.offset ?? 0;
@@ -683,6 +689,77 @@ export class SqliteStore implements Store {
       | Row
       | undefined;
     return r ? this.rowToSession(r) : null;
+  }
+
+  async sessionsUpdate(id: number, patch: Partial<SessionInput>): Promise<Session> {
+    const existing = await this.sessionsGet(id);
+    if (!existing) throw new StoreError(`session ${id} not found`);
+    const next = {
+      summary: patch.summary ?? existing.summary,
+      details: patch.details !== undefined ? patch.details : existing.details,
+      project: patch.project !== undefined ? patch.project : existing.project,
+      workspace: patch.workspace !== undefined ? patch.workspace : existing.workspace,
+      agent: patch.agent !== undefined ? patch.agent : existing.agent,
+      machine: patch.machine !== undefined ? patch.machine : existing.machine,
+      tags: patch.tags !== undefined ? patch.tags : existing.tags,
+      source: patch.source !== undefined ? patch.source : existing.source,
+    };
+    const textChanged =
+      next.summary !== existing.summary ||
+      (next.details ?? "") !== (existing.details ?? "");
+    if (textChanged) {
+      // External-content FTS5: retire the old entry with the OLD values before
+      // the base row changes (same discipline as factsUpdate/sessionsDelete).
+      this.db
+        .prepare(
+          `insert into fts_sessions(fts_sessions, rowid, summary, details) values ('delete', ?, ?, ?)`,
+        )
+        .run(id, existing.summary, existing.details ?? null);
+    }
+    this.db
+      .prepare(
+        `update sessions set summary = ?, details = ?, project = ?, workspace = ?, agent = ?, machine = ?, tags = ?, source = ? where id = ?`,
+      )
+      .run(
+        next.summary,
+        next.details ?? null,
+        next.project ?? null,
+        next.workspace ?? null,
+        next.agent ?? null,
+        next.machine ?? null,
+        next.tags ? JSON.stringify(next.tags) : null,
+        next.source ?? null,
+        id,
+      );
+    if (textChanged) {
+      this.db
+        .prepare(`insert into fts_sessions(rowid, summary, details) values (?, ?, ?)`)
+        .run(id, next.summary, next.details ?? null);
+      const vec = await this.embedOne(`${next.summary}\n${next.details ?? ""}`.trim());
+      if (vec) this.upsertVector("vec_sessions", id, vec);
+    }
+    const s = await this.sessionsGet(id);
+    if (!s) throw new StoreError("failed to read updated session");
+    return s;
+  }
+
+  async sessionsDelete(id: number): Promise<boolean> {
+    // fts_sessions is an external-content FTS5 table: the index row must be
+    // retired with the 'delete' command carrying the OLD column values, and
+    // BEFORE the base row goes away — a plain `delete from fts_...` leaves a
+    // stale rowid behind that recall then fails to hydrate.
+    const row = this.db
+      .prepare(`select summary, details from sessions where id = ?`)
+      .get(id) as Row | undefined;
+    if (!row) return false;
+    this.db
+      .prepare(
+        `insert into fts_sessions(fts_sessions, rowid, summary, details) values ('delete', ?, ?, ?)`,
+      )
+      .run(id, row.summary ?? "", row.details ?? "");
+    this.db.prepare(`delete from sessions where id = ?`).run(id);
+    this.deleteVector("vec_sessions", id);
+    return true;
   }
 
   async sessionsTimeline(opts: TimelineOptions): Promise<Session[]> {
@@ -765,6 +842,8 @@ export class SqliteStore implements Store {
     const stripPrivate = this.cfg.ingest.stripPrivate;
     const stripFrontmatterFlag = this.cfg.ingest.stripFrontmatter;
     const ignoreFile = this.cfg.ingest.ignoreFile;
+    const unreadable = rootPaths.filter((p) => !isReadableDir(p));
+    if (unreadable.length > 0) throw new IngestPathError(unreadable);
 
     for (const root of rootPaths) {
       const files = walk(root, ignoreFile);
@@ -787,7 +866,8 @@ export class SqliteStore implements Store {
         if (chunks.length === 0) continue;
         const mtime = new Date(file.mtimeMs).toISOString();
         const docPath = file.absPath;
-        const project = projectFromPath(docPath);
+        const project =
+          opts?.project ?? projectFromPath(docPath, this.cfg.ingest.projectSegment);
 
         const existing = this.db
           .prepare(`select id, chunk_idx, body_hash, source, kind, machine, scope, project from docs where path = ?`)
@@ -999,15 +1079,25 @@ export class SqliteStore implements Store {
     ftsTable: string,
     mainTable: string,
     matchExpr: string,
-    project: string | undefined,
+    filter: SessionFilter | undefined,
     limit: number,
   ): LaneHit[] {
     if (!matchExpr) return [];
     let sql = `select f.rowid as id, bm25(${ftsTable}) as rank from ${ftsTable} f where ${ftsTable} match ?`;
     const params: unknown[] = [matchExpr];
-    if (project && mainTable === "sessions") {
-      sql = `select f.rowid as id, bm25(${ftsTable}) as rank from ${ftsTable} f join sessions m on m.id = f.rowid where ${ftsTable} match ? and m.project = ?`;
-      params.push(project);
+    // project/workspace are session-only dimensions — facts and docs carry
+    // neither column and are returned unfiltered.
+    const conds: string[] = [];
+    if (mainTable === "sessions" && filter?.project) {
+      conds.push("m.project = ?");
+      params.push(filter.project);
+    }
+    if (mainTable === "sessions" && filter?.workspace) {
+      conds.push("m.workspace = ?");
+      params.push(filter.workspace);
+    }
+    if (conds.length > 0) {
+      sql = `select f.rowid as id, bm25(${ftsTable}) as rank from ${ftsTable} f join sessions m on m.id = f.rowid where ${ftsTable} match ? and ${conds.join(" and ")}`;
     }
     sql += ` order by rank asc limit ?`;
     params.push(limit);
@@ -1182,17 +1272,22 @@ export class SqliteStore implements Store {
 
     if (sources.includes("session")) {
       const rawVec = this.vectorLane("vec_sessions", queryVec, laneN);
+      const sessionFilter: SessionFilter = {
+        project: opts?.project,
+        workspace: opts?.workspace,
+      };
       const rawLex = this.lexicalLane(
         "fts_sessions",
         "sessions",
         matchExpr,
-        opts?.project,
+        sessionFilter,
         laneN,
       );
-      // when project filter set, restrict vector lane too
-      const filteredVec = opts?.project
-        ? this.filterSessionVecByProject(rawVec, opts.project)
-        : rawVec;
+      // when a session filter is set, restrict the vector lane the same way
+      const filteredVec =
+        sessionFilter.project || sessionFilter.workspace
+          ? this.filterSessionVec(rawVec, sessionFilter)
+          : rawVec;
       const ids = unionIds(filteredVec, rawLex);
       const meta = this.sessionsMeta(ids);
       const out = fuseLane("session", filteredVec, rawLex, meta, this.cfg).slice(0, limit);
@@ -1296,7 +1391,7 @@ export class SqliteStore implements Store {
         ftsTable,
         mainTable,
         matchExpr,
-        st === "session" ? opts?.project : undefined,
+        st === "session" ? { project: opts?.project } : undefined,
         laneN,
       );
       if (lex.length === 0) continue;
@@ -1378,18 +1473,26 @@ export class SqliteStore implements Store {
     return { ...base, scope, inScope: false, title: null, snippet: null };
   }
 
-  private filterSessionVecByProject(
-    lane: LaneHit[],
-    project: string,
-  ): LaneHit[] {
+  private filterSessionVec(lane: LaneHit[], filter: SessionFilter): LaneHit[] {
     if (lane.length === 0) return lane;
     const ids = lane.map((h) => h.id);
     const placeholders = ids.map(() => "?").join(",");
+    const conds: string[] = [];
+    const extra: unknown[] = [];
+    if (filter.project) {
+      conds.push("project = ?");
+      extra.push(filter.project);
+    }
+    if (filter.workspace) {
+      conds.push("workspace = ?");
+      extra.push(filter.workspace);
+    }
+    if (conds.length === 0) return lane;
     const rows = this.db
       .prepare(
-        `select id from sessions where id in (${placeholders}) and project = ?`,
+        `select id from sessions where id in (${placeholders}) and ${conds.join(" and ")}`,
       )
-      .all(...ids, project) as Row[];
+      .all(...ids, ...extra) as Row[];
     const keep = new Set(rows.map((r) => Number(r.id)));
     return lane.filter((h) => keep.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
   }

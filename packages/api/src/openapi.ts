@@ -595,7 +595,9 @@ export const openApiDocument = {
         summary: "List sessions",
         parameters: [
           { name: "project", in: "query", schema: { type: "string" } },
+          { name: "workspace", in: "query", schema: { type: "string" } },
           { name: "limit", in: "query", schema: { type: "integer" } },
+          { name: "offset", in: "query", schema: { type: "integer" } },
         ],
         responses: {
           "200": {
@@ -644,12 +646,45 @@ export const openApiDocument = {
           },
         },
       },
+      patch: {
+        summary: "Edit a session in place (partial; re-embeds when text changes)",
+        description:
+          "Correct a work-log entry instead of appending a second one. Omitted fields keep their stored value.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/SessionInput" } } },
+        },
+        responses: {
+          "200": {
+            description: "Updated session",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Session" } } },
+          },
+          "404": {
+            description: "Not found",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+        },
+      },
+      delete: {
+        summary: "Delete a session",
+        description:
+          "Hard delete of one session row plus its index entries. Not reversible \u2014 use to clean up mistaken or duplicate work-log rows.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        responses: {
+          "200": { description: "Deletion result" },
+          "404": {
+            description: "Not found",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+        },
+      },
     },
     "/docs/ingest": {
       post: {
         summary: "Ingest docs from paths",
         description:
-          'Batch tags apply to every chunk scanned in this call. "scope" is the lane (e.g. "global" | "administration") — routing, not enforcement; the caller self-declares it.',
+          'Batch tags apply to every chunk scanned in this call. "scope" is the lane (e.g. "global" | "administration") — routing, not enforcement; the caller self-declares it. A path that does not exist or cannot be read is a 400 (INGEST_PATH_UNREADABLE), never a 200 with scanned:0.',
         requestBody: {
           required: true,
           content: {
@@ -663,6 +698,11 @@ export const openApiDocument = {
                   kind: { type: "string" },
                   machine: { type: "string" },
                   scope: { type: "string", description: 'Lane, defaults to "global".' },
+                  project: {
+                    type: "string",
+                    description:
+                      "Owning project for every doc in this batch. Overrides the path-derived project (config `ingest.projectSegment`).",
+                  },
                   dryRun: { type: "boolean" },
                 },
               },
@@ -769,6 +809,11 @@ export const openApiDocument = {
                   query: { type: "string" },
                   limit: { type: "integer" },
                   project: { type: "string" },
+                  workspace: {
+                    type: "string",
+                    description:
+                      "Session-lane filter. Facts and docs have no workspace dimension and are returned unfiltered, exactly as `project` behaves.",
+                  },
                   sources: {
                     type: "array",
                     items: { type: "string", enum: ["fact", "session", "doc"] },

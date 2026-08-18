@@ -1,6 +1,6 @@
 import pg from "pg";
 import pgvector from "pgvector/pg";
-import { StoreError } from "../contract.js";
+import { IngestPathError, StoreError } from "../contract.js";
 import type {
   BriefOptions,
   BriefResult,
@@ -38,6 +38,7 @@ import {
   type CandidateMeta,
   type FusedItem,
   type LaneHit,
+  type SessionFilter,
 } from "../engine/recall.js";
 import { assembleBrief, deriveFactScopes, deriveDocScopes } from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
@@ -45,6 +46,7 @@ import { stripPrivateBlocks } from "../ingest/private.js";
 import { splitFrontmatter } from "../ingest/frontmatter.js";
 import { chunkText, deriveTitle } from "../ingest/chunk.js";
 import { projectFromPath } from "../ingest/project.js";
+import { isReadableDir } from "../ingest/walker.js";
 import { readFileSync, existsSync } from "node:fs";
 
 type Row = Record<string, unknown>;
@@ -573,6 +575,10 @@ export class PostgresStore implements Store {
       params.push(opts.project);
       where.push(`project = $${params.length}`);
     }
+    if (opts?.workspace) {
+      params.push(opts.workspace);
+      where.push(`workspace = $${params.length}`);
+    }
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
     const countParams = [...params];
     const limit = opts?.limit ?? 50;
@@ -608,6 +614,67 @@ export class PostgresStore implements Store {
     );
     const r = res.rows[0] as Row | undefined;
     return r ? this.rowToSession(r) : null;
+  }
+
+  async sessionsUpdate(id: number, patch: Partial<SessionInput>): Promise<Session> {
+    const existing = await this.sessionsGet(id);
+    if (!existing) throw new StoreError(`session ${id} not found`);
+    const next = {
+      summary: patch.summary ?? existing.summary,
+      details: patch.details !== undefined ? patch.details : existing.details,
+      project: patch.project !== undefined ? patch.project : existing.project,
+      workspace: patch.workspace !== undefined ? patch.workspace : existing.workspace,
+      agent: patch.agent !== undefined ? patch.agent : existing.agent,
+      machine: patch.machine !== undefined ? patch.machine : existing.machine,
+      tags: patch.tags !== undefined ? patch.tags : existing.tags,
+      source: patch.source !== undefined ? patch.source : existing.source,
+    };
+    const textChanged =
+      next.summary !== existing.summary ||
+      (next.details ?? "") !== (existing.details ?? "");
+    const embedding = textChanged
+      ? await this.embedOne(`${next.summary}\n${next.details ?? ""}`.trim())
+      : null;
+    const sets = [
+      "summary = $2",
+      "details = $3",
+      "project = $4",
+      "workspace = $5",
+      "agent = $6",
+      "machine = $7",
+      "tags = $8",
+      "source = $9",
+    ];
+    const params: unknown[] = [
+      id,
+      next.summary,
+      next.details ?? null,
+      next.project ?? null,
+      next.workspace ?? null,
+      next.agent ?? null,
+      next.machine ?? null,
+      next.tags ?? null,
+      next.source ?? null,
+    ];
+    if (embedding) {
+      params.push(pgvector.toSql(embedding));
+      sets.push(`embedding = $${params.length}`);
+    }
+    await this.pool.query(
+      `update ${this.q("sessions")} set ${sets.join(", ")} where id = $1`,
+      params,
+    );
+    const s = await this.sessionsGet(id);
+    if (!s) throw new StoreError("failed to read updated session");
+    return s;
+  }
+
+  async sessionsDelete(id: number): Promise<boolean> {
+    const res = await this.pool.query(
+      `delete from ${this.q("sessions")} where id = $1`,
+      [id],
+    );
+    return (res.rowCount ?? 0) > 0;
   }
 
   async sessionsTimeline(opts: TimelineOptions): Promise<Session[]> {
@@ -693,6 +760,9 @@ export class PostgresStore implements Store {
     const scope = opts?.scope ?? "global";
     const dryRun = opts?.dryRun ?? false;
 
+    const unreadable = rootPaths.filter((p) => !isReadableDir(p));
+    if (unreadable.length > 0) throw new IngestPathError(unreadable);
+
     for (const root of rootPaths) {
       const files = walk(root, this.cfg.ingest.ignoreFile);
       for (const file of files) {
@@ -716,7 +786,8 @@ export class PostgresStore implements Store {
         if (chunks.length === 0) continue;
         const mtime = new Date(file.mtimeMs).toISOString();
         const docPath = file.absPath;
-        const project = projectFromPath(docPath);
+        const project =
+          opts?.project ?? projectFromPath(docPath, this.cfg.ingest.projectSegment);
 
         const existingRes = await this.pool.query(
           `select id, chunk_idx, body_hash, source, kind, machine, scope, project from ${this.q("docs")} where path = $1`,
@@ -889,15 +960,21 @@ export class PostgresStore implements Store {
   private async lexicalLane(
     table: string,
     query: string,
-    project: string | undefined,
+    filter: SessionFilter | undefined,
     limit: number,
   ): Promise<LaneHit[]> {
     if (!query.trim()) return [];
     const params: unknown[] = [query];
+    // project/workspace are session-only dimensions — facts and docs carry
+    // neither column and are returned unfiltered.
     let projSql = "";
-    if (project && table === "sessions") {
-      params.push(project);
-      projSql = ` and project = $${params.length}`;
+    if (table === "sessions" && filter?.project) {
+      params.push(filter.project);
+      projSql += ` and project = $${params.length}`;
+    }
+    if (table === "sessions" && filter?.workspace) {
+      params.push(filter.workspace);
+      projSql += ` and workspace = $${params.length}`;
     }
     params.push(limit);
     const limitIdx = params.length;
@@ -912,15 +989,19 @@ export class PostgresStore implements Store {
   private async vectorLane(
     table: string,
     queryVec: number[] | null,
-    project: string | undefined,
+    filter: SessionFilter | undefined,
     limit: number,
   ): Promise<LaneHit[]> {
     if (!queryVec || !this.vectorActive()) return [];
     const params: unknown[] = [pgvector.toSql(queryVec)];
     let projSql = "where embedding is not null";
-    if (project && table === "sessions") {
-      params.push(project);
-      projSql = `where embedding is not null and project = $${params.length}`;
+    if (table === "sessions" && filter?.project) {
+      params.push(filter.project);
+      projSql += ` and project = $${params.length}`;
+    }
+    if (table === "sessions" && filter?.workspace) {
+      params.push(filter.workspace);
+      projSql += ` and workspace = $${params.length}`;
     }
     params.push(limit);
     const limitIdx = params.length;
@@ -1004,7 +1085,10 @@ export class PostgresStore implements Store {
 
     for (const st of sources) {
       const table = tableFor[st];
-      const proj = st === "session" ? opts?.project : undefined;
+      const proj: SessionFilter | undefined =
+        st === "session"
+          ? { project: opts?.project, workspace: opts?.workspace }
+          : undefined;
       const rawVec = await this.vectorLane(table, queryVec, proj, laneN);
       const rawLex = await this.lexicalLane(table, query, proj, laneN);
       let vec = rawVec;
@@ -1104,7 +1188,8 @@ export class PostgresStore implements Store {
 
     for (const st of sources) {
       const table = tableFor[st];
-      const proj = st === "session" ? opts?.project : undefined;
+      const proj: SessionFilter | undefined =
+        st === "session" ? { project: opts?.project } : undefined;
       const lex = await this.lexicalLane(table, subject, proj, laneN);
       if (lex.length === 0) continue;
       const ids = lex.map((h) => h.id);

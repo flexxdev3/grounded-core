@@ -38,6 +38,7 @@ export function defaultConfig(home?: string): GroundedConfig {
       stripFrontmatter: true,
       chunkChars: 1200,
       chunkOverlap: 150,
+      projectSegment: "corpus",
     },
     brief: {
       reserve: { vision: 400, facts: 900, sessions: 500 },

@@ -188,6 +188,97 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       expect(byQuery.some((x) => x.id === s2.id)).toBe(true);
     });
 
+    it("sessions: delete removes the row and drops it from recall", async () => {
+      const s = await store.sessionsAdd({
+        summary: "quokka telemetry spike for the deletion test",
+        details: "unique marker: quokkatelemetryspike",
+        project: "grounded-delete",
+      });
+      expect(await store.sessionsDelete(s.id)).toBe(true);
+      expect(await store.sessionsGet(s.id)).toBeNull();
+      expect((await store.sessionsList({ project: "grounded-delete" })).data).toHaveLength(0);
+
+      const hits = (await store.recall("quokkatelemetryspike", { sources: ["session"] })).data;
+      expect(hits.some((r) => r.id === s.id)).toBe(false);
+
+      // second delete is a no-op, not an error
+      expect(await store.sessionsDelete(s.id)).toBe(false);
+    });
+
+    it("sessions: update patches in place and re-embeds changed text", async () => {
+      const s = await store.sessionsAdd({
+        summary: "wrong summary about zebrafinchprotocol",
+        project: "grounded-update",
+        workspace: "ws-a",
+      });
+      const patched = await store.sessionsUpdate(s.id, {
+        summary: "corrected summary about zebrafinchprotocol",
+        workspace: "ws-b",
+      });
+      expect(patched.summary).toBe("corrected summary about zebrafinchprotocol");
+      expect(patched.workspace).toBe("ws-b");
+      // omitted field keeps its stored value
+      expect(patched.project).toBe("grounded-update");
+
+      // the stale text must not survive in the lexical index
+      const stale = await store.recall("wrong summary zebrafinchprotocol", {
+        sources: ["session"],
+      });
+      expect(stale.data.some((r) => r.title?.includes("wrong summary"))).toBe(false);
+
+      await expect(store.sessionsUpdate(999_999, { summary: "x" })).rejects.toThrow();
+      await store.sessionsDelete(s.id);
+    });
+
+    it("sessions: workspace filters list and recall independently of project", async () => {
+      const a = await store.sessionsAdd({
+        summary: "kestrelharness rollout notes",
+        project: "grounded-ws",
+        workspace: "alpha",
+      });
+      const b = await store.sessionsAdd({
+        summary: "kestrelharness rollout notes",
+        project: "grounded-ws",
+        workspace: "beta",
+      });
+      const listed = await store.sessionsList({ project: "grounded-ws", workspace: "alpha" });
+      expect(listed.data.map((x) => x.id)).toEqual([a.id]);
+      expect(listed.meta.available).toBe(1);
+
+      const hits = await store.recall("kestrelharness", {
+        sources: ["session"],
+        workspace: "beta",
+      });
+      const ids = hits.data.map((r) => r.id);
+      expect(ids).toContain(b.id);
+      expect(ids).not.toContain(a.id);
+
+      await store.sessionsDelete(a.id);
+      await store.sessionsDelete(b.id);
+    });
+
+    it("docs: ingest project option overrides the path-derived project", async () => {
+      // its own tree, so the shared EXAMPLES fixture's add/skip accounting is
+      // untouched by this test's writes
+      const dir = mkdtempSync(join(tmpdir(), "grounded-project-"));
+      writeFileSync(join(dir, "note.md"), "# Note\n\nnarwhalcadence body text.\n");
+      const report = await store.docsIngest([dir], {
+        source: "explicit-project-src",
+        project: "explicit-project",
+      });
+      expect(report.scanned).toBeGreaterThan(0);
+      const docs = (await store.docsList({ source: "explicit-project-src" })).data;
+      expect(docs.length).toBeGreaterThan(0);
+      expect(docs.every((d) => d.project === "explicit-project")).toBe(true);
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("docs: an unreadable ingest root is an error, never a silent scanned:0", async () => {
+      await expect(
+        store.docsIngest(["/nonexistent/grounded/ingest/root"]),
+      ).rejects.toMatchObject({ code: "INGEST_PATH_UNREADABLE" });
+    });
+
     it("docs: ingest the examples folder, strips <private>", async () => {
       const report = await store.docsIngest([EXAMPLES], { source: "examples" });
       expect(report.scanned).toBeGreaterThan(0);

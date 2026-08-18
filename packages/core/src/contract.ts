@@ -271,6 +271,11 @@ export interface GroundedConfig {
     chunkChars: number;
     /** chunk overlap in characters. */
     chunkOverlap: number;
+    /** path segment whose CHILD directory names the owning project, i.e.
+     * `.../<projectSegment>/<project>/...`. A layout convention, not a
+     * requirement: paths without the segment simply get a null project, and
+     * `IngestOptions.project` overrides it either way. */
+    projectSegment: string;
   };
   /**
    * Per-lane token reserves for `Store.brief()`. Each lane truncates within its
@@ -318,6 +323,10 @@ export interface RecallOptions {
   limit?: number;
   /** restrict to these source types (default all). */
   sources?: SourceType[];
+  /** workspace filter — applies to the session lane only (facts and docs have
+   * no workspace dimension and are returned unfiltered, exactly as `project`
+   * behaves). */
+  workspace?: string;
   /** scope filter for facts/sessions, e.g. project name. */
   project?: string;
   /** force lexical-only even if embeddings are enabled. */
@@ -507,6 +516,10 @@ export interface IngestOptions {
   /** lane, e.g. "global" (default) | "administration". Batch-level only — applies to
    * every chunk in this ingest call, not per-file. */
   scope?: string;
+  /** owning project for every doc in this batch. Overrides the path-derived
+   * project (see `ingest.projectSegment`) — set it when the tree does not
+   * follow that layout, or when the caller already knows the project. */
+  project?: string;
   /** dry-run: report what would change, write nothing. */
   dryRun?: boolean;
 }
@@ -547,6 +560,8 @@ export interface ListOptions {
   limit?: number;
   offset?: number;
   project?: string;
+  /** sessions only: filter by workspace. */
+  workspace?: string;
   /** lane filter (facts and docs): match this scope. */
   scope?: string;
   /** lane filter (facts and docs): match any of these scopes (OR). Takes precedence over `scope`. */
@@ -600,6 +615,11 @@ export interface Store {
   sessionsAdd(input: SessionInput): Promise<Session>;
   sessionsList(opts?: ListOptions): Promise<ListResult<Session>>;
   sessionsGet(id: number): Promise<Session | null>;
+  /** partial patch; omitted fields keep their stored value. Re-embeds and
+   * re-indexes only when summary/details actually change. */
+  sessionsUpdate(id: number, patch: Partial<SessionInput>): Promise<Session>;
+  /** hard delete one session row (plus its index entries). false if absent. */
+  sessionsDelete(id: number): Promise<boolean>;
   /** window semantics (before/after an anchor), not limit/offset truncation —
    * not wrapped in ListResult. */
   sessionsTimeline(opts: TimelineOptions): Promise<Session[]>;
@@ -662,6 +682,20 @@ export class StoreError extends GroundedError {
   constructor(message: string) {
     super(message, "STORE_ERROR");
     this.name = "StoreError";
+  }
+}
+
+/** an ingest root that does not exist or cannot be read. Raised BEFORE any
+ * write: answering `{"scanned": 0}` with a 200 for a path the server cannot
+ * see is indistinguishable from an empty directory, and callers have had to
+ * assert `scanned > 0` to catch it. */
+export class IngestPathError extends GroundedError {
+  constructor(readonly paths: string[]) {
+    super(
+      `ingest path${paths.length > 1 ? "s" : ""} not readable: ${paths.join(", ")}`,
+      "INGEST_PATH_UNREADABLE",
+    );
+    this.name = "IngestPathError";
   }
 }
 

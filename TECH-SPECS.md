@@ -577,7 +577,7 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:235`). Same return shapes
 (`GROUNDED_API_TOKEN`, `bin.ts:23`); off by default. `/health` and `/llms.txt` always exempt. Mismatch →
 401 `{error:"unauthorized", code:"UNAUTHORIZED"}` (`app.ts:265`).
 
-**21 routes** (10 GET / 8 POST / 1 PATCH / 2 DELETE):
+**23 routes** (10 GET / 8 POST / 2 PATCH / 3 DELETE):
 
 | Method | Path | Store call |
 |---|---|---|
@@ -591,14 +591,16 @@ Hono. `createApp(store, { token? }) → Hono` (`app.ts:235`). Same return shapes
 | POST | `/facts` | `factsAdd` (201, returns `FactWriteResponse` — §3) |
 | DELETE | `/facts/:id` | `factsDelete` |
 | PATCH | `/facts/:id` | `factsUpdate` (returns `FactWriteResponse` — §3) |
-| GET | `/sessions` `?project&limit` | `sessionsList` |
+| GET | `/sessions` `?project&workspace&limit&offset` | `sessionsList` |
 | POST | `/sessions` | `sessionsAdd` (201) |
 | GET | `/sessions/:id` | `sessionsGet` |
-| POST | `/docs/ingest` | `docsIngest` — body `{paths[], source?, kind?, machine?, scope?, dryRun?}` |
+| PATCH | `/sessions/:id` | `sessionsUpdate` — partial patch; re-embeds/re-indexes only when `summary`/`details` change |
+| DELETE | `/sessions/:id` | `sessionsDelete` — hard delete of the row plus its index entries |
+| POST | `/docs/ingest` | `docsIngest` — body `{paths[], source?, kind?, machine?, scope?, project?, dryRun?}`; an unreadable path is a 400, never a 200 with `scanned:0` |
 | POST | `/docs/prune` | `docsPrune` — body `{remove?}` (optional; empty body → `{remove:false}`) |
 | GET | `/docs` `?source&scope&scopes&limit&offset&documents` | `docsList` — `source` filters logical source/collection, `scope`/`scopes` filter lane; **unfiltered by default on both axes** (§6.1) |
 | GET | `/docs/:id` | `docsGet` |
-| POST | `/recall` | `recall` — body may include `scopes` (doc-lane filter, defaults `["global"]`) |
+| POST | `/recall` | `recall` — body may include `scopes` (doc-lane filter, defaults `["global"]`) and `workspace` (session lane only) |
 | POST | `/impact` | `impact` — body `{subject, limit?, sources?, project?, scopes?}` (field is `subject`, not `query` — §6.2) |
 | POST | `/brief` | `brief` — body may include `docScopes` (defaults `["global"]`) and `timezone` (IANA, defaults UTC; invalid → 400) |
 | GET | `/get/:typedId` | `get` |
@@ -609,7 +611,14 @@ which previously made the body parse silently short-circuit to `{}` (200 OK, `do
 discarded). Every other POST route still uses the strict `readJson`, which throws `ValidationError` on
 unparseable JSON.
 
-**Error mapping** (`app.ts:478-497`): `ValidationError`→400, `NotFoundError`→404, `EmbedError`→503,
+**Strict bodies.** Every JSON route rejects a key it does not read with a 400 naming both the unknown
+key and the fields that route accepts (`rejectUnknownKeys`). A dropped option that still returns 200 is
+the same wrong-with-no-signal shape as the blank-lane and delivery-cliff bugs — measured case: a client
+sent `scopes`/`limit` to `/brief` for weeks (the lanes are `factScopes`/`docScopes`/`recentSessions`),
+so its lane setting was a no-op and nothing said so.
+
+**Error mapping**: `ValidationError`→400, `IngestPathError`→400 (`INGEST_PATH_UNREADABLE`, echoes the
+offending `paths`), `NotFoundError`→404, `EmbedError`→503,
 `StoreError`/`ConfigError`/`GroundedError`→500. Unknown path → 404 `{code:"NOT_FOUND"}`.
 
 **`GET /facts` status default** (`app.ts:280-296`): `?status` defaults to `active` when omitted.
@@ -629,7 +638,7 @@ present in the body, is validated the same way — 400 on anything other than `s
 **Transports** (`bin.ts:13-18`): stdio default (`StdioServerTransport`); if `GROUNDED_MCP_HTTP_PORT` set →
 `StreamableHTTPServerTransport` (stateless, `sessionIdGenerator: undefined`) on `127.0.0.1`.
 
-**15 tools:**
+**17 tools:**
 
 | Tool | Key inputs | Store call |
 |---|---|---|
@@ -645,6 +654,8 @@ present in the body, is validated the same way — 400 on anything other than `s
 | `ground_facts_list` | `scope?, limit?, status?` (defaults to `"active"`; `"all"` returns every status) | `factsList` |
 | `ground_facts_delete` | `id` | `factsDelete` |
 | `ground_session_add` | `summary, details?, project?, agent?, machine?, tags?` | `sessionsAdd` |
+| `ground_session_update` | `id, summary?, details?, project?, workspace?, agent?, machine?, tags?, source?` | `sessionsUpdate` |
+| `ground_session_delete` | `id` | `sessionsDelete` |
 | `ground_docs_ingest` | `paths[]≥1, source?, kind?, machine?, scope?, dryRun?` | `docsIngest` (`scope` tags the batch's lane, default `"global"`; `machine` newly exposed at this surface in stage 3) |
 | `ground_docs_prune` | `remove?` (default false) | `docsPrune` → `{missing, removed}` — reconciles rows against disk; distinct from `IngestReport.removed` (§8) |
 | `ground_health` | `{}` | `health` |
@@ -738,8 +749,8 @@ branch. It **consumes** open-core unchanged — `@grounded/core` never learns wh
 
 | Package | Role | Docs |
 |---|---|---|
-| `@grounded/cloud` | Hono gateway on OVH: `/auth/*` (better-auth) · `/account/*` (control plane) · `/api/*` (per-tenant proxy → `createApp(store)`) · serves the UI at `/`. Schema-per-tenant isolation, control-plane `accounts` schema, bounded Store LRU. | [`packages/cloud/DESIGN.md`](packages/cloud/DESIGN.md) |
-| `@grounded/cloud-web` | the hosted-cabinet **account UI** (8 surfaces: Auth · Onboarding · Dashboard · Connect · API tokens · Cabinet · Settings · Billing). Preact + Vite, served by the gateway. | [`packages/cloud/web/TECH-SPECS.md`](packages/cloud/web/TECH-SPECS.md) |
+| `@grounded/cloud` | Hono gateway on OVH: `/auth/*` (better-auth) · `/account/*` (control plane) · `/api/*` (per-tenant proxy → `createApp(store)`) · serves the UI at `/`. Schema-per-tenant isolation, control-plane `accounts` schema, bounded Store LRU. | private (not in this repo) |
+| `@grounded/cloud-web` | the hosted-cabinet **account UI** (8 surfaces: Auth · Onboarding · Dashboard · Connect · API tokens · Cabinet · Settings · Billing). Preact + Vite, served by the gateway. | private (not in this repo) |
 
 Open-core boundary: everything account/multi-tenant is in `@grounded/cloud` (`private: true`), out of
 `pnpm publish -r`. The per-tenant `/api/*` exposes the **same** routes a self-hoster runs — only base
@@ -764,5 +775,5 @@ separate enforcement point in the private gateway that open-core never sees or d
 green; locally installable) plus the hosted layer §14 (2026-07-13, `accounts` branch), doc-lane scoping
 stage 3 (§6.1), the `ListResult`/`DeliveryMeta` delivery-accounting envelope (stage 2, §3/§7), `ground_impact`
 (stage 4, §6.2/§10/§11), and cloud-gateway per-token scope enforcement (stage 4b, §14) — all 2026-07-25.
-Behavioral guarantees live in [`CONTRACT.md`](packages/core/CONTRACT.md); roadmap in
-[`../CLAUDE.md`](../CLAUDE.md).*
+Behavioral guarantees live in [`CONTRACT.md`](packages/core/CONTRACT.md); contribution workflow in
+[`CONTRIBUTING.md`](CONTRIBUTING.md).*

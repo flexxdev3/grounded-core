@@ -4,8 +4,8 @@ The frozen type surface is [`src/contract.ts`](src/contract.ts). This file speci
 every implementation must honor. API / MCP / installer depend only on the `Store` interface + these rules.
 
 ## Source-of-truth references
-- Live recall mechanics, real schemas, embedding flow → repo [`AGENTS.md`](../../AGENTS.md) "live system" section.
-- Roadmap + adaptability principles → repo [`CLAUDE.md`](../../CLAUDE.md).
+- Recall mechanics, schemas, embedding flow → repo [`TECH-SPECS.md`](../../TECH-SPECS.md).
+- Adaptability principles + contribution workflow → repo [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
 ## Records
 Generalized from the live StuntLabs schemas: `facts` → `Fact`, `labwork` → `Session`,

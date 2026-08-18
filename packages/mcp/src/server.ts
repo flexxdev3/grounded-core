@@ -488,6 +488,43 @@ export function createServer(
   );
 
   server.registerTool(
+    "ground_session_update",
+    {
+      title: "Update session",
+      description:
+        "Edit a session in place (partial patch; omitted fields keep their value). Use this to correct a work-log entry instead of writing a second one.",
+      inputSchema: {
+        id: z.number().int().describe("session id"),
+        summary: z.string().optional(),
+        details: z.string().optional(),
+        project: z.string().optional(),
+        workspace: z.string().optional(),
+        agent: z.string().optional(),
+        machine: z.string().optional(),
+        tags: z.array(z.string()).optional(),
+        source: z.string().optional(),
+      },
+    },
+    guard(async ({ id, ...patch }) => {
+      const updated = await store.sessionsUpdate(id, patch);
+      return json(updated);
+    }),
+  );
+
+  server.registerTool(
+    "ground_session_delete",
+    {
+      title: "Delete session",
+      description: "Delete a session (work-log entry) by id. Not reversible.",
+      inputSchema: { id: z.number().int().describe("session id") },
+    },
+    guard(async ({ id }) => {
+      const ok = await store.sessionsDelete(id);
+      return json({ deleted: ok, id });
+    }),
+  );
+
+  server.registerTool(
     "ground_docs_ingest",
     {
       title: "Ingest docs",

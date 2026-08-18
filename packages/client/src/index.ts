@@ -135,6 +135,10 @@ export interface GroundedClient {
      * `meta.truncated` says whether more exist than were returned. */
     list(opts?: ListOptions): Promise<ListResult<Session>>;
     get(id: number): Promise<Session>;
+    /** partial patch; omitted fields keep their stored value. */
+    update(id: number, patch: Partial<SessionInput>): Promise<Session>;
+    /** hard delete one session row. Not reversible. */
+    delete(id: number): Promise<{ deleted: boolean; id: number }>;
   };
   docs: {
     /**
@@ -230,8 +234,13 @@ export function createClient(options: ClientOptions): GroundedClient {
     sessions: {
       add: (input) => request<Session>("POST", "/sessions", input),
       list: (opts = {}) =>
-        request<ListResult<Session>>("GET", `/sessions${qs({ project: opts.project, limit: opts.limit })}`),
+        request<ListResult<Session>>(
+          "GET",
+          `/sessions${qs({ project: opts.project, workspace: opts.workspace, limit: opts.limit })}`,
+        ),
       get: (id) => request<Session>("GET", `/sessions/${id}`),
+      update: (id, patch) => request<Session>("PATCH", `/sessions/${id}`, patch),
+      delete: (id) => request<{ deleted: boolean; id: number }>("DELETE", `/sessions/${id}`),
     },
     docs: {
       list: (opts = {}) =>

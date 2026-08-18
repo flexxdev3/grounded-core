@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { accessSync, constants, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { loadIgnore } from "./groundignore.js";
 import type { IgnoreMatcher } from "./groundignore.js";
@@ -22,6 +22,21 @@ function hasIndexableExt(name: string): boolean {
   const dot = name.lastIndexOf(".");
   if (dot < 0) return false;
   return DEFAULT_EXTS.has(name.slice(dot).toLowerCase());
+}
+
+/**
+ * Is this root a directory (or file) the process can actually read? The walker
+ * swallows an unreadable root and returns [], which reads downstream as "the
+ * tree was empty" — callers must be able to tell the two apart.
+ */
+export function isReadableDir(root: string): boolean {
+  try {
+    accessSync(root, constants.R_OK);
+    statSync(root);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Recursively walk a root, honoring the ignore file and default ignores. */

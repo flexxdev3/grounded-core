@@ -1,6 +1,12 @@
 import type { GroundedConfig, SourceType, MatchedBy } from "../contract.js";
 
 /** A single lane hit: an item id and its 0-based rank within that lane. */
+/** session-only recall dimensions — facts and docs have neither column. */
+export interface SessionFilter {
+  project?: string | undefined;
+  workspace?: string | undefined;
+}
+
 export interface LaneHit {
   id: number;
   rank: number;

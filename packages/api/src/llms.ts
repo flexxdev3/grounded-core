@@ -115,8 +115,12 @@ exists without reading content you were not scoped to.
   writes a new row.
 - \`POST /sessions\` — log what happened. \`summary\` is the line an agent sees at startup;
   \`details\` is the body recall searches.
+- \`PATCH /sessions/:id\` — correct a work-log entry in place (partial; omitted fields keep
+  their value). Use it instead of logging a second, contradicting row. \`DELETE /sessions/:id\`
+  removes one outright.
 - \`POST /docs/ingest\` — walks absolute paths, chunks, embeds, and delete-before-inserts
-  changed files. Idempotent: unchanged files skip.
+  changed files. Idempotent: unchanged files skip. A path that does not exist or cannot be
+  read is a 400 (\`INGEST_PATH_UNREADABLE\`), never a 200 with \`scanned: 0\`.
 - \`POST /vision\` — the direction. \`summary\` is injected at startup and never recalled;
   \`details\` is recalled and never injected.
 
@@ -195,7 +199,7 @@ it, so the fix lands everywhere instead of leaving the next agent a dangling ref
 | GET | \`/openapi.json\` | full schema for every route below |
 | GET · POST · PATCH · DELETE | \`/facts\` \`/facts/:id\` | durable rules |
 | GET · POST · DELETE | \`/vision\` \`/vision/:id\` | direction |
-| GET · POST | \`/sessions\` \`/sessions/:id\` | work log |
+| GET · POST · PATCH · DELETE | \`/sessions\` \`/sessions/:id\` | work log |
 | POST | \`/docs/ingest\` \`/docs/prune\` | index management |
 | GET | \`/docs\` \`/docs/:id\` | source browser |
 | POST | \`/recall\` \`/impact\` \`/brief\` | the read surface |

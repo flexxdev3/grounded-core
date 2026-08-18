@@ -98,6 +98,7 @@ The homelab stack (Ollama + Postgres) is just one adapter set — the default, n
 | [`@grounded/api`](packages/api) | Hono REST server |
 | [`@grounded/mcp`](packages/mcp) | MCP server (progressive disclosure) |
 | [`@grounded/client`](packages/client) | thin typed `fetch` wrapper over the API |
+| [`@grounded/ui`](packages/ui) | the web console (Preact); its built assets are served by `@grounded/api` |
 
 ## Development
 
@@ -117,7 +118,8 @@ GROUNDED_TEST_PG_URL='postgres://user:pass@host:5432/db' pnpm --filter @grounded
 Point it at a **scratch database**, never a live one — the suite drops and recreates a hardcoded
 `grounded_test` schema at the start of every run (no teardown, so it's inspectable after a failed run).
 
-See [`CLAUDE.md`](CLAUDE.md) for the phased roadmap and [`AGENTS.md`](AGENTS.md) for the engine reference.
+Contributing guide: [`CONTRIBUTING.md`](CONTRIBUTING.md). Architecture and engine reference:
+[`TECH-SPECS.md`](TECH-SPECS.md); normative behavior: [`packages/core/CONTRACT.md`](packages/core/CONTRACT.md).
 
 ## License
 
