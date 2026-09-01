@@ -743,6 +743,138 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       }
     });
 
+    it("recall: one source can fill the whole limit — sourceCaps must not cap the total", async () => {
+      // Measured defect: sourceCaps (10/10/10 by default) was applied inside
+      // fuseLane, i.e. BEFORE the flat rank, so `sources:["doc"], limit:30`
+      // returned 10 and an all-sources limit:40 returned exactly 30 — an
+      // undocumented ceiling at the sum of the caps. sourceCaps is a per-lane
+      // RANKING cap; it must never bound the caller's total.
+      const token = "zzqsinglesourcedepth";
+      const dir = mkdtempSync(join(tmpdir(), "grounded-single-source-depth-"));
+      for (let i = 0; i < 25; i++) {
+        writeFileSync(
+          join(dir, `depth-doc-${i}.md`),
+          `# Depth Doc ${i}\n\n${token} body number ${i}.\n`,
+          "utf8",
+        );
+      }
+      await store.docsIngest([dir], { source: "single-source-depth", scope: "global" });
+
+      const res = await store.recall(token, { sources: ["doc"], limit: 20 });
+      // 20, not 10: the doc lane alone supplies the whole answer.
+      expect(res.data.length).toBe(20);
+      expect(res.meta.returned).toBe(20);
+      expect(res.data.every((r) => r.sourceType === "doc")).toBe(true);
+      expect(res.meta.bySource?.doc?.returned).toBe(20);
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("recall: limit:40 returns 40 rows, not the sum of sourceCaps (30)", async () => {
+      // The exact ceiling that was measured live. 20 rows per source so the
+      // flat top-40 is genuinely available across three lanes.
+      const token = "zzqfortylimit";
+      for (let i = 0; i < 20; i++) {
+        await store.factsAdd({ fact: `${token} fact ${i}`, category: "ceiling" });
+        await store.sessionsAdd({ summary: `${token} session ${i}`, project: "ceiling" });
+      }
+      const dir = mkdtempSync(join(tmpdir(), "grounded-forty-limit-"));
+      for (let i = 0; i < 20; i++) {
+        writeFileSync(
+          join(dir, `forty-doc-${i}.md`),
+          `# Forty Doc ${i}\n\n${token} body number ${i}.\n`,
+          "utf8",
+        );
+      }
+      await store.docsIngest([dir], { source: "forty-limit", scope: "global" });
+
+      const res = await store.recall(token, { limit: 40 });
+      expect(res.data.length).toBe(40);
+      expect(res.meta.returned).toBe(40);
+      expect(res.meta.limit).toBe(40);
+      // still one flat ranking, monotonic by score
+      for (let i = 1; i < res.data.length; i++) {
+        expect(res.data[i]!.score).toBeLessThanOrEqual(res.data[i - 1]!.score);
+      }
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("recall: a lane's 11th-best row beats a weaker lane's top rows — not a union of per-lane top-10s", async () => {
+      // 15 docs that all outscore 15 facts on the same token. Lexical-only, so
+      // each lane contributes rrf = 1/(60+rank); docs carry the activeStatus
+      // boost (×1.25) and the facts are unpinned with importance PINNED TO 0
+      // (the default is 0.6, which would boost them ×1.6 and invert the setup),
+      // so even the worst doc — 1.25/(60+14) = 0.01689 — beats the best fact —
+      // 1/60 = 0.01667. With the cap applied before the flat rank, limit:20
+      // returned docs 1-10 plus 10 LOWER-scoring facts. The correct answer is
+      // all 15 docs first.
+      const token = "zzqcrosssourcedepth";
+      for (let i = 0; i < 15; i++) {
+        await store.factsAdd({
+          fact: `${token} weaker fact ${i}`,
+          category: "cross-source-depth",
+          importance: 0,
+        });
+      }
+      const dir = mkdtempSync(join(tmpdir(), "grounded-cross-source-depth-"));
+      for (let i = 0; i < 15; i++) {
+        writeFileSync(
+          join(dir, `cross-doc-${i}.md`),
+          `# Cross Doc ${i}\n\n${token} stronger doc body number ${i}.\n`,
+          "utf8",
+        );
+      }
+      await store.docsIngest([dir], { source: "cross-source-depth", scope: "global" });
+
+      const res = await store.recall(token, { sources: ["fact", "doc"], limit: 20 });
+      expect(res.data.length).toBe(20);
+      const docs = res.data.filter((r) => r.sourceType === "doc");
+      const facts = res.data.filter((r) => r.sourceType === "fact");
+      // all 15 docs present — including the ones ranked 11th-15th in their own
+      // lane, which the per-lane cap used to drop.
+      expect(docs.length).toBe(15);
+      expect(facts.length).toBe(5);
+      // and every doc outranks every fact, so the flat order is by score alone
+      const lastDocIdx = res.data.map((r) => r.sourceType).lastIndexOf("doc");
+      const firstFactIdx = res.data.findIndex((r) => r.sourceType === "fact");
+      expect(lastDocIdx).toBeLessThan(firstFactIdx);
+      expect(docs[docs.length - 1]!.score).toBeGreaterThan(facts[0]!.score);
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("recall: an operator-configured sourceCap ABOVE the limit is preserved, not clobbered", async () => {
+      // The widening is Math.max(cap, limit), not `= limit` — a deliberately
+      // widened lane keeps its width. Exercised end-to-end on a second store
+      // over the same database with a raised cap, to prove the config path is
+      // plumbed and recall still cuts at `limit`.
+      const cfg = kase.makeConfig();
+      cfg.recall.sourceCaps = { fact: 40, session: 40, doc: 40 };
+      const wide = await openStore(cfg);
+      try {
+        const token = "zzqwidecapconfig";
+        for (let i = 0; i < 12; i++) {
+          await wide.factsAdd({ fact: `${token} fact ${i}`, category: "wide-cap" });
+        }
+        const res = await wide.recall(token, { sources: ["fact"], limit: 5 });
+        // cap 40 > limit 5: the wider candidate pool is kept, the ANSWER is
+        // still cut at the caller's limit.
+        expect(res.data.length).toBe(5);
+        expect(res.meta.limit).toBe(5);
+        expect(res.meta.bySource?.fact?.available).toBe(12);
+        expect(res.meta.bySource?.fact?.truncated).toBe(true);
+        // and a limit above the raw default still fills
+        const deep = await wide.recall(token, { sources: ["fact"], limit: 12 });
+        expect(deep.data.length).toBe(12);
+      } finally {
+        await wide.close();
+      }
+    });
+
     it("get(typedId) returns full records", async () => {
       const results = (await store.recall("recall fusion")).data;
       expect(results.length).toBeGreaterThan(0);

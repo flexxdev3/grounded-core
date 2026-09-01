@@ -36,11 +36,17 @@ If two lanes both fit, the more specific one wins and the other gets a pointer, 
 ## Read this before your first call
 
 - **Every list endpoint returns an envelope**: \`{ "data": [...], "meta": {...} }\`.
-  \`meta.available\` is the true match count **before** the limit; \`meta.truncated\` tells you
-  whether you are looking at a partial answer. Never infer "no results" from a short array —
+  \`meta.available\` is the match count before the limit was applied, and on \`POST /recall\` it is
+  a **FLOOR, not an exact total** — recall counts matches inside a candidate pool sized from the
+  limit, so the SAME query reports a bigger \`available\` at a bigger limit (limit 1 -> 70,
+  limit 30 -> 182). Read it as "at least this many matched", never as a budget for deciding
+  whether to raise \`limit\`. \`meta.truncated\` tells you whether you are looking at a partial
+  answer. Never infer "no results" from a short array —
   read \`meta\`. Tolerant parse if you may hit older instances: \`(.data? // .)\`.
   On \`POST /recall\`, \`limit\` is a **TOTAL across all sources**, not a per-type quota:
   \`limit: 5\` returns 5 rows in total, and \`meta.bySource[*].returned\` sums to \`meta.returned\`.
+  Any one source may supply the whole answer if it out-scores the others — there is no per-type
+  reservation and no hidden ceiling below the \`limit\` you asked for.
 - **\`scope\` / \`scopes\` mean LANE, not permission.** They partition content by audience.
   \`recall\` and \`brief\` default to \`["global"]\` — passing no scope silently excludes every
   other lane. Scoping is routing, not security: on a self-hosted instance a valid token reads
@@ -99,7 +105,8 @@ POST /recall
 
 Hybrid vector + lexical with reciprocal-rank fusion. Works with embeddings disabled — it
 degrades to lexical, it does not fail. \`limit\` is the total row count you get back, ranked by
-score across facts, sessions, and docs together — raise it if you intend to regroup by type.
+score across facts, sessions, and docs together — one strong source can fill all of it, so raise
+it if you intend to regroup by type and want depth in every group.
 
 ## Before you break something
 

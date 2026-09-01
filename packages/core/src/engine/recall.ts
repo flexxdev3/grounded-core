@@ -106,6 +106,58 @@ export function fuseLane(
   return fused.slice(0, cap);
 }
 
+/**
+ * The per-lane cap `recall()` actually fuses with, given the caller's total
+ * `limit`.
+ *
+ * `sourceCaps` is a RANKING cap on how much of ONE lane may enter the flat
+ * ranking — it must never bound the TOTAL answer. Once `limit` became a total
+ * across sources, applying the raw caps inside `fuseLane` did two wrong things:
+ *
+ *  1. it hard-ceilinged every response at Σ sourceCaps (with the 10/10/10
+ *     default, `limit: 40` and `limit: 60` both returned exactly 30, and
+ *     `sources:["doc"], limit: 30` returned 10);
+ *  2. worse, it made the answer the UNION OF PER-LANE TOP-Ns instead of the
+ *     global top-`limit` — a doc ranked 11th in its lane was dropped even when
+ *     it outscored the 8th-ranked fact, which defeats flat score ranking.
+ *
+ * So raise each cap to at least `limit`: any single lane may supply the whole
+ * answer when it earns it. `Math.max` and not a plain assignment, so an
+ * operator who deliberately configured a cap ABOVE `limit` keeps the wider
+ * candidate pool they asked for — the knob still means something.
+ *
+ * This is the same reasoning `impact()` already applies (caps are a ranking
+ * cap, not a result bound); impact keeps its own stricter `= limit` clone
+ * because a dependency pre-flight is authoritative on `limit` alone.
+ *
+ * The SQL candidate fetch does not need adjusting to match: `laneN` is
+ * `max(limit * 3, 20)`, so it is ≥ `limit` at every limit and grows with it —
+ * a widened fuse-cap can never ask a lane for more candidates than were
+ * fetched.
+ */
+export function effectiveSourceCaps(
+  cfg: GroundedConfig,
+  limit: number,
+): Record<SourceType, number> {
+  const caps = cfg.recall.sourceCaps;
+  return {
+    fact: Math.max(caps.fact, limit),
+    session: Math.max(caps.session, limit),
+    doc: Math.max(caps.doc, limit),
+  };
+}
+
+/** `cfg` with `recall.sourceCaps` widened by `effectiveSourceCaps`. */
+export function withEffectiveSourceCaps(
+  cfg: GroundedConfig,
+  limit: number,
+): GroundedConfig {
+  return {
+    ...cfg,
+    recall: { ...cfg.recall, sourceCaps: effectiveSourceCaps(cfg, limit) },
+  };
+}
+
 /** Exponential recency decay: 1.0 at age 0, 0.5 at one half-life. */
 export function recencyMultiplier(
   createdAt: string | null | undefined,

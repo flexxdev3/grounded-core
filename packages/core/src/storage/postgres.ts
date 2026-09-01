@@ -36,6 +36,7 @@ import {
   fuseLane,
   orderResults,
   rankFlat,
+  withEffectiveSourceCaps,
   type CandidateMeta,
   type FusedItem,
   type LaneHit,
@@ -1069,7 +1070,15 @@ export class PostgresStore implements Store {
   async recall(query: string, opts?: RecallOptions): Promise<ListResult<RecallResult>> {
     const sources: SourceType[] = opts?.sources ?? ["fact", "session", "doc"];
     const limit = opts?.limit ?? 10;
+    // laneN >= 3*limit and >= limit at every limit, so the widened fuse-cap
+    // below can never ask a lane for more candidates than the SQL fetch
+    // supplies — and laneN grows with limit, so large limits need no
+    // adjustment either.
     const laneN = Math.max(limit * 3, 20);
+    // sourceCaps is a per-lane RANKING cap, never a bound on the total answer:
+    // widen it to at least `limit` so one lane can supply the whole flat
+    // top-`limit`. Full rationale on effectiveSourceCaps.
+    const recallCfg = withEffectiveSourceCaps(this.cfg, limit);
     const wantVector =
       !opts?.lexicalOnly && this.vectorActive() && query.trim().length > 0;
     const queryVec = wantVector ? await this.embedOne(query) : null;
@@ -1110,8 +1119,10 @@ export class PostgresStore implements Store {
       const meta = await this.metaFor(st, [...ids], docScopes);
       // `meta.size` is the honest per-source `available`: ids that had a lexical
       // or vector hit AND passed scope/status filtering, computed before the
-      // sourceCaps fusion cap and the global limit below. It is a floor, not an
-      // exact count, when either raw lane saturated `laneN` — see `truncated`.
+      // sourceCaps fusion cap and the global limit below. It is a FLOOR, not an
+      // exact count — see `truncated`. meta.size can never exceed `laneN`, and
+      // laneN grows with `limit`, so the same query reports a larger
+      // `available` at a larger limit. Never read it as "how many more exist".
       const available = meta.size;
       if (st === "fact" || st === "doc") {
         // metaFor already filtered (status='active' for facts, declared scopes for
@@ -1124,8 +1135,9 @@ export class PostgresStore implements Store {
         lex = lex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       }
       // No per-lane `.slice(0, limit)`: `limit` is a total across sources now,
-      // applied once by rankFlat below. sourceCaps still caps inside fuseLane.
-      const laneFused = fuseLane(st, vec, lex, meta, this.cfg);
+      // applied once by rankFlat below. sourceCaps still caps inside fuseLane,
+      // but at `recallCfg`'s effective (>= limit) width — see recallCfg above.
+      const laneFused = fuseLane(st, vec, lex, meta, recallCfg);
       for (const f of laneFused) {
         fused.push(f);
         const m = meta.get(f.id);

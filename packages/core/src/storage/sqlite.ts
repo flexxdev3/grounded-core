@@ -39,6 +39,7 @@ import {
   fuseLane,
   orderResults,
   rankFlat,
+  withEffectiveSourceCaps,
   type CandidateMeta,
   type FusedItem,
   type LaneHit,
@@ -1226,8 +1227,16 @@ export class SqliteStore implements Store {
   async recall(query: string, opts?: RecallOptions): Promise<ListResult<RecallResult>> {
     const sources: SourceType[] = opts?.sources ?? ["fact", "session", "doc"];
     const limit = opts?.limit ?? 10;
+    // laneN >= 3*limit and >= limit at every limit, so the widened fuse-cap
+    // below can never ask a lane for more candidates than the SQL fetch
+    // supplies — and laneN grows with limit, so large limits need no
+    // adjustment either.
     const laneN = Math.max(limit * 3, 20);
     const matchExpr = sanitizeFts(query);
+    // sourceCaps is a per-lane RANKING cap, never a bound on the total answer:
+    // widen it to at least `limit` so one lane can supply the whole flat
+    // top-`limit`. Full rationale on effectiveSourceCaps.
+    const recallCfg = withEffectiveSourceCaps(this.cfg, limit);
 
     const wantVector =
       !opts?.lexicalOnly && this.vectorActive() && query.trim().length > 0;
@@ -1260,8 +1269,9 @@ export class SqliteStore implements Store {
       const vec = rawVec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       const lex = rawLex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       // No per-lane `.slice(0, limit)`: `limit` is a total across sources now,
-      // applied once by rankFlat below. sourceCaps still caps inside fuseLane.
-      const out = fuseLane("fact", vec, lex, meta, this.cfg);
+      // applied once by rankFlat below. sourceCaps still caps inside fuseLane,
+      // but at `recallCfg`'s effective (≥ limit) width — see recallCfg above.
+      const out = fuseLane("fact", vec, lex, meta, recallCfg);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
@@ -1269,7 +1279,10 @@ export class SqliteStore implements Store {
       }
       // available = meta.size: ids that had a lexical or vector hit AND passed
       // scope/status filtering, computed before the sourceCaps fuse-cap and the
-      // global limit. No extra query — meta is already fetched.
+      // global limit. No extra query — meta is already fetched. It is a FLOOR,
+      // not an exact count: meta.size can never exceed laneN, which grows with
+      // `limit`, so the same query reports a larger `available` at a larger
+      // limit. Never treat it as "how many more rows exist".
       laneStats.fact = {
         available: meta.size,
         laneSaturated: rawVec.length >= laneN || rawLex.length >= laneN,
@@ -1296,7 +1309,7 @@ export class SqliteStore implements Store {
           : rawVec;
       const ids = unionIds(filteredVec, rawLex);
       const meta = this.sessionsMeta(ids);
-      const out = fuseLane("session", filteredVec, rawLex, meta, this.cfg);
+      const out = fuseLane("session", filteredVec, rawLex, meta, recallCfg);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
@@ -1323,7 +1336,7 @@ export class SqliteStore implements Store {
       // dominated by out-of-scope docs can return fewer than `limit` in-scope hits.
       const vec = rawVec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       const lex = rawLex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
-      const out = fuseLane("doc", vec, lex, meta, this.cfg);
+      const out = fuseLane("doc", vec, lex, meta, recallCfg);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);

@@ -6,6 +6,8 @@ import {
   recencyMultiplier,
   orderResults,
   rankFlat,
+  effectiveSourceCaps,
+  withEffectiveSourceCaps,
   type CandidateMeta,
   type FusedItem,
 } from "./recall.js";
@@ -51,6 +53,12 @@ describe("fuseLane", () => {
     expect(f1.score).toBeCloseTo((1 / 60) * 1.5 * 2);
   });
 
+  // NOTE (effective-cap change): fuseLane still honours whatever cap the
+  // config it is handed carries — this test is unchanged and still guards
+  // that. What changed is upstream: recall() no longer hands fuseLane the raw
+  // config, it hands `withEffectiveSourceCaps(cfg, limit)`, so the cap can
+  // never sit below the caller's total limit. impact() still hands its own
+  // stricter `= limit` clone. See effectiveSourceCaps' doc comment.
   it("respects source caps", () => {
     const small = defaultConfig("/tmp/x");
     small.recall.sourceCaps.doc = 1;
@@ -70,6 +78,51 @@ describe("fuseLane", () => {
     );
     expect(out).toHaveLength(1);
     expect(out[0]!.id).toBe(1);
+  });
+});
+
+describe("effectiveSourceCaps", () => {
+  it("raises every cap that sits below the caller's total limit", () => {
+    // The measured defect: with the 10/10/10 default, limit:40 returned 30 —
+    // an undocumented ceiling at the sum of the caps — and the answer was the
+    // union of per-lane top-10s rather than the global top-40.
+    const cfg = defaultConfig("/tmp/x");
+    expect(effectiveSourceCaps(cfg, 40)).toEqual({ fact: 40, session: 40, doc: 40 });
+    // single-source recall: one lane must be able to fill the whole answer
+    expect(effectiveSourceCaps(cfg, 30).doc).toBe(30);
+  });
+
+  it("preserves an explicitly-configured cap that is ABOVE the limit", () => {
+    // The knob still means something: an operator who widened a lane's
+    // candidate pool keeps that width, it is not overwritten with `limit`.
+    const cfg = defaultConfig("/tmp/x");
+    cfg.recall.sourceCaps = { fact: 50, session: 10, doc: 25 };
+    expect(effectiveSourceCaps(cfg, 20)).toEqual({ fact: 50, session: 20, doc: 25 });
+  });
+
+  it("leaves caps alone when they already equal the limit, and never mutates cfg", () => {
+    const cfg = defaultConfig("/tmp/x");
+    const widened = withEffectiveSourceCaps(cfg, 40);
+    expect(widened.recall.sourceCaps).toEqual({ fact: 40, session: 40, doc: 40 });
+    // the source config is untouched — recall() must not leak a widened cap
+    // into the store's long-lived cfg (or into impact()).
+    expect(cfg.recall.sourceCaps).toEqual({ fact: 10, session: 10, doc: 10 });
+    expect(widened.recall.boosts).toEqual(cfg.recall.boosts);
+    expect(widened.recall.rrfK).toBe(cfg.recall.rrfK);
+  });
+
+  it("a widened cfg lets one lane put more than the raw cap into the ranking", () => {
+    const cfg = defaultConfig("/tmp/x");
+    const meta = new Map<number, CandidateMeta>();
+    const vec: { id: number; rank: number }[] = [];
+    for (let i = 0; i < 20; i++) {
+      meta.set(i, { sourceType: "doc", id: i, active: true });
+      vec.push({ id: i, rank: i });
+    }
+    // raw config: capped at the 10/10/10 default
+    expect(fuseLane("doc", vec, [], meta, cfg)).toHaveLength(10);
+    // what recall() actually passes at limit:20
+    expect(fuseLane("doc", vec, [], meta, withEffectiveSourceCaps(cfg, 20))).toHaveLength(20);
   });
 });
 
