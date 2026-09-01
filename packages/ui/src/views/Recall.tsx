@@ -38,6 +38,11 @@ export function RecallView() {
       const src = [...sources];
       const proj = scoped && project ? project : undefined;
       const res = await api.recall(q.trim(), {
+        // `limit` is a TOTAL across sources (not a per-lane quota), and this
+        // view regroups the flat answer into per-source sections — the default
+        // of 10 would leave each section with a handful of rows. Ask for a
+        // lane-sized total instead.
+        limit: 30,
         sources: src.length === ALL_SOURCES.length ? undefined : src,
         lexicalOnly,
         project: proj,

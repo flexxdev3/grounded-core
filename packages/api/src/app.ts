@@ -97,6 +97,21 @@ function optNumber(v: unknown, field: string): number | undefined {
   return v;
 }
 
+/**
+ * importance is a 0..1 weight: recall multiplies score by (1 + boost * importance)
+ * and the brief orders by `importance desc`. An out-of-range value silently
+ * outranks every other fact — including pinned ones — so reject it at the edge
+ * rather than storing a ranking hijack.
+ */
+function optUnitNumber(v: unknown, field: string): number | undefined {
+  const n = optNumber(v, field);
+  if (n === undefined) return undefined;
+  if (n < 0 || n > 1) {
+    throw new ValidationError(`"${field}" must be between 0 and 1 (got ${n})`);
+  }
+  return n;
+}
+
 const FACT_STATUSES = ["active", "archived"] as const;
 
 function optFactStatus(v: unknown, field: string): FactStatus | undefined {
@@ -180,7 +195,7 @@ function factInput(body: unknown): FactInput {
     detail: optString(body.detail, "detail"),
     topicKey: optString(body.topicKey, "topicKey"),
     pinned: optBool(body.pinned, "pinned"),
-    importance: optNumber(body.importance, "importance"),
+    importance: optUnitNumber(body.importance, "importance"),
     status: optFactStatus(body.status, "status"),
     origin: optFactOrigin(body.origin, "origin"),
     createdBy: optString(body.createdBy, "createdBy"),
@@ -198,7 +213,7 @@ function factPatch(body: unknown): Partial<FactInput> {
   if (body.detail !== undefined) patch.detail = optString(body.detail, "detail");
   if (body.topicKey !== undefined) patch.topicKey = optString(body.topicKey, "topicKey");
   if (body.pinned !== undefined) patch.pinned = optBool(body.pinned, "pinned");
-  if (body.importance !== undefined) patch.importance = optNumber(body.importance, "importance");
+  if (body.importance !== undefined) patch.importance = optUnitNumber(body.importance, "importance");
   if (body.status !== undefined) patch.status = optFactStatus(body.status, "status");
   if (body.origin !== undefined) patch.origin = optFactOrigin(body.origin, "origin");
   if (body.createdBy !== undefined) patch.createdBy = optString(body.createdBy, "createdBy");
@@ -315,6 +330,10 @@ export function createApp(
       rankInfo.ofActive,
       typicalFactLimit,
       pinnedReserve,
+      // terseness check on the text the writer actually controls. Both POST
+      // and PATCH route through here, so an over-long fact is flagged on the
+      // write that introduced it and the flag clears when it's shortened.
+      fact.fact,
     );
     return { ...fact, delivery };
   }

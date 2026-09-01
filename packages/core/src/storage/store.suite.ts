@@ -626,7 +626,7 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.docsPrune({ remove: true });
     });
 
-    it("recall: lexical-only returns cited cards, facts before docs, no private", async () => {
+    it("recall: lexical-only returns cited cards ranked by score, no private", async () => {
       await store.factsAdd({
         fact: "recall fuses vector and lexical lanes with RRF",
         category: "recall",
@@ -640,11 +640,106 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
         expect(r.matchedBy).toBe("lexical");
         expect(r.snippet).not.toMatch(/should be stripped/i);
       }
-      // facts tier comes before docs tier
+      // Answer order is the fused score, flat across sources — a source tier no
+      // longer floats a weak fact above a strong doc, so the invariant to hold
+      // is monotonicity, not "facts first".
+      for (let i = 1; i < results.length; i++) {
+        expect(results[i]!.score).toBeLessThanOrEqual(results[i - 1]!.score);
+      }
+    });
+
+    it("recall: limit is a total across sources, not a per-lane quota", async () => {
+      // D1 regression: the old code sliced each lane to `limit` and concatenated,
+      // so limit:5 over three populated lanes returned 15 rows and a caller
+      // reading the top 5 saw facts only.
+      for (let i = 0; i < 6; i++) {
+        await store.factsAdd({
+          fact: `zzqtotallimit fact number ${i}`,
+          category: "limits",
+          importance: 0.5,
+        });
+        await store.sessionsAdd({
+          summary: `zzqtotallimit session number ${i}`,
+          project: "limits",
+        });
+      }
+      const dir = mkdtempSync(join(tmpdir(), "grounded-limit-"));
+      for (let i = 0; i < 6; i++) {
+        writeFileSync(
+          join(dir, `limit-doc-${i}.md`),
+          `# Limit Doc ${i}\n\nzzqtotallimit doc body number ${i}.\n`,
+          "utf8",
+        );
+      }
+      await store.docsIngest([dir], { source: "limit-total", scope: "global" });
+
+      const res = await store.recall("zzqtotallimit", { limit: 5 });
+      expect(res.data.length).toBe(5);
+      expect(res.meta.returned).toBe(5);
+      expect(res.meta.limit).toBe(5);
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("recall: a strongly-matching doc outranks weakly-matching sessions", async () => {
+      // D2 regression: ordering used to tier by source before score, so a doc
+      // could ship below sessions it beat on the fused score.
+      for (let i = 0; i < 3; i++) {
+        await store.sessionsAdd({
+          summary: `weak mention of zzqrankdoc in passing number ${i}`,
+          project: "ranking",
+        });
+      }
+      const dir = mkdtempSync(join(tmpdir(), "grounded-rank-"));
+      writeFileSync(
+        join(dir, "strong.md"),
+        "# zzqrankdoc\n\nzzqrankdoc zzqrankdoc zzqrankdoc — the definitive zzqrankdoc reference.\n",
+        "utf8",
+      );
+      await store.docsIngest([dir], { source: "rank-doc", scope: "global" });
+
+      const results = (await store.recall("zzqrankdoc", { limit: 10 })).data;
       const firstDoc = results.findIndex((r) => r.sourceType === "doc");
-      const firstFact = results.findIndex((r) => r.sourceType === "fact");
-      if (firstDoc >= 0 && firstFact >= 0) {
-        expect(firstFact).toBeLessThan(firstDoc);
+      const firstSession = results.findIndex((r) => r.sourceType === "session");
+      expect(firstDoc).toBeGreaterThanOrEqual(0);
+      expect(firstSession).toBeGreaterThanOrEqual(0);
+      // assert via scores, not absolute positions: the doc must beat at least
+      // one session, and the whole list must stay monotonic.
+      expect(results[firstDoc]!.score).toBeGreaterThanOrEqual(
+        results[results.length - 1]!.score,
+      );
+      expect(firstDoc).toBeLessThan(results.length - 1);
+      for (let i = 1; i < results.length; i++) {
+        expect(results[i]!.score).toBeLessThanOrEqual(results[i - 1]!.score);
+      }
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("recall: bySource.returned is counted post-limit and sums to meta.returned", async () => {
+      for (let i = 0; i < 4; i++) {
+        await store.factsAdd({
+          fact: `zzqbysourcesum fact ${i}`,
+          category: "accounting",
+          importance: 0.5,
+        });
+        await store.sessionsAdd({
+          summary: `zzqbysourcesum session ${i}`,
+          project: "accounting",
+        });
+      }
+      const res = await store.recall("zzqbysourcesum", { limit: 3 });
+      expect(res.meta.returned).toBe(3);
+      const bySource = res.meta.bySource!;
+      const sum = Object.values(bySource).reduce((n, s) => n + (s?.returned ?? 0), 0);
+      expect(sum).toBe(res.meta.returned);
+      for (const st of ["fact", "session", "doc"] as const) {
+        const entry = bySource[st];
+        if (!entry) continue;
+        const inData = res.data.filter((r) => r.sourceType === st).length;
+        expect(entry.returned).toBe(inData);
       }
     });
 

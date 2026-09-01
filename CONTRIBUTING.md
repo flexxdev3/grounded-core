@@ -93,7 +93,8 @@ register it in `createEmbeddingProvider`.
 **2. Storage / index** — the `Store` repository interface over vision/facts/sessions/docs plus hybrid
 recall. Existing: SQLite (`sqlite-vec` + FTS5, single file, default) and Postgres (pgvector +
 tsvector). A new adapter must pass the shared `store.suite.ts` unchanged, including recall ordering
-(facts → recent sessions → active docs → historical docs) and RRF ranking. Recall logic that is
+(one flat list, fused score descending, `limit` a total across sources) and RRF ranking. The tiered
+facts → sessions → active docs → historical docs order survives in `impact()` only. Recall logic that is
 portable stays in the engine; only index primitives are per-adapter.
 
 **3. Agent integration** — how a tool talks to a running Grounded service: MCP, HTTP API, hooks, or

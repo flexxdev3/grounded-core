@@ -97,6 +97,27 @@ describe("@grounded/api fact status", () => {
     expect(created.importance).toBe(0.6);
   });
 
+  // Measured 2026-08-31: two live facts stored importance 4, which multiplies
+  // recall score by 5 (vs 1.6-1.95 normal) and sorts above pinned in the brief.
+  it("rejects importance outside 0..1 on POST and PATCH /facts", async () => {
+    for (const bad of [4, -0.5, 1.01]) {
+      const res = await post("/facts", { fact: `imp ${bad}`, importance: bad });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/between 0 and 1/);
+    }
+
+    const ok = await post("/facts", { fact: "clamped", importance: 1 });
+    expect(ok.status).toBe(201);
+    const { id } = await ok.json();
+
+    const patched = await app.request(`/facts/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ importance: 4 }),
+    });
+    expect(patched.status).toBe(400);
+  });
+
   it("rejects an invalid status query on GET /facts", async () => {
     const res = await get("/facts?status=bogus");
     expect(res.status).toBe(400);
@@ -475,6 +496,45 @@ describe("@grounded/api delivery envelope", () => {
     expect(body.meta.bySource?.fact).toBeTruthy();
     expect(body.meta.bySource.fact.returned).toBe(5);
     expect(body.meta.bySource.fact.available).toBe(5);
+  });
+
+  it("POST /recall: limit is a total across sources, ranked by score", async () => {
+    // HTTP-level D1 regression: the old per-lane slice returned limit*sources
+    // rows, so a caller asking for 5 across two populated lanes got 10.
+    const token = "zzqhttptotallimit";
+    for (let i = 0; i < 4; i++) {
+      await post("/facts", { fact: `${token} fact number ${i}`, scope: "global" });
+      await post("/sessions", { summary: `${token} session number ${i}`, project: "limits" });
+    }
+    const res = await post("/recall", { query: token, limit: 5 });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.length).toBe(5);
+    expect(body.meta.returned).toBe(5);
+    expect(body.meta.limit).toBe(5);
+    for (let i = 1; i < body.data.length; i++) {
+      expect(body.data[i].score).toBeLessThanOrEqual(body.data[i - 1].score);
+    }
+    const sum = Object.values(body.meta.bySource as Record<string, { returned: number }>).reduce(
+      (n, e) => n + e.returned,
+      0,
+    );
+    expect(sum).toBe(body.meta.returned);
+  });
+
+  it("POST /facts warns on an over-long fact but still returns 200 (warning, not rejection)", async () => {
+    const long = "z".repeat(300);
+    const res = await post("/facts", { fact: long, scope: "length-test" });
+    // explicitly the normal create status, NOT 400 — the 400 lane is for
+    // malformed input (see the importance guard), not a verbose fact.
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.delivery.warning).toMatch(/chars/);
+
+    const shortened = await patch(`/facts/${body.id}`, { fact: "z".repeat(50) });
+    expect(shortened.status).toBe(200);
+    const after = await shortened.json();
+    expect(after.delivery?.warning ?? "").not.toMatch(/chars/);
   });
 
   it("POST /facts returns delivery.rank/ofActive for a fresh unpinned fact in an empty scope", async () => {

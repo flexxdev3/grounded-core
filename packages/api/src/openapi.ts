@@ -237,7 +237,8 @@ export const openApiDocument = {
           },
           bySource: {
             type: "object",
-            description: "POST /recall only: per-source-type breakdown.",
+            description:
+              "POST /recall only: per-source-type breakdown. `returned` is counted after the global limit is applied (recall's `limit` is a total across sources), so the per-source `returned` values always sum to `meta.returned`. `available` is the pre-limit candidate count for that lane.",
             properties: {
               fact: { $ref: "#/components/schemas/DeliveryMetaBySourceEntry" },
               session: { $ref: "#/components/schemas/DeliveryMetaBySourceEntry" },
@@ -807,7 +808,11 @@ export const openApiDocument = {
                 required: ["query"],
                 properties: {
                   query: { type: "string" },
-                  limit: { type: "integer" },
+                  limit: {
+                    type: "integer",
+                    description:
+                      "Total number of results across all sources (default 10). Not a per-source quota — results are ranked flat by fused score and cut once.",
+                  },
                   project: { type: "string" },
                   workspace: {
                     type: "string",
@@ -833,7 +838,7 @@ export const openApiDocument = {
         responses: {
           "200": {
             description:
-              "Recall result cards, plus delivery accounting including a per-source-type breakdown (meta.bySource).",
+              "Recall result cards ordered by fused score descending across all source types, plus delivery accounting including a per-source-type breakdown (meta.bySource).",
             content: {
               "application/json": {
                 schema: {

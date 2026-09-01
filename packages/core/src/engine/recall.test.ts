@@ -5,6 +5,7 @@ import {
   fuseLane,
   recencyMultiplier,
   orderResults,
+  rankFlat,
   type CandidateMeta,
   type FusedItem,
 } from "./recall.js";
@@ -81,7 +82,7 @@ describe("recencyMultiplier", () => {
   });
 });
 
-describe("orderResults", () => {
+describe("orderResults (impact ordering)", () => {
   it("orders facts → sessions → active docs → historical docs", () => {
     const items: FusedItem[] = [
       { sourceType: "doc", id: 10, score: 0.9, matchedBy: "vector" },
@@ -100,5 +101,58 @@ describe("orderResults", () => {
       "doc:11",
       "doc:10",
     ]);
+  });
+});
+
+describe("rankFlat (recall ordering)", () => {
+  it("puts a strongly-scoring doc above weaker sessions", () => {
+    // The measured defect: a doc at 0.0417 shipped at position 21, below
+    // sessions scoring 0.0080, because the old order tiered before scoring.
+    const items: FusedItem[] = [
+      { sourceType: "session", id: 5, score: 0.008, matchedBy: "lexical" },
+      { sourceType: "session", id: 6, score: 0.008, matchedBy: "lexical" },
+      { sourceType: "doc", id: 10, score: 0.0417, matchedBy: "both" },
+    ];
+    const meta = new Map<string, CandidateMeta>([
+      ["doc:10", { sourceType: "doc", id: 10, active: true }],
+    ]);
+    const ranked = rankFlat(items, meta);
+    expect(ranked.map((o) => `${o.sourceType}:${o.id}`)).toEqual([
+      "doc:10",
+      "session:5",
+      "session:6",
+    ]);
+  });
+
+  it("breaks exact score ties by tier then id, whatever the input order", () => {
+    const items: FusedItem[] = [
+      { sourceType: "doc", id: 10, score: 1 / 60, matchedBy: "lexical" },
+      { sourceType: "session", id: 5, score: 1 / 60, matchedBy: "lexical" },
+      { sourceType: "fact", id: 3, score: 1 / 60, matchedBy: "lexical" },
+      { sourceType: "fact", id: 1, score: 1 / 60, matchedBy: "lexical" },
+    ];
+    const meta = new Map<string, CandidateMeta>([
+      ["doc:10", { sourceType: "doc", id: 10, active: true }],
+    ]);
+    const ranked = rankFlat(items, meta);
+    expect(ranked.map((o) => `${o.sourceType}:${o.id}`)).toEqual([
+      "fact:1",
+      "fact:3",
+      "session:5",
+      "doc:10",
+    ]);
+  });
+
+  it("sorts an archived doc below an active doc at the same score", () => {
+    const items: FusedItem[] = [
+      { sourceType: "doc", id: 10, score: 0.5, matchedBy: "vector" },
+      { sourceType: "doc", id: 11, score: 0.5, matchedBy: "vector" },
+    ];
+    const meta = new Map<string, CandidateMeta>([
+      ["doc:10", { sourceType: "doc", id: 10, active: false }],
+      ["doc:11", { sourceType: "doc", id: 11, active: true }],
+    ]);
+    const ranked = rankFlat(items, meta);
+    expect(ranked.map((o) => o.id)).toEqual([11, 10]);
   });
 });

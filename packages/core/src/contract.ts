@@ -191,6 +191,12 @@ export interface DeliveryMeta {
    * indexed fact is NOT in `droppedItems` (it survived, just compressed) —
    * see `BriefResult.indexedItems`. */
   indexed?: number;
+  /** POST /recall only: per-source-type breakdown. `returned` is counted AFTER
+   * the global limit cut (recall's `limit` is a total across sources), so
+   * Σ bySource[*].returned === meta.returned always — MCP's meta line and the
+   * console's chips render that sum literally. `available` is the pre-limit
+   * candidate count for that lane, so `truncated` fires whenever the lane had
+   * more to give or saturated its candidate window. */
   bySource?: Partial<Record<SourceType, { returned: number; available: number; truncated: boolean }>>;
 }
 

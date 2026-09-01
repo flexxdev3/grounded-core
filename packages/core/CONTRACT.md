@@ -78,8 +78,13 @@ Given a query string:
    - facts: `× boosts.pinned` if pinned; `× (1 + boosts.importance × importance)`.
    - sessions: recency decay using `boosts.recencyHalfLifeDays` (newer ranks higher).
    - docs: `× boosts.activeStatus` for active vs archived.
-5. Apply **source caps** (`sourceCaps[type]`) so one source type can't dominate.
-6. **Final answer order**: facts → recent sessions → active docs → historical docs. Within a tier, by score.
+5. Apply **source caps** (`sourceCaps[type]`) — a per-lane RANKING cap inside fusion, applied before the
+   global limit, so one source type can't dominate the candidate pool.
+6. **Final answer order**: one flat list, fused score descending, across all source types. Ties (RRF
+   scores tie exactly) break by tier — facts → sessions → active docs → historical docs — then by id, so
+   the order is deterministic across adapters. `RecallOptions.limit` is therefore a **total across
+   sources**, not a per-lane quota: asking for 5 returns the 5 best rows, whatever they are. Grouping
+   into per-source sections is the caller's job.
 7. Return compact `RecallResult` cards (no full bodies). Full record via `Store.get(typedId)`.
 
 If embeddings are disabled/unavailable, run lexical-only and set `matchedBy="lexical"`. Never error
@@ -103,6 +108,9 @@ not a natural-language query.
 - `meta.available` counts withheld hits too — hiding them would be the exact silent-omission defect this
   contract exists to prevent.
 - `limit` is authoritative and overrides `recall.sourceCaps` for impact only (default 20, vs recall's 10).
+- **Keeps the tiered answer order** (`orderResults`: facts → sessions → active docs → historical docs,
+  score desc within a tier) that `recall()` dropped in favour of a flat score ranking. A dependency
+  pre-flight is read by category — "what facts / sessions / docs depend on this?" — not as a top-N list.
 - Citations are chunk-grained (`doc:{source}/{path}#chunk{N}`) — no line numbers.
 
 ## Progressive disclosure (MCP especially)

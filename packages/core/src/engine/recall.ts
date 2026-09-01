@@ -120,8 +120,43 @@ export function recencyMultiplier(
 }
 
 /**
- * Final cross-source ordering: facts → recent sessions → active docs →
- * historical docs. Within a tier, by score descending.
+ * Recall's answer order: one flat list ranked by fused score, descending —
+ * the top of the list is the best match regardless of which source it came
+ * from. `limit` is therefore a TOTAL across sources, not a per-lane quota, and
+ * grouping into fact/session/doc sections is the caller's job (the UI regroups
+ * client-side; MCP renders flat).
+ *
+ * The tier/id tiebreak is not cosmetic: RRF scores tie exactly (1/60 for a
+ * single lane hit at rank 0), and lane insertion order differs between adapters
+ * (sqlite hardcodes fact→session→doc, postgres iterates the caller's `sources`),
+ * so without a deterministic tiebreak the shared store suite flakes across
+ * adapters. Tier shape matches `orderResults` — which stays impact-only.
+ */
+export function rankFlat(
+  items: FusedItem[],
+  meta: Map<string, CandidateMeta>,
+): FusedItem[] {
+  function tier(it: FusedItem): number {
+    if (it.sourceType === "fact") return 0;
+    if (it.sourceType === "session") return 1;
+    const m = meta.get(`${it.sourceType}:${it.id}`);
+    return m?.active === false ? 3 : 2;
+  }
+  return [...items].sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    const ta = tier(a);
+    const tb = tier(b);
+    if (ta !== tb) return ta - tb;
+    return a.id - b.id;
+  });
+}
+
+/**
+ * Impact-only cross-source ordering: facts → recent sessions → active docs →
+ * historical docs. Within a tier, by score descending. `recall()` uses
+ * `rankFlat` above; a dependency pre-flight keeps the sectioned model because
+ * the reader is scanning categories ("what facts / what sessions / what docs
+ * depend on this?"), not reading a top-N list.
  */
 export function orderResults(
   items: FusedItem[],

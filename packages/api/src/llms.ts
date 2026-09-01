@@ -39,6 +39,8 @@ If two lanes both fit, the more specific one wins and the other gets a pointer, 
   \`meta.available\` is the true match count **before** the limit; \`meta.truncated\` tells you
   whether you are looking at a partial answer. Never infer "no results" from a short array —
   read \`meta\`. Tolerant parse if you may hit older instances: \`(.data? // .)\`.
+  On \`POST /recall\`, \`limit\` is a **TOTAL across all sources**, not a per-type quota:
+  \`limit: 5\` returns 5 rows in total, and \`meta.bySource[*].returned\` sums to \`meta.returned\`.
 - **\`scope\` / \`scopes\` mean LANE, not permission.** They partition content by audience.
   \`recall\` and \`brief\` default to \`["global"]\` — passing no scope silently excludes every
   other lane. Scoping is routing, not security: on a self-hosted instance a valid token reads
@@ -57,6 +59,9 @@ If two lanes both fit, the more specific one wins and the other gets a pointer, 
   - \`snippet\` -> short matched excerpt
   - \`path\` / \`source\` -> doc path / session project / fact scope (nullable)
   - \`createdAt\` / \`updatedAt\` -> nullable timestamps
+- **Recall results are ordered by \`score\` descending across all types** — one ranked list, not
+  fact/session/doc sections. Read \`score\`, not position-within-a-type; a doc can legitimately be
+  row 1. If you want lanes, regroup client-side by \`sourceType\` after reading the list.
 - **Ingest paths must be absolute on the server's filesystem.** A relative path or \`~\` returns
   \`scanned: 0\` with no error. If you get zero, check the path before checking anything else.
 - Auth, when configured, is one bearer token: \`Authorization: Bearer <token>\`.
@@ -93,7 +98,8 @@ POST /recall
 \`\`\`
 
 Hybrid vector + lexical with reciprocal-rank fusion. Works with embeddings disabled — it
-degrades to lexical, it does not fail.
+degrades to lexical, it does not fail. \`limit\` is the total row count you get back, ranked by
+score across facts, sessions, and docs together — raise it if you intend to regroup by type.
 
 ## Before you break something
 

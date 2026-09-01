@@ -19,6 +19,18 @@ export { pinnedFactsReserveStatus } from "./brief.js";
 const PINNED_RESERVE_WARN_RATIO = 0.75;
 
 /**
+ * Char budget above which a fact's text earns a terseness warning. 200, not a
+ * rounder 250, because that is the operator's hard rule for fact text: a fact
+ * reads as ONE line, and the explanation belongs in `detail`.
+ *
+ * Measured on `fact.fact` alone, never the rendered brief line — the writer
+ * controls the text, not the `- ` bullet, the ` — detail` tail, or the
+ * ` (fact:NN)` citation the renderer wraps around it, so warning about the
+ * rendered length would name a number they cannot act on.
+ */
+const FACT_TEXT_WARN_CHARS = 200;
+
+/**
  * Turn a raw (rank, ofActive) pair into the caller-facing delivery signal.
  * `typicalLimit` mirrors `config.delivery.typicalFactLimit`, which itself
  * mirrors the hardcoded `FACTS_LIMIT=8` in the live SessionStart hook
@@ -33,12 +45,18 @@ const PINNED_RESERVE_WARN_RATIO = 0.75;
  * engine/brief.ts). This is deliberately the same function/shape rather than
  * a parallel mechanism — one write-time delivery signal, two things it can
  * warn about. Both warnings can fire together; they're joined, not replaced.
+ *
+ * `factText`, when supplied, layers a THIRD independent check in the same
+ * shape: the fact's own text length against the one-line terseness rule. Like
+ * the others it is a warning, never a rejection — the 400 lane is for
+ * malformed input, and a long fact is merely a worse fact.
  */
 export function computeDeliveryRank(
   rank: number,
   ofActive: number,
   typicalLimit: number,
   pinnedReserve?: { renderedChars: number; reserveChars: number },
+  factText?: string,
 ): DeliveryRank {
   const delivered = rank <= typicalLimit;
   const warnings: string[] = [];
@@ -54,6 +72,12 @@ export function computeDeliveryRank(
           `non-pinned facts may be crowded out of the brief`,
       );
     }
+  }
+  if (factText !== undefined && factText.length > FACT_TEXT_WARN_CHARS) {
+    warnings.push(
+      `fact text is ${factText.length} chars — facts should read as one line ` +
+        `(≤${FACT_TEXT_WARN_CHARS}); move the explanation into \`detail\``,
+    );
   }
   return warnings.length > 0
     ? { rank, ofActive, delivered, warning: warnings.join("; ") }

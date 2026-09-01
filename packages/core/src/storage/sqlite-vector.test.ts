@@ -61,6 +61,9 @@ describe("sqlite vector lane (fake embedder)", () => {
     const results = (await store.recall("hybrid recall reciprocal rank fusion")).data;
     expect(results.length).toBeGreaterThan(0);
     const top = results[0]!;
+    // Single-source store (facts only, no sessions or docs seeded), so the flat
+    // score ranking cannot put anything else on top — this asserts the vector
+    // path fired, not a source ordering.
     expect(top.sourceType).toBe("fact");
     // matched in both vector and lexical lanes
     expect(["both", "vector", "lexical"]).toContain(top.matchedBy);

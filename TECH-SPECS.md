@@ -322,18 +322,26 @@ Dim is recorded with the store; switching models is an explicit re-embed (CONTRA
 
 Concrete code path. Semantics/ordering rationale → CONTRACT.md §"Hybrid recall".
 
-- **RRF** (`recall.ts:40-42`): `rrf(k, rank) = 1 / (k + rank)`, k from `recall.rrfK` (default 60).
-- **fuseLane** (`recall.ts:48-101`): accumulate `score += rrf(k, rank)` across the vector lane then the
+- **RRF** (`recall.ts:44-48`): `rrf(k, rank) = 1 / (k + rank)`, k from `recall.rrfK` (default 60).
+- **fuseLane** (`recall.ts:50-107`): accumulate `score += rrf(k, rank)` across the vector lane then the
   lexical lane per item; `inVec`/`inLex` flags set `matchedBy` (`both` when in both).
-- **Boosts** (`recall.ts:79-91`):
+- **Boosts** (`recall.ts:85-97`):
   - facts: `× boosts.pinned` if pinned (1.5); `× (1 + boosts.importance × importance)`.
   - sessions: `× recencyMultiplier(createdAt, halfLifeDays, now)`.
   - docs: `× boosts.activeStatus` (1.25) if active; no boost otherwise.
-- **recencyMultiplier** (`recall.ts:104-114`): `0.5 ^ (ageDays / halfLifeDays)` — equals 0.5 at one
+- **recencyMultiplier** (`recall.ts:109-120`): `0.5 ^ (ageDays / halfLifeDays)` — equals 0.5 at one
   half-life (default 30d); returns 1 for missing/invalid dates or `halfLifeDays ≤ 0`.
-- **Source caps** (`recall.ts:99-100`): `fused.slice(0, sourceCaps[type])`.
-- **Final order** (`orderResults`, `recall.ts:120-136`): tier 0 facts → 1 sessions → 2 active docs →
-  3 archived/missing docs; within a tier, score desc.
+- **Source caps** (`recall.ts:104-106`): `fused.slice(0, sourceCaps[type])` — a per-lane RANKING cap
+  inside fusion, applied before the global limit, not a share of the answer.
+- **Recall answer order** (`rankFlat`, `recall.ts:122-153`): one flat list, fused score desc across all
+  source types, then `.slice(0, limit)` once in the adapter — `RecallOptions.limit` is a TOTAL across
+  sources, not a per-lane quota. Exact RRF ties (`1/60`) break by tier (0 facts → 1 sessions → 2 active
+  docs → 3 archived/missing docs) then by id, because lane insertion order differs between adapters.
+- **`orderResults` (`recall.ts:155-181`) is impact-only**: tier first, score within tier. `recall()` no
+  longer calls it; `impact()` still does, because a dependency pre-flight is read by category.
+- **`meta.bySource[*].returned` is counted post-limit**, so `Σ returned === meta.returned`. sqlite counts
+  the sliced ranking directly; postgres counts its hydrated rows, because its async `toRecallResult` can
+  return null and it backfills past those to fill `limit`.
 - **Archived facts are excluded from recall entirely**, not demoted — both adapters filter fact
   candidates to `status='active'` before fusion/ranking. `archived` means *no longer true*, so it must
   not surface as truth; an archived fact stays reachable via `ground_get` / `factsGet` /
@@ -371,7 +379,7 @@ The API rejects an unknown zone with a 400; the engine itself falls back to the 
 than failing a whole brief assembly over one date.
 
 - **`recall()`** (`RecallOptions.scopes`) and **`brief()`** (`BriefOptions.docScopes`) filter the doc lane
-  and both default to `['global']` when the caller passes nothing (sqlite.ts:1190, mirrored in postgres.ts).
+  and both default to `['global']` when the caller passes nothing (sqlite.ts:1315, mirrored in postgres.ts).
   A caller that wants an extra lane must declare **both**: `["global","administration"]`. Declaring only
   `["administration"]` drops the default engineering corpus out of recall/brief entirely — this is the
   single most likely caller mistake.
@@ -728,17 +736,20 @@ hooks → grounded-mcp `tools/list`.
 | openai default | `text-embedding-3-small` / 1536 | `embedding/openai.ts:5-7` |
 | indexable exts | `.md .markdown .mdx .txt` | `ingest/walker.ts:15` |
 | default doc scope (lane) | `"global"` | `contract.ts:464`, `migrations/{sqlite,postgres}.ts` |
-| default recall/brief doc scopes | `["global"]` | `sqlite.ts:1190` (mirrored postgres.ts), §6.1 |
-| default impact scopes (content) | `["global"]` | `sqlite.ts:1246` (mirrored postgres.ts), §6.2 |
-| impact default limit | `20` (vs recall's `10`) | `contract.ts:331-332`, `sqlite.ts:1243` |
+| default recall/brief doc scopes | `["global"]` | `sqlite.ts:1315` (mirrored postgres.ts), §6.1 |
+| default impact scopes (content) | `["global"]` | `sqlite.ts:1384` (mirrored postgres.ts), §6.2 |
+| impact default limit | `20` (vs recall's `10`) | `contract.ts:331-332`, `sqlite.ts:1381` |
 | brief reserve (vision/facts/sessions) | `400` / `900` / `500` tok | `config.ts:43` |
 | brief default fact category floors | `commit-rule:1, convention:2, playbook:1` | `config.ts:44` |
 | brief preamble reserve (fixed, not configurable) | `200` tok | `brief.ts:78` |
 | typical fact delivery limit | `8` (mirrors hook `FACTS_LIMIT`) | `config.ts:46` |
+| fact text terseness warning | `200` chars (warning only, never a 400) | `FACT_TEXT_WARN_CHARS`, `engine/delivery.ts` |
+| pinned-reserve warning ratio | `0.75` of the facts reserve | `PINNED_RESERVE_WARN_RATIO`, `engine/delivery.ts` |
 | API port | `7437` | `api/bin.ts` |
-| RRF formula | `1 / (k + rank)` | `recall.ts:41` |
-| recency formula | `0.5 ^ (ageDays / halfLife)` | `recall.ts:113` |
-| tier order | facts → sessions → active docs → archived docs | `recall.ts:124-129` |
+| RRF formula | `1 / (k + rank)` | `recall.ts:47` |
+| recency formula | `0.5 ^ (ageDays / halfLife)` | `recall.ts:119` |
+| recall answer order | flat, fused score desc (`limit` = total across sources) | `rankFlat`, `recall.ts:135-153` |
+| tier order (impact only, + recall tiebreak) | facts → sessions → active docs → archived docs | `orderResults`, `recall.ts:161-181` |
 
 ---
 

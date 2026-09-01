@@ -35,6 +35,7 @@ import type {
 import {
   fuseLane,
   orderResults,
+  rankFlat,
   type CandidateMeta,
   type FusedItem,
   type LaneHit,
@@ -1081,7 +1082,13 @@ export class PostgresStore implements Store {
 
     const fused: FusedItem[] = [];
     const orderMeta = new Map<string, CandidateMeta>();
-    const bySource: NonNullable<DeliveryMeta["bySource"]> = {};
+    // Per-lane accounting is stashed here and turned into `bySource` only after
+    // the global limit is applied — `returned` has to be counted post-slice so
+    // that Σ bySource[*].returned === meta.returned (MCP's metaLine and the UI
+    // chips render that sum literally).
+    const laneStats: Partial<
+      Record<SourceType, { available: number; laneSaturated: boolean }>
+    > = {};
 
     for (const st of sources) {
       const table = tableFor[st];
@@ -1103,9 +1110,8 @@ export class PostgresStore implements Store {
       const meta = await this.metaFor(st, [...ids], docScopes);
       // `meta.size` is the honest per-source `available`: ids that had a lexical
       // or vector hit AND passed scope/status filtering, computed before the
-      // sourceCaps fusion cap and the final per-source slice below. It is a
-      // floor, not an exact count, when either raw lane saturated `laneN` — see
-      // `truncated` below.
+      // sourceCaps fusion cap and the global limit below. It is a floor, not an
+      // exact count, when either raw lane saturated `laneN` — see `truncated`.
       const available = meta.size;
       if (st === "fact" || st === "doc") {
         // metaFor already filtered (status='active' for facts, declared scopes for
@@ -1117,27 +1123,51 @@ export class PostgresStore implements Store {
         vec = vec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
         lex = lex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       }
-      const out = fuseLane(st, vec, lex, meta, this.cfg).slice(0, limit);
-      for (const f of out) {
+      // No per-lane `.slice(0, limit)`: `limit` is a total across sources now,
+      // applied once by rankFlat below. sourceCaps still caps inside fuseLane.
+      const laneFused = fuseLane(st, vec, lex, meta, this.cfg);
+      for (const f of laneFused) {
         fused.push(f);
         const m = meta.get(f.id);
         if (m) orderMeta.set(`${st}:${f.id}`, m);
       }
-      bySource[st] = {
-        returned: out.length,
+      laneStats[st] = {
         available,
-        truncated: out.length < available || rawVec.length >= laneN || rawLex.length >= laneN,
+        laneSaturated: rawVec.length >= laneN || rawLex.length >= laneN,
       };
     }
 
-    // Per-lane cap already applied above (each source contributes up to `limit`).
-    // orderResults groups by source tier, each ranked within its lane — the live
-    // system's sectioned model. No global truncation across sources.
-    const ordered = orderResults(fused, orderMeta);
+    // One flat ranking by fused score across every lane, then ONE cut at
+    // `limit` — the caller asking for 5 gets the 5 best rows, not 5 per source.
+    // laneN (limit*3, floor 20) keeps each lane's candidate pool comfortably
+    // wider than the total limit, so a strong lane can legitimately win most of
+    // the answer without starving the others of candidates.
+    //
+    // The cut is a backfill loop rather than a `.slice(limit)`: this adapter's
+    // toRecallResult is async and returns null when the row vanished between
+    // the lane query and the hydrate, so slicing first would silently under-fill
+    // the answer. Walk the full ranking, skip nulls, stop at `limit`.
+    const ordered = rankFlat(fused, orderMeta);
     const out: RecallResult[] = [];
     for (const f of ordered) {
+      if (out.length >= limit) break;
       const r = await this.toRecallResult(f);
       if (r) out.push(r);
+    }
+    // bySource.returned counted POST-limit, off the hydrated rows, so
+    // Σ returned === meta.returned. (sqlite counts its `ordered` slice directly
+    // — synchronous hydration, no nulls — same invariant, different mechanism.)
+    const bySource: NonNullable<DeliveryMeta["bySource"]> = {};
+    for (const [st, stats] of Object.entries(laneStats) as [
+      SourceType,
+      { available: number; laneSaturated: boolean },
+    ][]) {
+      const returned = out.filter((r) => r.sourceType === st).length;
+      bySource[st] = {
+        returned,
+        available: stats.available,
+        truncated: returned < stats.available || stats.laneSaturated,
+      };
     }
     const available = Object.values(bySource).reduce((sum, s) => sum + (s?.available ?? 0), 0);
     const truncated = Object.values(bySource).some((s) => s?.truncated);

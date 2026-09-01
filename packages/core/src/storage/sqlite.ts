@@ -38,6 +38,7 @@ import type {
 import {
   fuseLane,
   orderResults,
+  rankFlat,
   type CandidateMeta,
   type FusedItem,
   type LaneHit,
@@ -1234,7 +1235,13 @@ export class SqliteStore implements Store {
 
     const fused: FusedItem[] = [];
     const orderMeta = new Map<string, CandidateMeta>();
-    const bySource: NonNullable<DeliveryMeta["bySource"]> = {};
+    // Per-lane accounting is stashed here and turned into `bySource` only after
+    // the global limit is applied — `returned` has to be counted post-slice so
+    // that Σ bySource[*].returned === meta.returned (MCP's metaLine and the UI
+    // chips render that sum literally).
+    const laneStats: Partial<
+      Record<SourceType, { available: number; laneSaturated: boolean }>
+    > = {};
 
     if (sources.includes("fact")) {
       const rawVec = this.vectorLane("vec_facts", queryVec, laneN);
@@ -1252,7 +1259,9 @@ export class SqliteStore implements Store {
       // mirrors filterSessionVecByProject below.
       const vec = rawVec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       const lex = rawLex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
-      const out = fuseLane("fact", vec, lex, meta, this.cfg).slice(0, limit);
+      // No per-lane `.slice(0, limit)`: `limit` is a total across sources now,
+      // applied once by rankFlat below. sourceCaps still caps inside fuseLane.
+      const out = fuseLane("fact", vec, lex, meta, this.cfg);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
@@ -1260,13 +1269,10 @@ export class SqliteStore implements Store {
       }
       // available = meta.size: ids that had a lexical or vector hit AND passed
       // scope/status filtering, computed before the sourceCaps fuse-cap and the
-      // final per-source slice. No extra query — meta is already fetched.
-      const available = meta.size;
-      bySource.fact = {
-        returned: out.length,
-        available,
-        truncated:
-          out.length < available || rawVec.length >= laneN || rawLex.length >= laneN,
+      // global limit. No extra query — meta is already fetched.
+      laneStats.fact = {
+        available: meta.size,
+        laneSaturated: rawVec.length >= laneN || rawLex.length >= laneN,
       };
     }
 
@@ -1290,18 +1296,15 @@ export class SqliteStore implements Store {
           : rawVec;
       const ids = unionIds(filteredVec, rawLex);
       const meta = this.sessionsMeta(ids);
-      const out = fuseLane("session", filteredVec, rawLex, meta, this.cfg).slice(0, limit);
+      const out = fuseLane("session", filteredVec, rawLex, meta, this.cfg);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
         if (m) orderMeta.set(`session:${f.id}`, m);
       }
-      const available = meta.size;
-      bySource.session = {
-        returned: out.length,
-        available,
-        truncated:
-          out.length < available || rawVec.length >= laneN || rawLex.length >= laneN,
+      laneStats.session = {
+        available: meta.size,
+        laneSaturated: rawVec.length >= laneN || rawLex.length >= laneN,
       };
     }
 
@@ -1320,27 +1323,40 @@ export class SqliteStore implements Store {
       // dominated by out-of-scope docs can return fewer than `limit` in-scope hits.
       const vec = rawVec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       const lex = rawLex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
-      const out = fuseLane("doc", vec, lex, meta, this.cfg).slice(0, limit);
+      const out = fuseLane("doc", vec, lex, meta, this.cfg);
       for (const f of out) {
         fused.push(f);
         const m = meta.get(f.id);
         if (m) orderMeta.set(`doc:${f.id}`, m);
       }
-      const available = meta.size;
-      bySource.doc = {
-        returned: out.length,
-        available,
-        truncated:
-          out.length < available || rawVec.length >= laneN || rawLex.length >= laneN,
+      laneStats.doc = {
+        available: meta.size,
+        laneSaturated: rawVec.length >= laneN || rawLex.length >= laneN,
       };
     }
 
-    // Per-lane cap already applied above (each source contributes up to `limit`).
-    // orderResults groups by source tier (facts → sessions → docs), each ranked
-    // within its lane — the live system's sectioned model. No global truncation,
-    // so a weak-but-present fact can never bury a strong session/doc.
-    const ordered = orderResults(fused, orderMeta);
+    // One flat ranking by fused score across every lane, then ONE cut at
+    // `limit` — the caller asking for 5 gets the 5 best rows, not 5 per source.
+    // laneN (limit*3, floor 20) keeps each lane's candidate pool comfortably
+    // wider than the total limit, so a strong lane can legitimately win most of
+    // the answer without starving the others of candidates.
+    const ordered = rankFlat(fused, orderMeta).slice(0, limit);
     const data = ordered.map((f) => this.toRecallResult(f));
+    // bySource.returned is counted POST-slice, so Σ returned === meta.returned.
+    // (sqlite's toRecallResult is synchronous and never drops a row, so counting
+    // `ordered` is exact; postgres has to count its hydrated output instead.)
+    const bySource: NonNullable<DeliveryMeta["bySource"]> = {};
+    for (const [st, stats] of Object.entries(laneStats) as [
+      SourceType,
+      { available: number; laneSaturated: boolean },
+    ][]) {
+      const returned = ordered.filter((f) => f.sourceType === st).length;
+      bySource[st] = {
+        returned,
+        available: stats.available,
+        truncated: returned < stats.available || stats.laneSaturated,
+      };
+    }
     const totalAvailable = Object.values(bySource).reduce((sum, s) => sum + (s?.available ?? 0), 0);
     const anyTruncated = Object.values(bySource).some((s) => s?.truncated);
     const meta: DeliveryMeta = {
