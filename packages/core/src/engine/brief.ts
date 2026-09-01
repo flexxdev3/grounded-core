@@ -49,6 +49,89 @@ export function deriveDocScopes(opts: BriefOptions): string[] {
   return ["global"];
 }
 
+/** Distinct FILES the related-docs lane delivers. This is the number the lane
+ *  has always meant; before `dedupeDocsByPath` it was a count of CHUNKS, which
+ *  is why a 5-slot lane could carry 3 files. */
+export const RELATED_DOCS_LIMIT = 5;
+
+/**
+ * First fetch size for the lane. The over-fetch is required, not defensive:
+ * recall ranks CHUNKS, so asking for exactly `RELATED_DOCS_LIMIT` can hand the
+ * engine five chunks of two files and the dedupe below then delivers two docs —
+ * trading the duplicate waste for an empty-slot waste. 4x is sized off the
+ * measured brief (5 chunk slots held 3 files, i.e. one file contributed 3
+ * chunks); 20 rows of a doc-only recall is cheap and the discarded rows never
+ * reach a budgeted lane.
+ */
+export const RELATED_DOCS_FETCH = RELATED_DOCS_LIMIT * 4;
+
+/**
+ * Second and last fetch size, used only when the first one failed to fill the
+ * lane. No fixed over-fetch can GUARANTEE five distinct files — a corpus of a
+ * few long, near-identical documents puts 20 chunks of two files at the top —
+ * so `fillRelatedDocs` widens once rather than silently under-delivering. 200
+ * is the same ceiling the API enforces on any retrieval `limit`.
+ */
+const RELATED_DOCS_FETCH_MAX = 200;
+
+/**
+ * Fill the related-docs lane with `limit` DISTINCT files.
+ *
+ * `fetchDocs(n)` is the caller's doc-only `recall()` — the adapters pass a
+ * one-line lambda, so the escalation and the dedupe live here (one copy, and
+ * the copy the shared brief suite covers) instead of twice in storage.
+ *
+ * Widens at most once, and only when it would change the answer: the second
+ * fetch costs another `recall()` (including a query embedding), which is worth
+ * paying only after the cheap fetch has demonstrably failed to fill the lane.
+ * Stops early when the first fetch came back short — fewer rows than requested
+ * means the lane is exhausted and a wider ask cannot find a sixth file.
+ */
+export async function fillRelatedDocs(
+  fetchDocs: (limit: number) => Promise<RecallResult[]>,
+  limit: number = RELATED_DOCS_LIMIT,
+): Promise<RecallResult[]> {
+  let kept: RecallResult[] = [];
+  for (const step of [RELATED_DOCS_FETCH, RELATED_DOCS_FETCH_MAX]) {
+    const hits = await fetchDocs(step);
+    kept = dedupeDocsByPath(hits, limit);
+    if (kept.length >= limit) break;
+    if (hits.length < step) break;
+  }
+  return kept;
+}
+
+/**
+ * Collapse chunk-level recall hits to one row per FILE, best chunk wins.
+ *
+ * Measured: a live brief returned 5 relatedDocs slots holding 3 unique files —
+ * `claude/CLAUDE.md` x2 and `how-tos/how-to-grounded-project-identity.md` x2 —
+ * ~40% of the doc budget spent re-citing files the reader already had. `recall()`
+ * is right to return chunks (`/recall` keeps that behavior untouched); the brief
+ * is a fixed-slot delivery surface, and a slot spent on a second chunk of a file
+ * already cited buys nothing that `ground_get` would not.
+ *
+ * Deduped HERE, in the engine, not in the adapters: both adapters would
+ * otherwise need the same pass, and only the engine's copy is covered by the
+ * shared brief suite. Falls back to `typedId` when `path` is null so two
+ * pathless rows can never be folded into one.
+ */
+export function dedupeDocsByPath(
+  docs: RecallResult[],
+  limit: number = RELATED_DOCS_LIMIT,
+): RecallResult[] {
+  const best = new Map<string, RecallResult>();
+  for (const d of docs) {
+    const key = d.path ?? d.typedId;
+    const seen = best.get(key);
+    // Explicitly keep the higher score rather than trusting arrival order —
+    // callers hand this list straight from recall (score-desc today), but the
+    // "best chunk per file" guarantee must not depend on that.
+    if (!seen || d.score > seen.score) best.set(key, d);
+  }
+  return [...best.values()].sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
 /** The fixed line that makes vision applied, not just present. */
 const VISION_APPLY_NOTE =
   "Apply this: flag any plan, play, or design that conflicts with the vision before executing it.";
@@ -562,7 +645,10 @@ export function assembleBrief(
     vision,
     recentSessions: sessionsReserve.kept,
     facts: factsReserve.kept,
-    relatedDocs: parts.relatedDocs,
+    // One row per file, best chunk, capped at the lane's slot count. The
+    // adapters over-fetch (RELATED_DOCS_FETCH) so this still fills all five
+    // slots when five distinct files matched.
+    relatedDocs: dedupeDocsByPath(parts.relatedDocs),
     meta: {
       vision: visionSection.meta,
       facts: factsReserve.meta,

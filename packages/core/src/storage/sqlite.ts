@@ -45,7 +45,12 @@ import {
   type LaneHit,
   type SessionFilter,
 } from "../engine/recall.js";
-import { assembleBrief, deriveFactScopes, deriveDocScopes } from "../engine/brief.js";
+import {
+  assembleBrief,
+  deriveFactScopes,
+  deriveDocScopes,
+  fillRelatedDocs,
+} from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
 import { splitFrontmatter } from "../ingest/frontmatter.js";
@@ -1623,12 +1628,13 @@ export class SqliteStore implements Store {
     let relatedDocs: RecallResult[] = [];
     const hint = o.query ?? o.cwd;
     if (hint) {
-      const recallResult = await this.recall(hint, {
-        sources: ["doc"],
-        limit: 5,
-        scopes: deriveDocScopes(o),
-      });
-      relatedDocs = recallResult.data;
+      // Over-fetch chunk hits and keep one row per FILE: recall ranks CHUNKS,
+      // so a fetch of exactly the lane's 5 slots returns 5 chunks of 2-3 files
+      // (measured: 5 slots, 3 unique files). fillRelatedDocs owns the sizing.
+      relatedDocs = await fillRelatedDocs(
+        async (limit) =>
+          (await this.recall(hint, { sources: ["doc"], limit, scopes: deriveDocScopes(o) })).data,
+      );
     }
     const vision = {
       global: await this.visionGet("global"),

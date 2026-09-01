@@ -144,7 +144,11 @@ truncation are listed in `BriefResult.droppedItems` (typed ids, resolvable via `
 truncates text rather than dropping rows, so its char budget is reported in `meta.vision.chars` while
 `returned`/`available` stay row counts (no `SourceType` arm, so it never appears in `droppedItems`);
 `relatedDocs` is
-unreserved — bounded only by its own `limit` + snippet length — and also never appears there.
+unreserved — bounded only by its own 5-file limit + snippet length — and also never appears there.
+It carries **one row per FILE, not per chunk**: `recall()` ranks chunks, so the brief over-fetches
+chunk hits and `dedupeDocsByPath` (`engine/brief.ts`) keeps the highest-scoring chunk of each path.
+`fillRelatedDocs` widens the fetch once if the first pass could not find 5 distinct files, so the lane
+does not shrink to fill its slots honestly. `POST /recall` is untouched and still returns chunk rows.
 
 **`brief.factCategoryFloors`** (`GroundedConfig.brief.factCategoryFloors: Record<string, number>`,
 default `{ "commit-rule": 1, "convention": 2, "playbook": 1 }`) runs via the exported pure function

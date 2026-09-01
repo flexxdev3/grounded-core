@@ -864,3 +864,158 @@ describe("@grounded/api /llms.txt", () => {
     }
   });
 });
+
+describe("@grounded/api limit validation", () => {
+  let home: string;
+  let store: Store;
+  let app: ReturnType<typeof createApp>;
+
+  beforeAll(async () => {
+    home = mkdtempSync(join(tmpdir(), "grounded-api-limit-"));
+    store = await openStore(sqliteConfig(home));
+    app = createApp(store);
+    for (let i = 0; i < 12; i++) {
+      await app.fetch(
+        new Request("http://local.test/facts", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ fact: `zzqlimitguard fact number ${i}`, scope: "global" }),
+        }),
+      );
+    }
+  });
+
+  afterAll(async () => {
+    await store.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  async function post(path: string, body: unknown): Promise<Response> {
+    return app.fetch(
+      new Request(`http://local.test${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  async function get(path: string): Promise<Response> {
+    return app.fetch(new Request(`http://local.test${path}`));
+  }
+
+  // The measured hole: `rankFlat(...).slice(0, 2.1)` keeps 3 rows, so /recall
+  // answered 200 with `data.length: 3` and `meta.limit: 2.1` — more rows than
+  // the caller asked for, with the nonsense echoed back as truth.
+  it("POST /recall rejects a fractional limit rather than over-serving", async () => {
+    const res = await post("/recall", { query: "zzqlimitguard", limit: 2.1 });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("VALIDATION_ERROR");
+    expect(body.error).toBe('"limit" must be a positive integer (got 2.1)');
+  });
+
+  it("POST /recall rejects limit 5.5 (measured: 6 rows)", async () => {
+    const res = await post("/recall", { query: "zzqlimitguard", limit: 5.5 });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('"limit" must be a positive integer (got 5.5)');
+  });
+
+  it("POST /recall rejects limit 0", async () => {
+    const res = await post("/recall", { query: "zzqlimitguard", limit: 0 });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("VALIDATION_ERROR");
+    expect(body.error).toBe('"limit" must be a positive integer (got 0)');
+  });
+
+  it("POST /recall rejects a negative limit", async () => {
+    const res = await post("/recall", { query: "zzqlimitguard", limit: -1 });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('"limit" must be a positive integer (got -1)');
+  });
+
+  it("POST /recall rejects a limit over the cap — 400, not a silent clamp", async () => {
+    const res = await post("/recall", { query: "zzqlimitguard", limit: 1000 });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("VALIDATION_ERROR");
+    expect(body.error).toBe('"limit" must be at most 200 (got 1000)');
+  });
+
+  it("POST /recall accepts the cap itself and a normal limit", async () => {
+    const atCap = await post("/recall", { query: "zzqlimitguard", limit: 200 });
+    expect(atCap.status).toBe(200);
+    const capBody = await atCap.json();
+    expect(capBody.meta.limit).toBe(200);
+
+    const normal = await post("/recall", { query: "zzqlimitguard", limit: 10 });
+    expect(normal.status).toBe(200);
+    const normalBody = await normal.json();
+    expect(normalBody.meta.limit).toBe(10);
+    expect(normalBody.data.length).toBeLessThanOrEqual(10);
+  });
+
+  it("POST /impact enforces the same limit rules as /recall", async () => {
+    const frac = await post("/impact", { subject: "zzqlimitguard", limit: 2.1 });
+    expect(frac.status).toBe(400);
+    expect((await frac.json()).error).toBe('"limit" must be a positive integer (got 2.1)');
+
+    const over = await post("/impact", { subject: "zzqlimitguard", limit: 1000 });
+    expect(over.status).toBe(400);
+    expect((await over.json()).error).toBe('"limit" must be at most 200 (got 1000)');
+
+    const ok = await post("/impact", { subject: "zzqlimitguard", limit: 10 });
+    expect(ok.status).toBe(200);
+  });
+
+  // recentSessions is a row count too: it becomes `maxRows` in
+  // truncateToReserve, whose `kept.length >= maxRows` test lets 2.1 keep 3.
+  it("POST /brief rejects a fractional or over-cap recentSessions", async () => {
+    const frac = await post("/brief", { recentSessions: 2.1 });
+    expect(frac.status).toBe(400);
+    expect((await frac.json()).error).toBe('"recentSessions" must be a positive integer (got 2.1)');
+
+    const zero = await post("/brief", { recentSessions: 0 });
+    expect(zero.status).toBe(400);
+
+    const over = await post("/brief", { recentSessions: 1000 });
+    expect(over.status).toBe(400);
+    expect((await over.json()).error).toBe('"recentSessions" must be at most 200 (got 1000)');
+
+    const ok = await post("/brief", { recentSessions: 5 });
+    expect(ok.status).toBe(200);
+  });
+
+  it("query-string limits fail the same way body limits do", async () => {
+    const frac = await get("/facts?limit=2.1");
+    expect(frac.status).toBe(400);
+    expect((await frac.json()).error).toBe('"limit" must be a positive integer (got 2.1)');
+
+    const zero = await get("/facts?limit=0");
+    expect(zero.status).toBe(400);
+
+    const neg = await get("/facts?limit=-1");
+    expect(neg.status).toBe(400);
+
+    const over = await get("/facts?limit=5001");
+    expect(over.status).toBe(400);
+    expect((await over.json()).error).toBe('"limit" must be at most 5000 (got 5001)');
+
+    // The list ceiling is deliberately looser than /recall's 200 — the shipped
+    // console pages 2000 docs and 500 facts in one request.
+    const consoleSized = await get("/facts?limit=500");
+    expect(consoleSized.status).toBe(200);
+
+    const atCap = await get("/docs?limit=5000");
+    expect(atCap.status).toBe(200);
+  });
+
+  it("offset still accepts 0 — only limit forbids it", async () => {
+    const res = await get("/facts?limit=5&offset=0");
+    expect(res.status).toBe(200);
+    const neg = await get("/facts?offset=-1");
+    expect(neg.status).toBe(400);
+    expect((await neg.json()).error).toBe('"offset" must be a non-negative integer');
+  });
+});

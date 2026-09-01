@@ -590,6 +590,36 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.docsPrune({ remove: true });
     });
 
+    it("brief: related-docs carries one row per FILE, not per chunk", async () => {
+      // Both adapters fill this lane through engine/brief.ts fillRelatedDocs;
+      // this is the wiring check. Measured before the dedupe: 5 relatedDocs
+      // slots held 3 unique files (two of them cited twice).
+      const dir = mkdtempSync(join(tmpdir(), "grounded-brief-dedupe-test-"));
+      const para =
+        "zzqbriefdedupetoken multi chunk fixture paragraph filler filler filler filler filler filler filler. ";
+      writeFileSync(
+        join(dir, "brief-dedupe-doc.md"),
+        `# Brief Dedupe Doc\n\n${Array.from({ length: 10 }, (_, i) => `${i} ${para.repeat(8)}`).join("\n\n")}\n`,
+        "utf8",
+      );
+      await store.docsIngest([dir], { source: "brief-dedupe-test" });
+
+      // Premise: the file really is stored as several chunks.
+      const chunks = (await store.docsList({ source: "brief-dedupe-test" })).data;
+      expect(chunks.length).toBeGreaterThan(1);
+
+      const brief = await store.brief({
+        query: "zzqbriefdedupetoken multi chunk fixture",
+        format: "json",
+      });
+      const paths = brief.relatedDocs.map((d) => d.path);
+      expect(paths.length).toBeGreaterThan(0);
+      expect(new Set(paths).size).toBe(paths.length);
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
     it("docsList: source and scope filter independently; no options returns every lane", async () => {
       const dirA = mkdtempSync(join(tmpdir(), "grounded-list-a-test-"));
       const dirB = mkdtempSync(join(tmpdir(), "grounded-list-b-test-"));

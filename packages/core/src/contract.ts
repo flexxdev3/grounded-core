@@ -447,6 +447,10 @@ export interface BriefResult {
   vision: { global: Vision | null; project: Vision | null };
   recentSessions: Session[];
   facts: Fact[];
+  /** Related docs, ONE ROW PER FILE — the brief's recall call over-fetches
+   * chunks and `dedupeDocsByPath` keeps the highest-scoring chunk of each
+   * path, so a fixed slot is never spent re-citing a file already cited.
+   * `/recall` itself is unchanged and still returns chunk-level rows. */
   relatedDocs: RecallResult[];
   /**
    * Delivery accounting per reserved lane. `vision` is measured in CHARS, not
@@ -455,7 +459,7 @@ export interface BriefResult {
    * `facts` and `sessions` are measured in items, truncated by the
    * `brief.reserve.*` token (chars÷4) budgets. `relatedDocs` deliberately gets
    * no reserve and no meta key — it has no row in Doctrine 3's reserve table
-   * and is already bounded by `limit: 5` + the 200-char snippet cap.
+   * and is already bounded by 5 distinct docs + the 200-char snippet cap.
    */
   meta: { vision: DeliveryMeta; facts: DeliveryMeta; sessions: DeliveryMeta };
   /** typed ids of facts/sessions dropped by their lane's reserve, in the order

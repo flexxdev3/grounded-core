@@ -1,12 +1,27 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { defaultConfig } from "../config.js";
-import type { Fact, GroundedConfig, Session, Store, TypedId, Vision } from "../contract.js";
+import type {
+  Fact,
+  GroundedConfig,
+  RecallResult,
+  Session,
+  Store,
+  TypedId,
+  Vision,
+} from "../contract.js";
 import { openStore } from "../store.js";
-import { applyCategoryFloors, assembleBrief } from "./brief.js";
+import {
+  applyCategoryFloors,
+  assembleBrief,
+  dedupeDocsByPath,
+  fillRelatedDocs,
+  RELATED_DOCS_FETCH,
+  RELATED_DOCS_LIMIT,
+} from "./brief.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EXAMPLES = resolve(__dirname, "../../../../examples/docs");
@@ -517,5 +532,176 @@ describe("assembleBrief: vision is exempt from droppedItems but not from account
     );
     expect(brief.meta.vision.truncated).toBe(false);
     expect(brief.text).not.toContain("ground_vision_get");
+  });
+});
+
+// relatedDocs is a fixed-slot lane, and recall ranks CHUNKS. Measured on the
+// live brief: 5 slots held 3 unique files (claude/CLAUDE.md x2,
+// how-tos/how-to-grounded-project-identity.md x2) — ~40% of the doc budget
+// spent re-citing a file the reader already had.
+describe("brief: relatedDocs holds one row per file", () => {
+  let home: string;
+  let store: Store;
+  let docsDir: string;
+  const TOKEN = "zzqdedupechunktoken";
+  const FILES = 6;
+
+  beforeAll(async () => {
+    home = mkdtempSync(join(tmpdir(), "grounded-brief-dedupe-"));
+    docsDir = join(home, "docs");
+    mkdirSync(docsDir, { recursive: true });
+    // Each file is many paragraphs long and mentions TOKEN throughout, so the
+    // chunker splits it (config default chunkChars: 1200) and several chunks
+    // of the SAME file are legitimate recall hits.
+    for (let f = 0; f < FILES; f++) {
+      const paras: string[] = [`# dedupe fixture ${f}`];
+      for (let p = 0; p < 12; p++) {
+        paras.push(
+          `${TOKEN} paragraph ${p} of fixture ${f}. ` +
+            `filler filler filler filler filler filler filler filler ${TOKEN} `.repeat(12),
+        );
+      }
+      writeFileSync(join(docsDir, `fixture-${f}.md`), paras.join("\n\n"), "utf8");
+    }
+
+    const cfg: GroundedConfig = defaultConfig(home);
+    cfg.storage.adapter = "sqlite";
+    cfg.storage.path = join(home, "grounded.db");
+    cfg.embeddings.provider = "none";
+    cfg.embeddings.dims = 0;
+    store = await openStore(cfg);
+    await store.docsIngest([docsDir], { source: "dedupe-fixture" });
+  });
+
+  afterAll(async () => {
+    await store.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("the fixture really does produce multiple chunks per file (the cause)", async () => {
+    // Guards the premise: without multi-chunk files the dedupe test proves
+    // nothing. This is the shape recall returns and /recall must keep.
+    const chunkHits = await store.recall(TOKEN, { sources: ["doc"], limit: RELATED_DOCS_FETCH });
+    expect(chunkHits.data.length).toBeGreaterThan(RELATED_DOCS_LIMIT);
+    const paths = chunkHits.data.map((d) => d.path);
+    expect(new Set(paths).size).toBeLessThan(paths.length);
+  });
+
+  it("contains each path at most once, keeping that path's best chunk", async () => {
+    const brief = await store.brief({ query: TOKEN, format: "json" });
+
+    const paths = brief.relatedDocs.map((d) => d.path);
+    expect(new Set(paths).size).toBe(paths.length);
+
+    // The surviving row for each path must be the highest-scoring chunk of
+    // that file. 200 is the widest fetch the lane can escalate to, so this
+    // covers every row the brief could possibly have seen.
+    const fetched = (await store.recall(TOKEN, { sources: ["doc"], limit: 200 })).data;
+    for (const kept of brief.relatedDocs) {
+      const bestForPath = Math.max(
+        ...fetched.filter((d) => d.path === kept.path).map((d) => d.score),
+      );
+      expect(kept.score).toBe(bestForPath);
+    }
+  });
+
+  it("still fills all five slots when enough distinct files match", async () => {
+    // The regression the dedupe must not introduce: shrinking the lane from
+    // "5 slots, 3 files" to "3 slots" trades one budget waste for another.
+    // This fixture is deliberately hostile — 6 near-identical long files, so
+    // the first RELATED_DOCS_FETCH rows are all chunks of the same 2 files and
+    // only the escalation in fillRelatedDocs can fill the lane.
+    const brief = await store.brief({ query: TOKEN, format: "json" });
+    expect(brief.relatedDocs.length).toBe(RELATED_DOCS_LIMIT);
+    expect(new Set(brief.relatedDocs.map((d) => d.path)).size).toBe(RELATED_DOCS_LIMIT);
+  });
+
+  it("does not change /recall — chunk-level rows are still correct there", async () => {
+    const res = await store.recall(TOKEN, { sources: ["doc"], limit: 5 });
+    expect(res.data.length).toBe(5);
+    const paths = res.data.map((d) => d.path);
+    expect(new Set(paths).size).toBeLessThan(paths.length);
+  });
+});
+
+describe("dedupeDocsByPath", () => {
+  function hit(id: number, path: string | null, score: number): RecallResult {
+    return {
+      sourceType: "doc",
+      id,
+      typedId: `doc:${id}`,
+      title: `doc ${id}`,
+      score,
+      matchedBy: "lexical",
+      path,
+      citation: `doc:${path ?? id}#chunk${id}`,
+      snippet: `snippet ${id}`,
+    };
+  }
+
+  it("keeps the highest-scoring chunk regardless of arrival order", () => {
+    const out = dedupeDocsByPath([hit(1, "a.md", 0.2), hit(2, "a.md", 0.9), hit(3, "b.md", 0.5)]);
+    expect(out.map((d) => d.typedId)).toEqual(["doc:2", "doc:3"]);
+  });
+
+  it("never folds two pathless rows into one", () => {
+    const out = dedupeDocsByPath([hit(1, null, 0.9), hit(2, null, 0.8)]);
+    expect(out.length).toBe(2);
+  });
+
+  it("caps at the lane's slot count", () => {
+    const many = Array.from({ length: 12 }, (_, i) => hit(i, `f${i}.md`, 1 - i / 100));
+    expect(dedupeDocsByPath(many).length).toBe(RELATED_DOCS_LIMIT);
+  });
+});
+
+describe("fillRelatedDocs", () => {
+  function hit(id: number, path: string, score: number): RecallResult {
+    return {
+      sourceType: "doc",
+      id,
+      typedId: `doc:${id}`,
+      title: `doc ${id}`,
+      score,
+      matchedBy: "lexical",
+      path,
+      citation: `doc:${path}#chunk${id}`,
+      snippet: `snippet ${id}`,
+    };
+  }
+
+  it("does not widen when the first fetch already fills the lane", async () => {
+    const asked: number[] = [];
+    const out = await fillRelatedDocs(async (limit) => {
+      asked.push(limit);
+      return Array.from({ length: limit }, (_, i) => hit(i, `f${i}.md`, 1 - i / 100));
+    });
+    expect(asked).toEqual([RELATED_DOCS_FETCH]);
+    expect(out.length).toBe(RELATED_DOCS_LIMIT);
+  });
+
+  it("widens once when the first fetch is saturated by too few files", async () => {
+    const asked: number[] = [];
+    const out = await fillRelatedDocs(async (limit) => {
+      asked.push(limit);
+      // Two files' worth of chunks until the ask gets wide enough to reach the rest.
+      return Array.from({ length: limit }, (_, i) =>
+        hit(i, `f${limit > RELATED_DOCS_FETCH ? i : i % 2}.md`, 1 - i / 1000),
+      );
+    });
+    expect(asked.length).toBe(2);
+    expect(asked[1]).toBeGreaterThan(RELATED_DOCS_FETCH);
+    expect(out.length).toBe(RELATED_DOCS_LIMIT);
+  });
+
+  it("stops instead of widening when the lane is exhausted", async () => {
+    const asked: number[] = [];
+    const out = await fillRelatedDocs(async (limit) => {
+      asked.push(limit);
+      // Short read: fewer rows than requested means no wider ask can help.
+      return [hit(1, "a.md", 0.9), hit(2, "a.md", 0.5), hit(3, "b.md", 0.4)];
+    });
+    expect(asked).toEqual([RELATED_DOCS_FETCH]);
+    expect(out.map((d) => d.path)).toEqual(["a.md", "b.md"]);
   });
 });

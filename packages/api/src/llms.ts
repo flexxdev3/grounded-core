@@ -47,6 +47,9 @@ If two lanes both fit, the more specific one wins and the other gets a pointer, 
   \`limit: 5\` returns 5 rows in total, and \`meta.bySource[*].returned\` sums to \`meta.returned\`.
   Any one source may supply the whole answer if it out-scores the others — there is no per-type
   reservation and no hidden ceiling below the \`limit\` you asked for.
+  \`limit\` must be an **integer in 1..200** (list routes: 1..5000). A fractional, zero, negative, or
+  over-cap value is a **400**, never a silent clamp — page bulk reads with \`offset\` on
+  \`/facts\`, \`/sessions\`, \`/docs\`.
 - **\`scope\` / \`scopes\` mean LANE, not permission.** They partition content by audience.
   \`recall\` and \`brief\` default to \`["global"]\` — passing no scope silently excludes every
   other lane. Scoping is routing, not security: on a self-hosted instance a valid token reads

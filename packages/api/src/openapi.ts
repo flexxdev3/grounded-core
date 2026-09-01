@@ -348,11 +348,16 @@ export const openApiDocument = {
           },
           recentSessions: { type: "array", items: { $ref: "#/components/schemas/Session" } },
           facts: { type: "array", items: { $ref: "#/components/schemas/Fact" } },
-          relatedDocs: { type: "array", items: { $ref: "#/components/schemas/RecallResult" } },
+          relatedDocs: {
+            type: "array",
+            description:
+              "Related docs, one row per file: the brief over-fetches chunk hits and keeps the highest-scoring chunk per path. POST /recall is unaffected and still returns chunk-level rows.",
+            items: { $ref: "#/components/schemas/RecallResult" },
+          },
           meta: {
             type: "object",
             description:
-              "Delivery accounting per reserved brief lane. `vision` is measured in CHARS, never items — there is no vision arm in sourceType/typedId, so vision can never appear in droppedItems. `facts`/`sessions` are measured in items, truncated by the brief.reserve.* token (chars÷4) budgets. relatedDocs deliberately has no reserve and no meta key here — it is already bounded by limit:5 + the 200-char snippet cap.",
+              "Delivery accounting per reserved brief lane. `vision` is measured in CHARS, never items — there is no vision arm in sourceType/typedId, so vision can never appear in droppedItems. `facts`/`sessions` are measured in items, truncated by the brief.reserve.* token (chars÷4) budgets. relatedDocs deliberately has no reserve and no meta key here — it is already bounded by 5 DISTINCT docs (chunk hits are deduped by path, best chunk per file) + the 200-char snippet cap.",
             required: ["vision", "facts", "sessions"],
             properties: {
               vision: { $ref: "#/components/schemas/DeliveryMeta" },
@@ -446,8 +451,8 @@ export const openApiDocument = {
             description: 'Defaults to "active". One of "active", "archived", "all".',
             schema: { type: "string", enum: ["active", "archived", "all"], default: "active" },
           },
-          { name: "limit", in: "query", schema: { type: "integer" } },
-          { name: "offset", in: "query", schema: { type: "integer" } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 5000 } },
+          { name: "offset", in: "query", schema: { type: "integer", minimum: 0 } },
         ],
         responses: {
           "200": {
@@ -543,8 +548,8 @@ export const openApiDocument = {
         summary: "List vision records (one per scope, edited in place)",
         parameters: [
           { name: "scope", in: "query", schema: { type: "string" } },
-          { name: "limit", in: "query", schema: { type: "integer" } },
-          { name: "offset", in: "query", schema: { type: "integer" } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 5000 } },
+          { name: "offset", in: "query", schema: { type: "integer", minimum: 0 } },
         ],
         responses: {
           "200": {
@@ -597,8 +602,8 @@ export const openApiDocument = {
         parameters: [
           { name: "project", in: "query", schema: { type: "string" } },
           { name: "workspace", in: "query", schema: { type: "string" } },
-          { name: "limit", in: "query", schema: { type: "integer" } },
-          { name: "offset", in: "query", schema: { type: "integer" } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 5000 } },
+          { name: "offset", in: "query", schema: { type: "integer", minimum: 0 } },
         ],
         responses: {
           "200": {
@@ -758,8 +763,8 @@ export const openApiDocument = {
             description: "Comma-separated list of lanes (OR match).",
             schema: { type: "string" },
           },
-          { name: "limit", in: "query", schema: { type: "integer" } },
-          { name: "offset", in: "query", schema: { type: "integer" } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 5000 } },
+          { name: "offset", in: "query", schema: { type: "integer", minimum: 0 } },
         ],
         responses: {
           "200": {
@@ -810,8 +815,10 @@ export const openApiDocument = {
                   query: { type: "string" },
                   limit: {
                     type: "integer",
+                    minimum: 1,
+                    maximum: 200,
                     description:
-                      "Total number of results across all sources (default 10). Not a per-source quota — results are ranked flat by fused score and cut once.",
+                      "Total number of results across all sources (default 10). Not a per-source quota — results are ranked flat by fused score and cut once. Must be an integer in 1..200; a fractional, zero, negative, or over-cap value is a 400, never a silent clamp. Page bulk reads on /facts, /sessions, /docs with offset.",
                   },
                   project: { type: "string" },
                   workspace: {
@@ -872,7 +879,13 @@ export const openApiDocument = {
                     type: "string",
                     description: "A literal token to search for — e.g. a container name, a port, a path. Not a natural-language question.",
                   },
-                  limit: { type: "integer" },
+                  limit: {
+                    type: "integer",
+                    minimum: 1,
+                    maximum: 200,
+                    description:
+                      "Total number of hits across all sources (default 20). Must be an integer in 1..200; anything else is a 400.",
+                  },
                   project: { type: "string" },
                   sources: {
                     type: "array",
@@ -924,7 +937,7 @@ export const openApiDocument = {
                   machine: { type: "string" },
                   cwd: { type: "string" },
                   query: { type: "string" },
-                  recentSessions: { type: "integer" },
+                  recentSessions: { type: "integer", minimum: 1, maximum: 200 },
                   factScopes: { type: "array", items: { type: "string" } },
                   docScopes: {
                     type: "array",

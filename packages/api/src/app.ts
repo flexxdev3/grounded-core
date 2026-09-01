@@ -50,6 +50,29 @@ const DEFAULT_FACTS_RESERVE_TOK = 900;
  *  ~100-row default silently truncating the pinned set it scans. */
 const PINNED_SCAN_LIMIT = 100_000;
 
+/**
+ * Ceiling for the RETRIEVAL routes (`/recall`, `/impact`) and the brief's
+ * `recentSessions` lane. 200 is picked, not inherited: the console's recall
+ * view asks for 30, the MCP tools default to 10 (`ground_recall`) and 20
+ * (`ground_impact`), and the widest window the product itself ever opens is
+ * the brief's own 200-row fetch in both storage adapters. Nothing legitimate
+ * asks for more, and above it /recall stops being retrieval and becomes a bulk
+ * exporter: measured, `{"limit":1000}` returned 1000 rows / 624 KB in 0.53s on
+ * an endpoint that is unauthenticated by default on localhost. Bulk reads
+ * belong on the list routes, which page with `offset`.
+ */
+const MAX_RECALL_LIMIT = 200;
+
+/**
+ * Ceiling for the LIST routes (`/facts`, `/vision`, `/sessions`, `/docs`).
+ * Deliberately looser than MAX_RECALL_LIMIT: these are the console's browse
+ * surfaces, they return plain records rather than scored+snippeted cards, and
+ * the shipped console asks for 2000 documents in a single page
+ * (packages/ui/src/views/Docs.tsx) and 500 facts (views/Facts.tsx). 5000 keeps
+ * every shipped caller working while still refusing an unbounded scan.
+ */
+const MAX_LIST_LIMIT = 5000;
+
 /** Thrown by request guards; mapped to HTTP 400 in onError. */
 class ValidationError extends GroundedError {
   constructor(message: string) {
@@ -112,6 +135,34 @@ function optUnitNumber(v: unknown, field: string): number | undefined {
   return n;
 }
 
+/**
+ * `limit` is a ROW COUNT and every consumer of it assumes an integer: recall
+ * cuts with `rankFlat(...).slice(0, limit)` and the stores hand it straight to
+ * SQL `LIMIT`. A fractional value slips past `optNumber` and then over-serves —
+ * measured, `{"query":"grounded","limit":2.1}` returned 200 with 3 rows and
+ * `meta.limit: 2.1`, breaking the documented `returned <= limit` invariant
+ * (`{"limit":5.5}` → 6 rows). Zero and negatives return an empty page while
+ * echoing the nonsense straight back as `meta.limit`. And with no ceiling,
+ * `{"limit":1000}` is a 624 KB response from a localhost-unauthenticated
+ * endpoint.
+ *
+ * All four are a 400, never a silent clamp: a clamped limit is indistinguishable
+ * from "the store ran out of rows" (`returned < limit`), which is the exact lie
+ * `meta.available` exists to prevent — and pre-1.0 this API fails loudly
+ * (see rejectUnknownKeys below).
+ */
+function optRowLimit(v: unknown, field: string, max: number): number | undefined {
+  const n = optNumber(v, field);
+  if (n === undefined) return undefined;
+  if (!Number.isInteger(n) || n < 1) {
+    throw new ValidationError(`"${field}" must be a positive integer (got ${n})`);
+  }
+  if (n > max) {
+    throw new ValidationError(`"${field}" must be at most ${max} (got ${n})`);
+  }
+  return n;
+}
+
 const FACT_STATUSES = ["active", "archived"] as const;
 
 function optFactStatus(v: unknown, field: string): FactStatus | undefined {
@@ -146,11 +197,29 @@ function parseId(raw: string): number {
   return n;
 }
 
-function parseIntQuery(raw: string | undefined, field: string): number | undefined {
+/**
+ * Offsets only. Zero is legal here (it is the first page) and is exactly why
+ * this is NOT shared with the limit guard, where zero means "serve nothing" and
+ * is a 400.
+ */
+function parseOffsetQuery(raw: string | undefined, field: string): number | undefined {
   if (raw === undefined) return undefined;
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0) throw new ValidationError(`"${field}" must be a non-negative integer`);
   return n;
+}
+
+/** Query-string form of `optRowLimit` — same rules, same messages, so
+ *  `?limit=2.1` and `{"limit":2.1}` fail identically. */
+function parseLimitQuery(
+  raw: string | undefined,
+  field: string,
+  max: number = MAX_LIST_LIMIT,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (Number.isNaN(n)) throw new ValidationError(`"${field}" must be a number`);
+  return optRowLimit(n, field, max);
 }
 
 function parseTypedId(raw: string): TypedId {
@@ -373,8 +442,8 @@ export function createApp(
         : undefined,
       // "all" means "every status" — do not forward it to the store as a literal status value.
       status: statusRaw === "all" ? undefined : statusRaw,
-      limit: parseIntQuery(c.req.query("limit"), "limit"),
-      offset: parseIntQuery(c.req.query("offset"), "offset"),
+      limit: parseLimitQuery(c.req.query("limit"), "limit"),
+      offset: parseOffsetQuery(c.req.query("offset"), "offset"),
     };
     return c.json(await store.factsList(opts));
   });
@@ -403,8 +472,8 @@ export function createApp(
   app.get("/vision", async (c) => {
     const opts: ListOptions = {
       scope: c.req.query("scope"),
-      limit: parseIntQuery(c.req.query("limit"), "limit"),
-      offset: parseIntQuery(c.req.query("offset"), "offset"),
+      limit: parseLimitQuery(c.req.query("limit"), "limit"),
+      offset: parseOffsetQuery(c.req.query("offset"), "offset"),
     };
     return c.json(await store.visionList(opts));
   });
@@ -426,8 +495,8 @@ export function createApp(
     const opts: ListOptions = {
       project: c.req.query("project"),
       workspace: c.req.query("workspace"),
-      limit: parseIntQuery(c.req.query("limit"), "limit"),
-      offset: parseIntQuery(c.req.query("offset"), "offset"),
+      limit: parseLimitQuery(c.req.query("limit"), "limit"),
+      offset: parseOffsetQuery(c.req.query("offset"), "offset"),
     };
     return c.json(await store.sessionsList(opts));
   });
@@ -488,8 +557,8 @@ export function createApp(
   app.get("/docs", async (c) => {
     const scopesRaw = c.req.query("scopes");
     const opts: ListOptions = {
-      limit: parseIntQuery(c.req.query("limit"), "limit"),
-      offset: parseIntQuery(c.req.query("offset"), "offset"),
+      limit: parseLimitQuery(c.req.query("limit"), "limit"),
+      offset: parseOffsetQuery(c.req.query("offset"), "offset"),
       source: c.req.query("source"),
       scope: c.req.query("scope"),
       scopes: scopesRaw
@@ -520,7 +589,7 @@ export function createApp(
       throw new ValidationError(`"sources" must contain only ${SOURCE_TYPES.join(", ")}`);
     }
     const recallOpts: RecallOptions = {
-      limit: optNumber(body.limit, "limit"),
+      limit: optRowLimit(body.limit, "limit", MAX_RECALL_LIMIT),
       project: optString(body.project, "project"),
       sources: sources as SourceType[] | undefined,
       workspace: optString(body.workspace, "workspace"),
@@ -540,7 +609,7 @@ export function createApp(
       throw new ValidationError(`"sources" must contain only ${SOURCE_TYPES.join(", ")}`);
     }
     const impactOpts: ImpactOptions = {
-      limit: optNumber(body.limit, "limit"),
+      limit: optRowLimit(body.limit, "limit", MAX_RECALL_LIMIT),
       project: optString(body.project, "project"),
       sources: sources as SourceType[] | undefined,
       scopes: optStringArray(body.scopes, "scopes"),
@@ -561,7 +630,12 @@ export function createApp(
       machine: optString(body.machine, "machine"),
       cwd: optString(body.cwd, "cwd"),
       query: optString(body.query, "query"),
-      recentSessions: optNumber(body.recentSessions, "recentSessions"),
+      // Same guard as a `limit`: `recentSessions` becomes `maxRows` in
+      // truncateToReserve, whose `kept.length >= maxRows` test lets a
+      // fractional 2.1 keep 3 rows — the identical over-serve /recall showed.
+      // Bounded by MAX_RECALL_LIMIT because both adapters fetch
+      // `Math.max(recentSessions, 200)`; a larger ask only widens the fetch.
+      recentSessions: optRowLimit(body.recentSessions, "recentSessions", MAX_RECALL_LIMIT),
       factScopes: optStringArray(body.factScopes, "factScopes"),
       docScopes: optStringArray(body.docScopes, "docScopes"),
       timezone: ((): string | undefined => {

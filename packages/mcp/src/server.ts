@@ -70,6 +70,14 @@ function renderImpactCard(r: ImpactResult): string {
 
 const SOURCE_TYPES = ["fact", "session", "doc"] as const;
 
+/** Same ceilings the HTTP routes enforce (packages/api/src/app.ts) — the two
+ *  agent-facing surfaces must not disagree on what a legal row count is.
+ *  Retrieval tools cap at 200; the facts LISTING tool gets the looser browse
+ *  ceiling. `.int().positive()` already rejects fractional/zero/negative here;
+ *  only the upper bound was missing. */
+const MAX_RECALL_LIMIT = 200;
+const MAX_LIST_LIMIT = 5000;
+
 const TYPED_ID_RE = /^(fact|session|doc):\d+$/;
 
 /**
@@ -113,7 +121,7 @@ export function createServer(
         "(no full bodies). Pick a typedId and call ground_get or ground_timeline for detail.",
       inputSchema: {
         query: z.string().describe("natural-language query"),
-        limit: z.number().int().positive().optional().describe("total results across sources (default 10)"),
+        limit: z.number().int().positive().max(MAX_RECALL_LIMIT).optional().describe("total results across sources (default 10, max 200)"),
         project: z.string().optional().describe("scope filter for facts/sessions"),
         sources: z.array(z.enum(SOURCE_TYPES)).optional().describe("restrict to these source types"),
         lexicalOnly: z.boolean().optional().describe("force lexical-only (skip embeddings)"),
@@ -160,7 +168,7 @@ export function createServer(
         "content-withheld: you learn THAT a dependency exists and where, not what it says.",
       inputSchema: {
         subject: z.string().describe("literal token to search for — a container name, a port, a path"),
-        limit: z.number().int().positive().optional().describe("total results across sources (default 20)"),
+        limit: z.number().int().positive().max(MAX_RECALL_LIMIT).optional().describe("total results across sources (default 20, max 200)"),
         project: z.string().optional().describe("scope filter for facts/sessions"),
         sources: z.array(z.enum(SOURCE_TYPES)).optional().describe("restrict to these source types"),
         scopes: z
@@ -430,7 +438,7 @@ export function createServer(
       description: "List facts, pinned/importance first. Defaults to active facts only.",
       inputSchema: {
         scope: z.string().optional(),
-        limit: z.number().int().positive().optional(),
+        limit: z.number().int().positive().max(MAX_LIST_LIMIT).optional(),
         status: z
           .enum(["active", "archived", "all"])
           .optional()
