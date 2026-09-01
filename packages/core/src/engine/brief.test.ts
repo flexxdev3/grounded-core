@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { defaultConfig } from "../config.js";
-import type { Fact, GroundedConfig, Session, Store, TypedId } from "../contract.js";
+import type { Fact, GroundedConfig, Session, Store, TypedId, Vision } from "../contract.js";
 import { openStore } from "../store.js";
 import { applyCategoryFloors, assembleBrief } from "./brief.js";
 
@@ -280,5 +280,242 @@ describe("assembleBrief: session dates render in the caller's timezone", () => {
       defaultConfig(),
     );
     expect(brief.text).toContain("- 2026-07-27");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The accounting contract (see the block comment in brief.ts): a lane that
+// reports `truncated: true` must account for what it withheld. Reported live
+// against the homelab instance as `sessions {returned: 8, available: 50,
+// truncated: true}` with `droppedItems: []` — 42 sessions withheld, none named,
+// and the rendered brief said nothing at all about them.
+// ---------------------------------------------------------------------------
+describe("assembleBrief: a truncated lane accounts for what it withheld", () => {
+  // Long enough that ~14 lines saturate the 500-tok (2000-char) sessions
+  // reserve, so the char budget is genuinely reachable in these fixtures.
+  const longSummary =
+    "reworked the reserve accounting so every withheld row is either named by id or counted";
+  const manySessions = (n: number): Session[] =>
+    Array.from({ length: n }, (_, i) => makeSession({ id: i + 1, summary: longSummary, project: "grounded" }));
+
+  it("names every session the row cap cut, by typed id — dropped === available - returned", () => {
+    const sessions = manySessions(50);
+    const brief = assembleBrief(
+      {
+        recentSessions: sessions,
+        facts: [],
+        relatedDocs: [],
+        factsAvailable: 0,
+        recentSessionsAvailable: 50,
+      },
+      { format: "json" as const },
+      defaultConfig(),
+    );
+
+    expect(brief.meta.sessions.truncated).toBe(true);
+    expect(brief.meta.sessions.available).toBe(50);
+    expect(brief.meta.sessions.returned).toBe(8); // DEFAULT_RECENT_SESSIONS
+    // The whole point: nothing is withheld without being named.
+    expect(brief.droppedItems).toHaveLength(
+      brief.meta.sessions.available - brief.meta.sessions.returned,
+    );
+    expect(brief.droppedItems.every((id) => id.startsWith("session:"))).toBe(true);
+    // In order, starting at the first row past the cap — never cherry-picked.
+    expect(brief.droppedItems[0]).toBe("session:9");
+    expect(brief.droppedItems.at(-1)).toBe("session:50");
+  });
+
+  it("names every session the CHAR reserve cut when the row cap is lifted", () => {
+    const sessions = manySessions(50);
+    const brief = assembleBrief(
+      {
+        recentSessions: sessions,
+        facts: [],
+        relatedDocs: [],
+        factsAvailable: 0,
+        recentSessionsAvailable: 50,
+      },
+      { format: "json" as const, recentSessions: 100 },
+      defaultConfig(),
+    );
+
+    // The reserve, not the cap, is now the binding constraint.
+    expect(brief.meta.sessions.returned).toBeGreaterThan(8);
+    expect(brief.meta.sessions.returned).toBeLessThan(50);
+    expect(brief.droppedItems).toHaveLength(
+      brief.meta.sessions.available - brief.meta.sessions.returned,
+    );
+    expect(brief.droppedItems.every((id) => id.startsWith("session:"))).toBe(true);
+  });
+
+  it("the markdown names the dropped session ids so they can be fetched", () => {
+    const brief = assembleBrief(
+      {
+        recentSessions: manySessions(50),
+        facts: [],
+        relatedDocs: [],
+        factsAvailable: 0,
+        recentSessionsAvailable: 50,
+      },
+      { format: "markdown" as const },
+      defaultConfig(),
+    );
+    expect(brief.text).toContain("42 more sessions in scope");
+    expect(brief.text).toContain("ground_get any of: session:9");
+  });
+
+  // The live failure shape. The engine cannot invent ids for rows the adapter's
+  // fetch window never handed it, so `droppedItems` stays empty here BY
+  // CONSTRUCTION — but the brief must still not be silent about them.
+  it("counts (and points at) sessions the caller's fetch window never handed it", () => {
+    const brief = assembleBrief(
+      {
+        recentSessions: manySessions(8),
+        facts: [],
+        relatedDocs: [],
+        factsAvailable: 0,
+        recentSessionsAvailable: 50,
+      },
+      { format: "markdown" as const },
+      defaultConfig(),
+    );
+
+    expect(brief.meta.sessions).toMatchObject({ returned: 8, available: 50, truncated: true });
+    expect(brief.droppedItems).toEqual([]);
+    expect(brief.text).toContain("42 more sessions in scope");
+    expect(brief.text).toContain("not individually named");
+    expect(brief.text).toContain("ground_timeline");
+  });
+
+  it("does not fire a note for an untruncated lane", () => {
+    const brief = assembleBrief(
+      {
+        recentSessions: manySessions(3),
+        facts: [],
+        relatedDocs: [],
+        factsAvailable: 0,
+        recentSessionsAvailable: 3,
+      },
+      { format: "markdown" as const },
+      defaultConfig(),
+    );
+    expect(brief.meta.sessions.truncated).toBe(false);
+    expect(brief.text).not.toContain("more sessions in scope");
+  });
+});
+
+describe("assembleBrief: facts index-tier rather than drop", () => {
+  // Long enough that only a handful fit the 900-tok (3600-char) full-text
+  // reserve, but whose index lines (`topicKey — detail (fact:NN)`) are cheap
+  // enough that the entire overflow fits the 300-tok index tier.
+  const bulky = (id: number): Fact =>
+    makeFact({
+      id,
+      category: "homelab",
+      fact: `fact ${id} ${"z".repeat(400)}`,
+      topicKey: `topic-${id}`,
+      detail: "when it matters",
+    });
+
+  it("overflow facts land in indexedItems, not droppedItems, and still render", () => {
+    const facts = Array.from({ length: 20 }, (_, i) => bulky(i + 1));
+    const brief = assembleBrief(
+      {
+        recentSessions: [],
+        facts,
+        relatedDocs: [],
+        factsAvailable: facts.length,
+        recentSessionsAvailable: 0,
+      },
+      { format: "markdown" as const },
+      defaultConfig(),
+    );
+
+    expect(brief.indexedItems.length).toBeGreaterThan(0);
+    expect(brief.meta.facts.indexed).toBe(brief.indexedItems.length);
+    expect(brief.droppedItems.filter((id) => id.startsWith("fact:"))).toEqual([]);
+    // Every fact is accounted for: rendered in full, or rendered compressed.
+    expect(brief.facts.length + brief.indexedItems.length).toBe(facts.length);
+    // ...and the index lines are really in the text, not just in the metadata.
+    const indexedId = brief.indexedItems[0]!;
+    expect(brief.text).toContain(indexedId);
+  });
+
+  it("keeps the pinned delivery guarantee even when the reserve is saturated", () => {
+    const facts = [...Array.from({ length: 20 }, (_, i) => bulky(i + 1)), makeFact({
+      id: 99,
+      category: "homelab",
+      fact: "never force-push main",
+      pinned: true,
+    })];
+    const brief = assembleBrief(
+      {
+        recentSessions: [],
+        facts,
+        relatedDocs: [],
+        factsAvailable: facts.length,
+        recentSessionsAvailable: 0,
+      },
+      { format: "json" as const },
+      defaultConfig(),
+    );
+    // Pinned is a delivery guarantee, not a rank boost: full text, last position.
+    expect(brief.facts.some((f) => f.id === 99)).toBe(true);
+    expect(brief.indexedItems).not.toContain("fact:99");
+    expect(brief.droppedItems).not.toContain("fact:99");
+  });
+});
+
+// Case 3 of the accounting contract. Vision has no arm in `SourceType`/
+// `TypedId`, so it CANNOT appear in `droppedItems` — that exemption is
+// deliberate and documented on `BriefResult.meta`. What it owes instead is
+// `meta.vision.chars` plus a way back to the full record.
+describe("assembleBrief: vision is exempt from droppedItems but not from accounting", () => {
+  const makeVision = (scope: string, chars: number): Vision => ({
+    id: scope === "global" ? 1 : 2,
+    scope,
+    summary: `${scope} vision `.padEnd(chars, "v"),
+    details: "full narrative",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  const parts = {
+    // 1800 chars against the 400-tok (1600-char) vision reserve: the project
+    // row is cut, but not all the way down to a bare ellipsis, so BOTH rows
+    // still count as returned — vision truncates text, it does not drop rows.
+    vision: { global: makeVision("global", 900), project: makeVision("project:grounded", 900) },
+    recentSessions: [],
+    facts: [],
+    relatedDocs: [],
+    factsAvailable: 0,
+    recentSessionsAvailable: 0,
+  };
+
+  it("never puts vision in droppedItems, and reports the cut in meta.vision.chars", () => {
+    const brief = assembleBrief(parts, { format: "json" as const }, defaultConfig());
+    expect(brief.meta.vision.truncated).toBe(true);
+    expect(brief.meta.vision.chars!.available).toBe(1800);
+    expect(brief.meta.vision.chars!.returned).toBeLessThan(1800);
+    // Rows, not chars — both vision rows survived; only their text was cut.
+    expect(brief.meta.vision).toMatchObject({ returned: 2, available: 2 });
+    expect(brief.droppedItems).toEqual([]);
+    expect(brief.indexedItems).toEqual([]);
+  });
+
+  it("points a truncated vision at the tool that returns it in full", () => {
+    const brief = assembleBrief(parts, { format: "markdown" as const }, defaultConfig());
+    expect(brief.text).toContain("ground_vision_get");
+    expect(brief.text).toContain("of 1800 chars");
+  });
+
+  it("says nothing when the vision fit", () => {
+    const brief = assembleBrief(
+      { ...parts, vision: { global: makeVision("global", 200), project: null } },
+      { format: "markdown" as const },
+      defaultConfig(),
+    );
+    expect(brief.meta.vision.truncated).toBe(false);
+    expect(brief.text).not.toContain("ground_vision_get");
   });
 });

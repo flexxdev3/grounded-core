@@ -1400,9 +1400,14 @@ export class PostgresStore implements Store {
 
   async brief(opts?: BriefOptions): Promise<BriefResult> {
     const o = opts ?? {};
+    // Fetch 200, render `recentSessions`: same reason as the facts lane below.
+    // At a fetch of 8 the sessions reserve never binds, so a truncated lane had
+    // no ids to name and droppedItems came back empty while meta said
+    // `truncated: true` — 42 sessions withheld silently (measured 2026-09-01).
+    // engine/brief.ts caps the RENDERED list; the surplus exists to be named.
     const recentSessionsResult = await this.sessionsList({
       project: o.project,
-      limit: o.recentSessions ?? 8,
+      limit: Math.max(o.recentSessions ?? 8, 200),
     });
     // 200, not 30: facts 31+ must still be fetched or their ids can never be
     // named in droppedItems (the reserve truncation in engine/brief.ts).

@@ -87,8 +87,10 @@ POST /brief
 
 Returns vision + facts + recent sessions + related docs, each lane given a reserved token
 budget so no lane can evict another. \`meta\` reports what was delivered per lane and
-\`droppedItems\` names, by typed id, exactly what did not fit — so you can fetch it if you
-need it. Nothing is silently withheld.
+\`droppedItems\` names, by typed id, exactly which **facts and sessions** did not fit — so you
+can fetch them with \`ground_get\`. **Vision is the one exemption**: it has no typed id, so it
+truncates text instead of dropping rows and reports the cut in \`meta.vision.chars\`;
+\`ground_vision_get\` returns it in full. Nothing is withheld without being either named or counted.
 
 **Pass \`timezone\`.** The session line carries a DATE ONLY, rendered UTC when you omit it.
 West of UTC that means work logged in your local evening reads as TOMORROW, and you will

@@ -1603,9 +1603,15 @@ export class SqliteStore implements Store {
   async brief(opts?: BriefOptions): Promise<BriefResult> {
     const o = opts ?? {};
     const recentN = o.recentSessions ?? 8;
+    // Fetch 200, render `recentN`: same reason as the facts lane below. At a
+    // fetch of 8 the sessions reserve never binds, so a truncated lane had no
+    // ids to name and droppedItems came back empty while meta said
+    // `truncated: true` — 42 sessions withheld silently (measured 2026-09-01).
+    // engine/brief.ts caps the RENDERED list at `recentN`; the surplus rows
+    // exist only so they can be named in droppedItems.
     const recentSessionsResult = await this.sessionsList({
       project: o.project,
-      limit: recentN,
+      limit: Math.max(recentN, 200),
     });
     // Bumped 30 -> 200: at 30, facts 31+ are invisible to the brief's reserve
     // and can never be named in droppedItems (their ids were never fetched).

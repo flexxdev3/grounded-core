@@ -77,6 +77,50 @@ const CHARS_PER_TOK = 4;
  */
 export const PREAMBLE_RESERVE_TOK = 200;
 
+/**
+ * ACCOUNTING CONTRACT — what "a truncated lane accounts for what it withheld"
+ * means, per lane. There are exactly three shapes that account can take, and
+ * which one a lane uses is a property of the lane, not a per-call choice:
+ *
+ * 1. NAMED — the row reached this engine and was then cut, either by the lane's
+ *    char reserve or by the caller's row cap (`BriefOptions.recentSessions`).
+ *    Its typed id goes in `droppedItems` and `renderMarkdown` names it in the
+ *    lane's trailing note. Facts and sessions both work this way. This is the
+ *    only fully honest form and the one every drop should land in.
+ *
+ * 2. COUNTED — the row matched in the store but never reached this engine, so
+ *    there is no id to name: the adapter's pre-limit `available` exceeds what
+ *    arrived in `BriefParts`. The engine cannot invent ids it was never given,
+ *    but it must not stay SILENT either — the note reports the unnamed
+ *    remainder and points at the listing tool that recovers it. Every COUNTED
+ *    row is a defect in the CALLER's fetch window, not in this file: a lane
+ *    fetched narrower than its own reserve can never name its own drops. The
+ *    facts lane fetches at 200 for exactly this reason. The sessions lane is
+ *    fetched at `recentSessions ?? 8` in both storage adapters, which is why a
+ *    live brief can report `sessions {returned: 8, available: 50, truncated:
+ *    true}` with an empty `droppedItems` — 42 COUNTED rows. Widening that
+ *    fetch moves them into case 1; the row cap below then keeps the rendered
+ *    count at the caller's requested 8.
+ *
+ * 3. EXEMPT — vision only. Vision has no arm in `SourceType`/`TypedId`, so it
+ *    has no id to place in `droppedItems` by construction, and it truncates
+ *    TEXT inside kept rows instead of dropping rows. Its account is
+ *    `meta.vision.chars` plus a rendered pointer at `ground_vision_get`, which
+ *    returns the record untruncated. This is deliberate and is documented on
+ *    `BriefResult.meta` in contract.ts — it is NOT a case-2 defect. Any prose
+ *    claiming `droppedItems` names everything a brief withheld is overclaiming;
+ *    the true claim is scoped to facts and sessions.
+ */
+
+/**
+ * Rows the sessions lane renders when the caller doesn't ask for a specific
+ * count — the same default both storage adapters apply to their own fetch.
+ * Enforced HERE as well as at the fetch, so that widening the adapters' fetch
+ * (case 2 above) names the surplus in `droppedItems` instead of growing the
+ * rendered list.
+ */
+export const DEFAULT_RECENT_SESSIONS = 8;
+
 export interface BriefParts {
   vision?: { global: Vision | null; project: Vision | null };
   recentSessions: Session[];
@@ -110,6 +154,12 @@ interface ReserveResult<T> {
  * Guard: the first item is never dropped, even if it alone exceeds the
  * reserve. A single long pinned fact must not produce an empty facts
  * section — better to blow the budget slightly than deliver nothing.
+ *
+ * `maxRows` is an optional ROW cap applied alongside the char budget —
+ * whichever binds first. It exists so a caller's requested row count is
+ * enforced in the one place that can still NAME what it cut (case 1 of the
+ * accounting contract above); a row cap applied at the fetch instead produces
+ * unnameable case-2 rows.
  */
 function truncateToReserve<T>(
   items: T[],
@@ -117,6 +167,7 @@ function truncateToReserve<T>(
   reserveTok: number,
   renderLine: (item: T) => string,
   typedId: (item: T) => TypedId,
+  maxRows?: number,
 ): ReserveResult<T> {
   const budget = reserveTok * CHARS_PER_TOK;
   const kept: T[] = [];
@@ -132,7 +183,8 @@ function truncateToReserve<T>(
       used += cost;
       continue;
     }
-    if (used + cost > budget) {
+    const capBinds = maxRows !== undefined && kept.length >= maxRows;
+    if (capBinds || used + cost > budget) {
       for (let j = i; j < items.length; j++) droppedIds.push(typedId(items[j]!));
       break;
     }
@@ -498,6 +550,7 @@ export function assembleBrief(
     cfg.brief.reserve.sessions,
     (s: Session) => renderSessionLine(s, opts.timezone),
     (s) => `session:${s.id}` as TypedId,
+    opts.recentSessions ?? DEFAULT_RECENT_SESSIONS,
   );
   const vision = parts.vision ?? { global: null, project: null };
   const visionSection = truncateVisionSection(vision.global, vision.project, cfg.brief.reserve.vision);
@@ -533,11 +586,42 @@ function factsScopeLabel(opts: BriefOptions): string {
  * paid for out of the same budget it's reporting on. Caps the named ids so a
  * very large drop can't itself blow the lane's remaining room. */
 const MAX_NAMED_DROPPED = 8;
-function droppedNote(kind: string, ids: TypedId[]): string {
+
+/** The listing surface that recovers a lane's UNNAMED remainder — case 2 of
+ * the accounting contract, where the rows never reached the engine and so have
+ * no id to `ground_get`. */
+const LANE_LISTER: Record<string, string> = {
+  sessions: "ground_timeline",
+  facts: "ground_facts_list",
+};
+
+/**
+ * `unnamed` is the count of rows this lane withheld but could not name (case
+ * 2): `available - returned - indexed - dropped`. It is normally 0. When it
+ * isn't, the note still has to fire — a truncated lane that renders NO note
+ * because it happens to have no ids to name is the silent-withholding bug this
+ * function exists to prevent.
+ */
+function droppedNote(kind: string, ids: TypedId[], unnamed = 0): string {
+  const lister = LANE_LISTER[kind] ?? "the lane's list tool";
+  const total = ids.length + unnamed;
+  if (ids.length === 0) {
+    return `… ${total} more ${kind} in scope, not shown this budget and not individually named — beyond this brief's fetch window, list them with ${lister}`;
+  }
   const shown = ids.slice(0, MAX_NAMED_DROPPED);
   const rest = ids.length - shown.length;
   const suffix = rest > 0 ? `, +${rest} more` : "";
-  return `… ${ids.length} more ${kind} in scope, not shown this budget — ground_get any of: ${shown.join(", ")}${suffix}`;
+  const unnamedSuffix =
+    unnamed > 0 ? ` (a further ${unnamed} not named this brief — ${lister} for those)` : "";
+  return `… ${total} more ${kind} in scope, not shown this budget — ground_get any of: ${shown.join(", ")}${suffix}${unnamedSuffix}`;
+}
+
+/** Rows a lane withheld without naming: what it says it had, minus everything
+ * it rendered (full text + index lines) and everything it named as dropped.
+ * Clamped at 0 — `available` is a documented floor, so an adapter that
+ * under-reports it must never produce a negative "unnamed" count. */
+function unnamedCount(meta: DeliveryMeta, namedDropped: number, indexed = 0): number {
+  return Math.max(0, meta.available - meta.returned - indexed - namedDropped);
 }
 
 export function renderMarkdown(
@@ -569,6 +653,16 @@ export function renderMarkdown(
       if (gv) lines.push(`--- ${pv.scope} ---`);
       lines.push(visionSection.project);
     }
+    // Case 3 of the accounting contract: vision cannot appear in
+    // `droppedItems` (no `TypedId` arm), so this line IS its account in the
+    // text — without it a 19k-char vision cut to 1.8k is marked only by a
+    // single trailing ellipsis with no way back to the full record.
+    if (visionSection.meta.truncated && visionSection.meta.chars) {
+      const { returned, available } = visionSection.meta.chars;
+      lines.push(
+        `… vision cut to ${returned} of ${available} chars for the startup budget — ground_vision_get returns it in full.`,
+      );
+    }
     lines.push(VISION_APPLY_NOTE);
     lines.push("");
   }
@@ -588,8 +682,9 @@ export function renderMarkdown(
       lines.push(renderSessionLine(s, opts.timezone));
     }
   }
-  if (brief.meta.sessions.truncated && sessionDropped.length > 0) {
-    lines.push(droppedNote("sessions", sessionDropped));
+  const sessionsUnnamed = unnamedCount(brief.meta.sessions, sessionDropped.length);
+  if (brief.meta.sessions.truncated && (sessionDropped.length > 0 || sessionsUnnamed > 0)) {
+    lines.push(droppedNote("sessions", sessionDropped, sessionsUnnamed));
   }
   lines.push("");
 
@@ -607,8 +702,15 @@ export function renderMarkdown(
       lines.push(renderFactIndexLine(f));
     }
   }
-  if (brief.meta.facts.truncated && factDropped.length > 0) {
-    lines.push(droppedNote("facts", factDropped));
+  // Index-tier facts are NOT withheld (they rendered, compressed), so they are
+  // subtracted out before asking what went unnamed.
+  const factsUnnamed = unnamedCount(
+    brief.meta.facts,
+    factDropped.length,
+    brief.indexedItems.length,
+  );
+  if (brief.meta.facts.truncated && (factDropped.length > 0 || factsUnnamed > 0)) {
+    lines.push(droppedNote("facts", factDropped, factsUnnamed));
   }
 
   if (brief.relatedDocs.length > 0) {
