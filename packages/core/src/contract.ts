@@ -496,7 +496,10 @@ export interface FactInput {
 }
 
 export interface VisionInput {
-  /** narrative markdown. Recalled; never injected. */
+  /** narrative markdown. Never recalled, never injected; read via visionGet/
+   *  visionList (GET /vision) only. Capped at `brief.reserve.vision` x 4 chars
+   *  by both write surfaces (POST /vision, ground_vision_set) — over the cap
+   *  the write is REJECTED, not silently truncated at delivery. */
   details: string;
   /** short form injected at SessionStart. Never recalled. Omitted/undefined
    * falls back to truncated `details` for injection. */

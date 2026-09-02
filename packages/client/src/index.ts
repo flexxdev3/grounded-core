@@ -85,8 +85,10 @@ export interface GroundedClient {
   vision: {
     /**
      * Set the vision for a scope; edits the active record in place (one per
-     * scope). `details` is the narrative markdown (recalled, never
-     * injected); `summary` is the short form injected at SessionStart
+     * scope). `details` is the narrative markdown (never recalled, never
+     * injected) and is CAPPED at `brief.reserve.vision` x 4 chars — over it
+     * the server rejects the write with a 400 rather than truncating at
+     * delivery; `summary` is the short form injected at SessionStart
      * (never recalled) — omitted/undefined falls back to truncated
      * `details` for injection.
      */

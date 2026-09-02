@@ -8,8 +8,16 @@ import { Markdown } from "../components/Markdown.js";
 
 // Mirrors GroundedConfig.brief.reserve.vision's default (config.ts) and the
 // chars÷4 approximation used everywhere else in the engine (no tokenizer).
+// The server derives the same number from the DEPLOYMENT's configured reserve,
+// so on a cabinet that has tuned brief.reserve.vision this counter is only an
+// estimate — the 400 the server returns is the authority, and the save handler
+// surfaces its message verbatim rather than second-guessing it.
 const SUMMARY_RESERVE_TOK = 400;
 const SUMMARY_RESERVE_CHARS = SUMMARY_RESERVE_TOK * 4;
+// `details` is capped by the same reserve, and unlike `summary` going over is
+// a REJECTED WRITE, not a soft budget. Counting it here means the operator
+// sees the overage while typing instead of losing the edit to a 400 on save.
+const DETAILS_CAP_CHARS = SUMMARY_RESERVE_CHARS;
 
 /** One vision card: the single active record for a scope, edited in place. */
 function VisionCard(props: {
@@ -34,6 +42,15 @@ function VisionCard(props: {
       toast("Vision details are required");
       return;
     }
+    if (details.length > DETAILS_CAP_CHARS) {
+      // Keep the modal open with the text intact — the operator has to cut
+      // something, and losing the draft to a toast is the worst outcome.
+      toast(
+        `Details are ${details.length} chars, over the ${DETAILS_CAP_CHARS}-char cap. ` +
+          `Trim ${details.length - DETAILS_CAP_CHARS}. History belongs in a session, not the vision.`,
+      );
+      return;
+    }
     const summary = summaryDraft.trim();
     try {
       await api.vision.set({
@@ -52,6 +69,8 @@ function VisionCard(props: {
 
   const summaryLen = summaryDraft.trim().length;
   const overBudget = summaryLen > SUMMARY_RESERVE_CHARS;
+  const detailsLen = detailsDraft.trim().length;
+  const detailsOverCap = detailsLen > DETAILS_CAP_CHARS;
 
   return (
     <div class="card" style={{ marginBottom: "1.2rem" }}>
@@ -127,7 +146,12 @@ function VisionCard(props: {
             </p>
           </div>
           <div>
-            <label class="field-label">Details — narrative markdown, recalled but never injected</label>
+            <label class="field-label" style={{ display: "flex", alignItems: "center" }}>
+              <span style={{ flex: 1 }}>Details — narrative markdown, never recalled and never injected</span>
+              <span class="mono" style={{ fontSize: "0.66rem", color: detailsOverCap ? "var(--copper-bright)" : "var(--paper-faint)" }}>
+                {detailsLen} / {DETAILS_CAP_CHARS} chars{detailsOverCap ? " — over cap, save will fail" : ""}
+              </span>
+            </label>
             <textarea
               class="input"
               style={{ width: "100%", minHeight: "14rem", resize: "vertical", fontFamily: "inherit" }}

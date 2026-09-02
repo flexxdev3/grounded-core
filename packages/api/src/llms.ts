@@ -29,7 +29,8 @@ Grounded separates memory by responsibility instead of inferring. Route what you
 - **facts** — durable rules and operator truths. Explicit, small, always in the startup brief.
 - **sessions** — what happened, chronologically. Written at the end of a work session.
 - **docs** — what the operator wrote down. Ingested markdown, chunked and embedded.
-- **vision** — the direction. Injected at startup, never returned by recall.
+- **vision** — the direction. Injected at startup, never returned by recall. Hard-capped;
+  see "How to write a vision".
 
 If two lanes both fit, the more specific one wins and the other gets a pointer, not a copy.
 
@@ -94,6 +95,9 @@ budget so no lane can evict another. \`meta\` reports what was delivered per lan
 can fetch them with \`ground_get\`. **Vision is the one exemption**: it has no typed id, so it
 truncates text instead of dropping rows and reports the cut in \`meta.vision.chars\`;
 \`ground_vision_get\` returns it in full. Nothing is withheld without being either named or counted.
+That truncation is now a **legacy path only** — the write cap means a newly written vision
+always fits its reserve. A row still reporting \`truncated: true\` predates the cap and should
+be trimmed at its next edit.
 
 **Pass \`timezone\`.** The session line carries a DATE ONLY, rendered UTC when you omit it.
 West of UTC that means work logged in your local evening reads as TOMORROW, and you will
@@ -139,8 +143,10 @@ exists without reading content you were not scoped to.
 - \`POST /docs/ingest\` — walks absolute paths, chunks, embeds, and delete-before-inserts
   changed files. Idempotent: unchanged files skip. A path that does not exist or cannot be
   read is a 400 (\`INGEST_PATH_UNREADABLE\`), never a 200 with \`scanned: 0\`.
-- \`POST /vision\` — the direction. \`summary\` is injected at startup and never recalled;
-  \`details\` is recalled and never injected.
+- \`POST /vision\` — the direction. \`summary\` is injected at startup; \`details\` is neither
+  injected nor recalled — read it back with \`GET /vision\`. \`details\` is **capped**: over
+  \`brief.reserve.vision\` x 4 chars (**1600** on the shipped default) the write is rejected
+  with a 400. See "How to write a vision".
 
 Facts are never written by inference. Synthesis proposes; only an operator promotes.
 
@@ -173,6 +179,43 @@ pinned set survives the reserve, which is why pinning everything defeats it.
 
 If facts are being dropped, **audit the lane before raising the reserve**. Terse facts make the
 cliff unreachable; a bigger reserve only moves it.
+
+## How to write a vision
+
+**A vision is the objective and the committed next steps — nothing else.** It is the answer to
+"what is this work FOR", not a record of what happened. It is injected at startup and never
+recalled, so every char it spends is spent on every session in that scope.
+
+\`details\` is **hard-capped at \`brief.reserve.vision\` x 4 chars — 1600 on the shipped
+default.** Over the cap the write is REJECTED, not trimmed:
+
+\`\`\`
+400  details is 2802 chars, over the 1600-char vision cap. Vision carries objectives and
+     committed next steps only -- history belongs in sessions, open defects in a HANDOFF
+     doc. Trim 1202 chars.
+\`\`\`
+
+The cap is the vision lane's brief reserve, in chars. It is not a style preference: text past
+the reserve was never delivered to anyone. Before the cap the overflow was cut silently at
+read time, so an author could write 19k chars, see a 201, and never learn that the brief
+handed agents the first 1600 and dropped the rest. Failing the write is the only moment the
+author is still present to fix it.
+
+What does NOT belong in a vision, and where it goes instead:
+
+- **What happened** — a session (\`POST /sessions\`). This is the single biggest source of bloat:
+  a vision edited as a changelog grows without bound.
+- **Open defects, blockers, at-risk state** — a HANDOFF doc in the corpus.
+- **How to do something** — a doc; the vision names it with a \`[[wikilink]]\`, never a summary.
+- **Per-item status tables** — a STATE.md.
+
+Editing is read-modify-write: \`GET /vision?scope=...\`, amend, POST the whole record back
+(a set REPLACES the row in place). If that POST 400s, the row was already over cap — trim it
+in the same edit rather than retrying.
+
+**Raising the reserve is not the fix.** \`brief.reserve.vision\` raises the cap and the read
+budget together, but every char it adds is taken from the startup window that facts and
+sessions share. Audit the lane first.
 
 ## Docs and frontmatter
 

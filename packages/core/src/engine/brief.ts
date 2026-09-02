@@ -152,6 +152,33 @@ function collapseWhitespace(text: string): string {
 const CHARS_PER_TOK = 4;
 
 /**
+ * The vision lane's WRITE cap, derived from the same reserve that budgets its
+ * READ. Vision is the one lane the brief truncates as text rather than dropping
+ * rows, so an over-long row was never rejected — it was silently cut at
+ * delivery, and the author never learned. Deriving the cap here, from the
+ * reserve, is what keeps the two from drifting: raising `brief.reserve.vision`
+ * raises what a writer may store, and nothing else has to change.
+ */
+export function visionCapChars(reserveTok: number): number {
+  return reserveTok * CHARS_PER_TOK;
+}
+
+/**
+ * The shared over-cap verdict. Returns the operator-facing message, or null
+ * when the text fits. Public for the same reason `computeDeliveryRank` is:
+ * API and MCP both write vision, and a surface that reimplements this can
+ * disagree with the engine about what fits.
+ */
+export function visionCapError(details: string, capChars: number): string | null {
+  if (details.length <= capChars) return null;
+  return (
+    `details is ${details.length} chars, over the ${capChars}-char vision cap. ` +
+    `Vision carries objectives and committed next steps only -- history belongs in ` +
+    `sessions, open defects in a HANDOFF doc. Trim ${details.length - capChars} chars.`
+  );
+}
+
+/**
  * Static preamble/maps text (`=== STARTUP CONTEXT ===` header + startupNote +
  * the VISION apply note) budget, for parity with Doctrine 3's reserve table.
  * This is fixed text with nothing to truncate, so it is deliberately NOT a

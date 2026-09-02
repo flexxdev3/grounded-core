@@ -27,7 +27,12 @@ import type {
 } from "@grounded/core/contract";
 // Narrow subpath, not the barrel: the route layer must not drag openStore and
 // its database drivers in just to render a delivery warning.
-import { computeDeliveryRank, pinnedFactsReserveStatus } from "@grounded/core/delivery";
+import {
+  computeDeliveryRank,
+  pinnedFactsReserveStatus,
+  visionCapChars,
+  visionCapError,
+} from "@grounded/core/delivery";
 import { openApiDocument } from "./openapi.js";
 import { LLMS_TXT } from "./llms.js";
 
@@ -44,6 +49,11 @@ const DEFAULT_TYPICAL_FACT_LIMIT = 8;
 /** Fallback for `createApp(store)` callers that pass no config. Kept in sync
  *  with defaultConfig().brief.reserve.facts by the api test suite. */
 const DEFAULT_FACTS_RESERVE_TOK = 900;
+
+/** Fallback for `createApp(store)` callers that pass no config. Kept in sync
+ *  with defaultConfig().brief.reserve.vision by the api test suite. */
+const DEFAULT_VISION_RESERVE_TOK = 400;
+
 
 /** Large enough to pull every active fact for the pinned-reserve warning
  *  check; not a real pagination limit — just avoids the store's normal
@@ -296,11 +306,20 @@ function factPatch(body: unknown): Partial<FactInput> {
 // SessionStart hook and the /fact skill are being updated in lockstep by the
 // main thread — an alias would let a stale caller silently keep writing into
 // the wrong field instead of failing loudly.
-function visionInput(body: unknown): VisionInput {
+// The cap is DERIVED from `brief.reserve.vision`, never typed as its own
+// number, so the write limit and the read budget cannot drift apart. Over-long
+// vision was never rejected before, only silently truncated at read time by
+// the brief -- which is how a 19k-char row survived unnoticed while every
+// brief delivered its first 1600 chars and dropped the rest without a word.
+// Failing the write is the only place the author is still present to fix it.
+function visionInput(body: unknown, capChars: number): VisionInput {
   if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
   rejectUnknownKeys(body, ["details", "summary", "scope", "createdBy", "source"]);
+  const details = asString(body.details, "details");
+  const capError = visionCapError(details, capChars);
+  if (capError) throw new ValidationError(capError);
   return {
-    details: asString(body.details, "details"),
+    details,
     summary: optString(body.summary, "summary"),
     scope: optString(body.scope, "scope"),
     createdBy: optString(body.createdBy, "createdBy"),
@@ -369,7 +388,12 @@ async function readJsonOptional(c: {
 
 export function createApp(
   store: Store,
-  opts: { token?: string; typicalFactLimit?: number; factsReserveTok?: number } = {},
+  opts: {
+    token?: string;
+    typicalFactLimit?: number;
+    factsReserveTok?: number;
+    visionReserveTok?: number;
+  } = {},
 ): Hono {
   const app = new Hono();
   const token = opts.token;
@@ -381,6 +405,9 @@ export function createApp(
   // Same threading pattern, for the pinned-reserve warning: matches
   // defaultConfig().brief.reserve.facts.
   const factsReserveTok = opts.factsReserveTok ?? DEFAULT_FACTS_RESERVE_TOK;
+  // Same threading pattern again, for the vision write cap: matches
+  // defaultConfig().brief.reserve.vision. Raising the reserve raises the cap.
+  const visionCap = visionCapChars(opts.visionReserveTok ?? DEFAULT_VISION_RESERVE_TOK);
 
   /** Assembles the write-time delivery signal for a fact write response.
    * Omits `delivery` entirely for an archived fact (factsDeliveryRank
@@ -479,7 +506,7 @@ export function createApp(
   });
 
   app.post("/vision", async (c) => {
-    const input = visionInput(await readJson(c));
+    const input = visionInput(await readJson(c), visionCap);
     return c.json(await store.visionSet(input), 201);
   });
 

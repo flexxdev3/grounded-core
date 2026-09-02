@@ -11,6 +11,7 @@ async function main(): Promise<void> {
   const server = createServer(store, {
     typicalFactLimit: config.delivery.typicalFactLimit,
     factsReserveTok: config.brief.reserve.facts,
+    visionReserveTok: config.brief.reserve.vision,
   });
 
   const portRaw = process.env["GROUNDED_MCP_HTTP_PORT"];

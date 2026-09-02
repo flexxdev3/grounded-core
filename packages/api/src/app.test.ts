@@ -818,6 +818,9 @@ describe("@grounded/api /llms.txt", () => {
       // not do, and to flag drift it walks past. Assert the claims, not the type.
       for (const anchor of [
         "## How to write a fact",
+        // The vision cap is enforced at the write, so llms.txt is the only
+        // place an agent is told the limit BEFORE it eats a 400.
+        "## How to write a vision",
         "## Docs and frontmatter",
         "## Keep the record honest",
         // Frontmatter is stripped, never parsed — the misconception most likely
@@ -1017,5 +1020,65 @@ describe("@grounded/api limit validation", () => {
     const neg = await get("/facts?offset=-1");
     expect(neg.status).toBe(400);
     expect((await neg.json()).error).toBe('"offset" must be a non-negative integer');
+  });
+});
+
+describe("@grounded/api vision cap", () => {
+  // The cap is not a number app.ts owns — it is brief.reserve.vision turned
+  // into chars. Prove the boundary by observation against defaultConfig(), the
+  // same way the typicalFactLimit fallback is proven, so raising the reserve
+  // raises the cap without anyone editing a second constant.
+  const capOf = (home: string): number => defaultConfig(home).brief.reserve.vision * 4;
+
+  const post = (app: ReturnType<typeof createApp>, details: string, scope: string) =>
+    app.fetch(
+      new Request("http://local.test/vision", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ details, scope }),
+      }),
+    );
+
+  it("accepts details exactly at the cap and rejects one char over", async () => {
+    const home = mkdtempSync(join(tmpdir(), "grounded-vision-cap-"));
+    const store = await openStore(sqliteConfig(home));
+    await store.init();
+    try {
+      const cap = capOf(home);
+      const app = createApp(store); // no visionReserveTok -> the fallback
+
+      const atCap = await post(app, "v".repeat(cap), "project:at-cap");
+      expect(atCap.status).toBe(201);
+
+      const overCap = await post(app, "v".repeat(cap + 1), "project:over-cap");
+      expect(overCap.status).toBe(400);
+      const body = await overCap.json();
+      expect(body.error).toContain(`${cap + 1} chars`);
+      expect(body.error).toContain(`${cap}-char vision cap`);
+      // Says how much to cut, so the author does not have to count.
+      expect(body.error).toContain("Trim 1 chars");
+    } finally {
+      await store.close?.();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("honours an explicit visionReserveTok over the fallback", async () => {
+    const home = mkdtempSync(join(tmpdir(), "grounded-vision-cap-cfg-"));
+    const store = await openStore(sqliteConfig(home));
+    await store.init();
+    try {
+      // 10 tok = 40 chars: far under the shipped default, proving the cap
+      // tracks the configured reserve rather than a hardcoded 1600.
+      const app = createApp(store, { visionReserveTok: 10 });
+      const over = await post(app, "v".repeat(41), "project:tight");
+      expect(over.status).toBe(400);
+      expect((await over.json()).error).toContain("40-char vision cap");
+      const ok = await post(app, "v".repeat(40), "project:tight");
+      expect(ok.status).toBe(201);
+    } finally {
+      await store.close?.();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

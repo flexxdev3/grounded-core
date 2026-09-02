@@ -20,6 +20,11 @@ export interface StartServerOptions {
    *  against. Threaded from the resolved config by the bin, same pattern as
    *  `typicalFactLimit`. */
   factsReserveTok?: number;
+  /** `cfg.brief.reserve.vision` — the vision reserve budget (tokens). The
+   *  POST /vision validator turns it into the char cap it rejects over-long
+   *  vision against, so the write limit tracks the read budget. Threaded from
+   *  the resolved config by the bin, same pattern as `factsReserveTok`. */
+  visionReserveTok?: number;
 }
 
 export interface RunningServer {
@@ -39,6 +44,9 @@ export function startServer(opts: StartServerOptions): Promise<RunningServer> {
       : {}),
     ...(opts.factsReserveTok !== undefined
       ? { factsReserveTok: opts.factsReserveTok }
+      : {}),
+    ...(opts.visionReserveTok !== undefined
+      ? { visionReserveTok: opts.visionReserveTok }
       : {}),
   });
 

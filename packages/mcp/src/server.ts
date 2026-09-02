@@ -2,7 +2,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GroundedError, defaultConfig } from "@grounded/core";
-import { computeDeliveryRank, pinnedFactsReserveStatus } from "@grounded/core/delivery";
+import {
+  computeDeliveryRank,
+  pinnedFactsReserveStatus,
+  visionCapChars,
+  visionCapError,
+} from "@grounded/core/delivery";
 import type {
   Store,
   RecallResult,
@@ -89,12 +94,17 @@ const TYPED_ID_RE = /^(fact|session|doc):\d+$/;
  */
 export function createServer(
   store: Store,
-  opts: { typicalFactLimit?: number; factsReserveTok?: number } = {},
+  opts: { typicalFactLimit?: number; factsReserveTok?: number; visionReserveTok?: number } = {},
 ): McpServer {
   const typicalFactLimit = opts.typicalFactLimit ?? defaultConfig().delivery.typicalFactLimit;
   // Same threading pattern as typicalFactLimit, for the pinned-reserve
   // write-time warning: matches cfg.brief.reserve.facts.
   const factsReserveTok = opts.factsReserveTok ?? defaultConfig().brief.reserve.facts;
+  // Same threading pattern again, for the vision write cap. MCP writes vision
+  // straight to the store without passing through the API's request validator,
+  // so without this an MCP agent could store a row the brief would silently
+  // truncate -- the exact failure the cap exists to end.
+  const visionCap = visionCapChars(opts.visionReserveTok ?? defaultConfig().brief.reserve.vision);
 
   /** Active facts scanned to compute the pinned set's share of the facts
    *  reserve. Large limit — this must see every active fact, not the
@@ -310,11 +320,16 @@ export function createServer(
       title: "Set vision",
       description:
         "Set the vision for a scope (narrative markdown). Edits the one active record for that scope in place. " +
-        "`details` is the full narrative markdown — recalled via ground_recall, never injected at SessionStart. " +
-        "`summary` is the short form injected at SessionStart and never recalled; omit it to fall back to a " +
-        "truncated `details` for injection.",
+        "`details` is the full narrative markdown — never recalled and never injected; read it back with " +
+        "ground_vision_get. `summary` is the short form injected at SessionStart; omit it to fall back to a " +
+        "truncated `details` for injection. `details` is CAPPED — objectives and committed next steps only, " +
+        "history belongs in sessions. Over the cap the write is rejected, not truncated.",
       inputSchema: {
-        details: z.string().describe("the vision itself — narrative markdown. Recalled; never injected."),
+        details: z
+          .string()
+          .describe(
+            `the vision itself — narrative markdown, at most ${visionCap} chars. Never recalled, never injected.`,
+          ),
         summary: z
           .string()
           .optional()
@@ -323,6 +338,8 @@ export function createServer(
       },
     },
     guard(async ({ details, summary, scope }) => {
+      const capError = visionCapError(details, visionCap);
+      if (capError) throw new Error(capError);
       const created = await store.visionSet({
         details,
         ...(summary !== undefined ? { summary } : {}),

@@ -7,6 +7,11 @@ import type { DeliveryRank } from "../contract.js";
 // graph. brief.ts remains the source of truth; this is a pure re-export.
 export { pinnedFactsReserveStatus } from "./brief.js";
 
+// Same rationale, for the vision write cap: both write surfaces (API request
+// validator, MCP ground_vision_set) need the identical verdict, and neither
+// should reach for the full brief.js module graph to get it.
+export { visionCapChars, visionCapError } from "./brief.js";
+
 /**
  * Fraction of the facts reserve the PINNED set alone must reach, by rendered
  * chars, before a fact write earns a warning. Pinned facts are a delivery

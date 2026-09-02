@@ -23,6 +23,11 @@ export { createEmbeddingProvider } from "./embedding/index.js";
 // of silent divergence this whole contract exists to remove.
 export { computeDeliveryRank } from "./engine/delivery.js";
 
+// Same reason as computeDeliveryRank above: vision is written by BOTH the API
+// and MCP, and before this the cap lived only in the API's request validator —
+// so an MCP agent could still store a row the brief would silently cut.
+export { visionCapChars, visionCapError } from "./engine/brief.js";
+
 // Install helpers — ready-to-paste MCP server config snippets (dependency-free).
 export {
   installSnippet,

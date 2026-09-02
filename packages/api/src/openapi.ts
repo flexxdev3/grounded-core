@@ -119,7 +119,7 @@ export const openApiDocument = {
             description:
               "Short form injected at SessionStart. Never recalled. Null falls back to truncated `details` for injection (pre-migration rows).",
           },
-          details: { type: "string", description: "narrative markdown. Recalled; never injected." },
+          details: { type: "string", description: "narrative markdown. Never recalled, never injected." },
           createdBy: { type: ["string", "null"] },
           source: { type: ["string", "null"] },
           createdAt: { type: "string" },
@@ -130,7 +130,14 @@ export const openApiDocument = {
         type: "object",
         required: ["details"],
         properties: {
-          details: { type: "string", description: "narrative markdown. Recalled; never injected." },
+          details: {
+          type: "string",
+          description:
+            "narrative markdown. Never recalled, never injected. CAPPED at " +
+            "`brief.reserve.vision` x 4 chars (1600 on the shipped default) — over it POST " +
+            "/vision returns 400. No static `maxLength` here: the cap follows the deployment's " +
+            "configured reserve.",
+        },
           summary: {
             type: "string",
             description:
@@ -579,6 +586,13 @@ export const openApiDocument = {
           "201": {
             description: "Created vision record",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Vision" } } },
+          },
+          "400": {
+            description:
+              "`details` is over the vision cap (`brief.reserve.vision` x 4 chars, 1600 on the " +
+              "shipped default). The write is rejected, never truncated; the message names the " +
+              "overage in chars.",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
           },
         },
       },
