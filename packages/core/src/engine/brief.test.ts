@@ -456,6 +456,49 @@ describe("assembleBrief: facts index-tier rather than drop", () => {
     expect(brief.text).toContain(indexedId);
   });
 
+  // The index tier used to engage in total silence: compressed lines look like
+  // ordinary (terse) fact lines, so a reader could not tell budget pressure
+  // from brevity. Every lane that clips has to say what it clipped.
+  it("labels the index block, naming the count and the way back to full text", () => {
+    const facts = Array.from({ length: 20 }, (_, i) => bulky(i + 1));
+    const brief = assembleBrief(
+      {
+        recentSessions: [],
+        facts,
+        relatedDocs: [],
+        factsAvailable: facts.length,
+        recentSessionsAvailable: 0,
+      },
+      { format: "markdown" as const },
+      defaultConfig(),
+    );
+    expect(brief.indexedItems.length).toBeGreaterThan(1);
+    expect(brief.text).toContain(
+      `… ${brief.indexedItems.length} more facts compressed to index lines`,
+    );
+    expect(brief.text).toContain("ground_get for the full text");
+    // The label sits directly above the compressed lines, never above the
+    // full-text ones.
+    const lines = brief.text!.split("\n");
+    const labelAt = lines.findIndex((l) => l.includes("compressed to index lines"));
+    expect(lines[labelAt + 1]).toContain(brief.indexedItems[0]!);
+  });
+
+  it("says nothing about compression when nothing was compressed", () => {
+    const brief = assembleBrief(
+      {
+        recentSessions: [],
+        facts: [makeFact({ id: 1, fact: "a terse fact" })],
+        relatedDocs: [],
+        factsAvailable: 1,
+        recentSessionsAvailable: 0,
+      },
+      { format: "markdown" as const },
+      defaultConfig(),
+    );
+    expect(brief.text).not.toContain("compressed to index lines");
+  });
+
   it("keeps the pinned delivery guarantee even when the reserve is saturated", () => {
     const facts = [...Array.from({ length: 20 }, (_, i) => bulky(i + 1)), makeFact({
       id: 99,
@@ -524,14 +567,80 @@ describe("assembleBrief: vision is exempt from droppedItems but not from account
     expect(brief.text).toContain("of 1800 chars");
   });
 
-  it("says nothing when the vision fit", () => {
+  it("says nothing about a CUT when the vision fit", () => {
     const brief = assembleBrief(
       { ...parts, vision: { global: makeVision("global", 200), project: null } },
       { format: "markdown" as const },
       defaultConfig(),
     );
     expect(brief.meta.vision.truncated).toBe(false);
-    expect(brief.text).not.toContain("ground_vision_get");
+    expect(brief.text).not.toContain("cut to");
+  });
+
+  // The clip account vision owes in place of `droppedItems`: per-ROW, named,
+  // in the same meta shape the other lanes use.
+  it("names each clipped row in meta.vision.rows instead of only summing chars", () => {
+    const brief = assembleBrief(parts, { format: "json" as const }, defaultConfig());
+    const rows = brief.meta.vision.rows!;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.ref)).toEqual(["vision:1", "vision:2"]);
+    expect(rows[0]!.scope).toBe("global");
+    // The project row is the one the reserve cut (project truncates first).
+    expect(rows[1]!.clipped).toBe(true);
+    expect(rows[1]!.chars.returned).toBeLessThan(rows[1]!.chars.available);
+  });
+});
+
+// The verified trap: a non-null `summary` REPLACES `details` in the brief, so
+// setting a summary blanks the body at SessionStart. The behavior is asserted
+// by the shared store suite and is deliberate (a lane budgeted for one of the
+// two fields cannot carry both) — what it may not be is silent.
+describe("assembleBrief: a summary that suppresses details says so, loudly", () => {
+  const withSummary: Vision = {
+    id: 7,
+    scope: "project:grounded",
+    summary: "one-line vision summary",
+    details: "the full vision body that the summary replaces at SessionStart".repeat(3),
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const noSummary: Vision = { ...withSummary, id: 8, summary: null };
+  const parts = (v: Vision) => ({
+    vision: { global: null, project: v },
+    recentSessions: [],
+    facts: [],
+    relatedDocs: [],
+    factsAvailable: 0,
+    recentSessionsAvailable: 0,
+  });
+
+  it("accounts the suppressed details chars on the row", () => {
+    const brief = assembleBrief(parts(withSummary), { format: "json" as const }, defaultConfig());
+    const row = brief.meta.vision.rows![0]!;
+    expect(row.ref).toBe("vision:7");
+    expect(row.suppressedDetailChars).toBe(withSummary.details.length);
+    // Not a text cut — the summary itself fit. Suppression is its own signal.
+    expect(row.clipped).toBe(false);
+    expect(brief.meta.vision.truncated).toBe(false);
+  });
+
+  it("renders a line naming the row and the chars the brief did not inject", () => {
+    const brief = assembleBrief(
+      parts(withSummary),
+      { format: "markdown" as const },
+      defaultConfig(),
+    );
+    expect(brief.text).toContain("one-line vision summary");
+    expect(brief.text).not.toContain("the full vision body that the summary replaces");
+    expect(brief.text).toContain("vision:7 (project:grounded) shows its summary");
+    expect(brief.text).toContain(`${withSummary.details.length} chars of details were not injected`);
+    expect(brief.text).toContain("ground_vision_get");
+  });
+
+  it("says nothing when there is no summary to suppress with", () => {
+    const brief = assembleBrief(parts(noSummary), { format: "markdown" as const }, defaultConfig());
+    expect(brief.text).not.toContain("shows its summary");
+    expect(brief.meta.vision.rows![0]!.suppressedDetailChars).toBeUndefined();
   });
 });
 

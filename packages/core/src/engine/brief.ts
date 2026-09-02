@@ -9,7 +9,14 @@ import type {
   TypedId,
   Vision,
 } from "../contract.js";
-import { defaultConfig } from "../config.js";
+import {
+  CHARS_PER_TOK,
+  LANE_BUDGETS,
+  defaultConfig,
+  resolveBudget,
+  resolveLaneBudget,
+} from "../config.js";
+import type { ResolvedLaneBudget } from "../config.js";
 
 const STARTUP_NOTE =
   "Lead from MOST RECENT WORK below. The DYNAMIC FACTS under it are curated standing knowledge — treat as authoritative.";
@@ -145,11 +152,13 @@ function collapseWhitespace(text: string): string {
 /**
  * Doctrine 3: the startup window is budgeted by RESERVATION, not drop order.
  * Each lane (vision/facts/sessions) gets a fixed share of the window and
- * truncates within its own slice — no lane can consume another's. This is
- * the char-per-token approximation used throughout: no BPE dependency, the
- * engine has no tokenizer and never will for this purpose.
+ * truncates within its own slice — no lane can consume another's.
+ *
+ * The reserve table itself, and every cap derived from it, now lives in
+ * config.ts (`LANE_BUDGETS` / `resolveBudget`). This file CONSUMES the resolved
+ * table; it never states a lane size of its own. `CHARS_PER_TOK` is imported
+ * from the same place for the same reason.
  */
-const CHARS_PER_TOK = 4;
 
 /**
  * The vision lane's WRITE cap, derived from the same reserve that budgets its
@@ -158,16 +167,85 @@ const CHARS_PER_TOK = 4;
  * delivery, and the author never learned. Deriving the cap here, from the
  * reserve, is what keeps the two from drifting: raising `brief.reserve.vision`
  * raises what a writer may store, and nothing else has to change.
+ *
+ * Retained as its own function because MCP's `ground_vision_set` calls it
+ * directly; it is now the vision arm of the general `laneWriteVerdict` below.
  */
 export function visionCapChars(reserveTok: number): number {
   return reserveTok * CHARS_PER_TOK;
 }
 
 /**
- * The shared over-cap verdict. Returns the operator-facing message, or null
- * when the text fits. Public for the same reason `computeDeliveryRank` is:
- * API and MCP both write vision, and a surface that reimplements this can
+ * A write-side budget verdict for ONE stored field on ONE lane. Two tiers,
+ * both derived from the same lane record, never restated:
+ *
+ *   > `rowCapChars`  — WARNING. The row stores, but it costs more than its
+ *                      fair share of the lane (`laneCap / rows`) and will
+ *                      crowd a neighbour out of the brief.
+ *   > `laneCapChars` — ERROR (HTTP 400). One row consuming the ENTIRE lane is
+ *                      not a tuning question; nothing else in that lane can be
+ *                      delivered alongside it.
+ *
+ * On vision, `rows: 1` collapses the two tiers onto the same number, which is
+ * why vision has always been a hard 400 at 1600 chars and stays one.
+ *
+ * `bodyCapChars` governs a field the brief never renders (`session.details`).
+ * It has no warn tier — the brief does not budget it, so there is no fair
+ * share to exceed; there is only the ceiling past which the lane stops being a
+ * work log and becomes a document dump.
+ */
+export interface LaneWriteVerdict {
+  error?: string;
+  warning?: string;
+}
+
+export function laneWriteVerdict(
+  budget: ResolvedLaneBudget,
+  field: string,
+  text: string | null | undefined,
+  kind: "brief" | "body" = "brief",
+): LaneWriteVerdict {
+  const chars = text ? text.length : 0;
+  if (kind === "body") {
+    const cap = budget.bodyCapChars;
+    if (cap === null || chars <= cap) return {};
+    return {
+      error:
+        `"${field}" is ${chars} chars, over the ${cap}-char ${budget.lane} body cap ` +
+        `(${budget.reserveTok}-token reserve x ${CHARS_PER_TOK} x ${cap / budget.laneCapChars}). ` +
+        `Trim ${chars - cap} chars, or split the log across entries.`,
+    };
+  }
+  if (chars > budget.laneCapChars) {
+    return {
+      error:
+        `"${field}" is ${chars} chars, over the ${budget.laneCapChars}-char ${budget.lane} lane cap ` +
+        `(the whole lane's startup budget: ${budget.reserveTok} tokens x ${CHARS_PER_TOK}). ` +
+        `A single row this size leaves no room for any other ${budget.lane} row. ` +
+        `Trim ${chars - budget.laneCapChars} chars.`,
+    };
+  }
+  if (chars > budget.rowCapChars) {
+    return {
+      warning:
+        `"${field}" is ${chars} chars, over the ${budget.rowCapChars}-char per-row share of the ` +
+        `${budget.lane} lane (${budget.laneCapChars} chars / ${budget.rows} rows) — it will crowd ` +
+        `other ${budget.lane} out of the brief`,
+    };
+  }
+  return {};
+}
+
+/**
+ * The shared over-cap verdict for VISION. Returns the operator-facing message,
+ * or null when the text fits. Public for the same reason `computeDeliveryRank`
+ * is: API and MCP both write vision, and a surface that reimplements this can
  * disagree with the engine about what fits.
+ *
+ * Kept as its own function rather than folded into `laneWriteVerdict` because
+ * its message teaches the vision lane's editorial rule (objectives and next
+ * steps, not history). It still states no number of its own — `capChars` comes
+ * from the same resolved budget table, via `visionCapChars`.
  */
 export function visionCapError(details: string, capChars: number): string | null {
   if (details.length <= capChars) return null;
@@ -229,7 +307,7 @@ export const PREAMBLE_RESERVE_TOK = 200;
  * (case 2 above) names the surplus in `droppedItems` instead of growing the
  * rendered list.
  */
-export const DEFAULT_RECENT_SESSIONS = 8;
+export const DEFAULT_RECENT_SESSIONS = LANE_BUDGETS.sessions.rows;
 
 export interface BriefParts {
   vision?: { global: Vision | null; project: Vision | null };
@@ -358,9 +436,10 @@ function truncateFactsToReserve(
   facts: Fact[],
   availableFromStore: number,
   reserveTok: number,
+  indexTok: number = FACTS_INDEX_MAX_TOK,
 ): FactsReserveResult {
   const budget = reserveTok * CHARS_PER_TOK;
-  const indexBudget = FACTS_INDEX_MAX_TOK * CHARS_PER_TOK;
+  const indexBudget = indexTok * CHARS_PER_TOK;
 
   const kept: Fact[] = [];
   const overflow: Fact[] = [];
@@ -478,6 +557,19 @@ export function applyCategoryFloors(facts: Fact[], floors: Record<string, number
   return [...floored, ...rest];
 }
 
+/**
+ * The chars of a fact that the facts lane's reserve actually pays for: the
+ * author-controlled payload of `renderFactLine`, minus the wrapper the writer
+ * does not control (the `- `/`* ` marker and the ` (fact:NN)` citation — the
+ * id does not even exist yet on a POST). Exported so the write guard and the
+ * post-write warning measure the SAME string, and so neither has to know how a
+ * fact line is assembled.
+ */
+export function factBudgetText(fact: string, detail?: string | null): string {
+  const d = detail && detail.trim() ? ` — ${collapseWhitespace(detail)}` : "";
+  return `${fact}${d}`;
+}
+
 function renderFactLine(f: Fact): string {
   const pin = f.pinned ? "* " : "- ";
   const detail = f.detail && f.detail.trim() ? ` — ${collapseWhitespace(f.detail)}` : "";
@@ -501,14 +593,17 @@ function renderFactIndexLine(f: Fact): string {
 }
 
 /**
- * Index-tier budget, in the same tokens-as-chars÷4 unit as `brief.reserve.*`.
- * Facts that overflow the full-text reserve still get a shot at a cheap
- * index line (see `renderFactIndexLine`) up to this cap; anything beyond it
- * is truly dropped. A module constant, not a config key — the operator asked
- * for less surface area, not more, and this tier is meant to be cheap and
- * fixed, not tuned per deployment.
+ * Index-tier budget, in the same tokens-as-chars÷4 unit as the lane reserve.
+ * Facts that overflow the full-text reserve still get a shot at a cheap index
+ * line (see `renderFactIndexLine`) up to this cap; anything beyond it is truly
+ * dropped.
+ *
+ * Read from the budget table (`LANE_BUDGETS.facts.indexTok`), not typed here:
+ * the table is the one place a lane size is stated. It is an absolute token
+ * budget rather than a fraction of the lane, because a tier whose job is to
+ * catch what a small lane spilled must not shrink along with the lane.
  */
-const FACTS_INDEX_MAX_TOK = 300;
+const FACTS_INDEX_MAX_TOK = LANE_BUDGETS.facts.indexTok!;
 
 /**
  * Sessions render SUMMARY ONLY in the brief. `details` is a full session log —
@@ -560,9 +655,25 @@ function formatSessionDate(iso: string, timezone?: string): string {
 /** The short form injected for a vision row: `summary`, falling back to
  * truncated `details` when `summary` is null — the fallback that lets
  * pre-split rows (written before the `summary` column existed) keep working
- * without a backfill. Lives here, not in the adapters. */
+ * without a backfill. Lives here, not in the adapters.
+ *
+ * SUPPRESSION TRAP (documented, not silent): when `summary` is set it REPLACES
+ * `details` in the brief — setting a summary on a row whose body was being
+ * injected blanks that body at SessionStart. It is deliberately not additive
+ * (a row would then cost summary + details against a lane budget sized for
+ * one of them), and the behavior is asserted by the shared store suite. What
+ * changed is that it is no longer invisible: `visionSuppressedDetailChars`
+ * feeds `meta.vision.rows[].suppressedDetailChars` and `renderMarkdown` emits
+ * a line naming the chars that did not reach the brief and the tool that
+ * returns them. */
 function visionInjectedText(v: Vision): string {
   return (v.summary ?? v.details).trim();
+}
+
+/** Chars of `details` that the brief did NOT inject because `summary` took
+ *  its place. 0 when there is no summary (details IS the injected text). */
+function visionSuppressedDetailChars(v: Vision): number {
+  return v.summary === null || v.summary === undefined ? 0 : v.details.trim().length;
 }
 
 interface VisionSection {
@@ -621,6 +732,24 @@ function truncateVisionSection(
   const survived = (t: string | null) => t !== null && t !== "…";
   const returnedRows = (survived(globalText) ? 1 : 0) + (survived(projectText) ? 1 : 0);
 
+  // Per-ROW account (case 3 of the accounting contract). Vision cannot enter
+  // `droppedItems` — no `SourceType` arm — so this is where a clipped or
+  // detail-suppressed row is NAMED rather than only summed into `chars`.
+  const rows: NonNullable<DeliveryMeta["rows"]> = [];
+  const rowAccount = (v: Vision | null, before: number, after: string | null) => {
+    if (!v) return;
+    const suppressed = visionSuppressedDetailChars(v);
+    rows.push({
+      ref: `vision:${v.id}`,
+      scope: v.scope,
+      chars: { returned: after ? after.length : 0, available: before },
+      clipped: (after?.length ?? 0) < before,
+      ...(suppressed > 0 ? { suppressedDetailChars: suppressed } : {}),
+    });
+  };
+  rowAccount(gv, gv ? visionInjectedText(gv).length : 0, globalText);
+  rowAccount(pv, pv ? visionInjectedText(pv).length : 0, projectText);
+
   return {
     global: globalText,
     project: projectText,
@@ -630,6 +759,7 @@ function truncateVisionSection(
       truncated,
       limit: null,
       chars: { returned: total, available: availableChars },
+      ...(rows.length > 0 ? { rows } : {}),
     },
   };
 }
@@ -649,21 +779,25 @@ export function assembleBrief(
   opts: BriefOptions,
   cfg: GroundedConfig = defaultConfig(),
 ): BriefResult {
+  // ONE resolved budget table for the whole assembly — the same one the write
+  // caps and `GET /health` read. No lane number is typed out in this file.
+  const budget = resolveBudget(cfg);
   const factsReserve = truncateFactsToReserve(
     applyCategoryFloors(parts.facts, cfg.brief.factCategoryFloors ?? {}),
     parts.factsAvailable,
-    cfg.brief.reserve.facts,
+    budget.facts.reserveTok,
+    budget.facts.indexTok ?? undefined,
   );
   const sessionsReserve = truncateToReserve(
     parts.recentSessions,
     parts.recentSessionsAvailable,
-    cfg.brief.reserve.sessions,
+    budget.sessions.reserveTok,
     (s: Session) => renderSessionLine(s, opts.timezone),
     (s) => `session:${s.id}` as TypedId,
-    opts.recentSessions ?? DEFAULT_RECENT_SESSIONS,
+    opts.recentSessions ?? budget.sessions.rows,
   );
   const vision = parts.vision ?? { global: null, project: null };
-  const visionSection = truncateVisionSection(vision.global, vision.project, cfg.brief.reserve.vision);
+  const visionSection = truncateVisionSection(vision.global, vision.project, budget.vision.reserveTok);
 
   const droppedItems: TypedId[] = [...factsReserve.droppedIds, ...sessionsReserve.droppedIds];
 
@@ -758,7 +892,7 @@ export function renderMarkdown(
   const gv = brief.vision?.global ?? null;
   const pv = brief.vision?.project ?? null;
   if (gv || pv) {
-    const visionSection = truncateVisionSection(gv, pv, cfg.brief.reserve.vision);
+    const visionSection = truncateVisionSection(gv, pv, resolveBudget(cfg).vision.reserveTok);
     const scopeBits = [gv ? "global" : null, pv ? pv.scope : null].filter(Boolean);
     lines.push(`=== VISION (${scopeBits.join(" · ")}) ===`);
     if (gv && visionSection.global !== null) lines.push(visionSection.global);
@@ -774,6 +908,16 @@ export function renderMarkdown(
       const { returned, available } = visionSection.meta.chars;
       lines.push(
         `… vision cut to ${returned} of ${available} chars for the startup budget — ground_vision_get returns it in full.`,
+      );
+    }
+    // The suppression trap, made loud: a row with a `summary` injects the
+    // summary INSTEAD of `details`, so the body above is not the vision — it
+    // is its short form, and the rest never reached this brief. Silent before;
+    // one line now, naming the row and the chars withheld.
+    for (const row of visionSection.meta.rows ?? []) {
+      if (!row.suppressedDetailChars) continue;
+      lines.push(
+        `… ${row.ref} (${row.scope}) shows its summary; ${row.suppressedDetailChars} chars of details were not injected — ground_vision_get returns them.`,
       );
     }
     lines.push(VISION_APPLY_NOTE);
@@ -811,6 +955,17 @@ export function renderMarkdown(
     // Index tier: facts that didn't fit the full-text budget but did fit the
     // (smaller) index budget render as a compressed line rather than
     // vanishing — see `renderFactIndexLine`/`FACTS_INDEX_MAX_TOK`.
+    //
+    // LABELLED, not just emitted: an index line looks like a fact line with a
+    // terse body, so an unlabelled block reads as "these facts are short"
+    // rather than "these facts were compressed to fit". The tier engaging is
+    // itself budget information — say so, and say how to get the full text.
+    if (indexedFacts.length > 0) {
+      lines.push(
+        `… ${indexedFacts.length} more fact${indexedFacts.length > 1 ? "s" : ""} compressed to ` +
+          `index lines (topic — trigger only) to fit the facts budget — ground_get for the full text:`,
+      );
+    }
     for (const f of indexedFacts) {
       lines.push(renderFactIndexLine(f));
     }

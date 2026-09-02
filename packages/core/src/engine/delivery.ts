@@ -12,6 +12,26 @@ export { pinnedFactsReserveStatus } from "./brief.js";
 // should reach for the full brief.js module graph to get it.
 export { visionCapChars, visionCapError } from "./brief.js";
 
+// The Context Budget Contract, re-exported on the same narrow subpath the API's
+// request guards already use. `laneWriteVerdict` is the WRITE side; the table it
+// reads (`resolveBudget`) is the same one `assembleBrief` truncates by and
+// `GET /health` publishes — one table, three consumers, no restated numbers.
+export { laneWriteVerdict, factBudgetText } from "./brief.js";
+export type { LaneWriteVerdict } from "./brief.js";
+export {
+  CHARS_PER_TOK,
+  LANE_BUDGETS,
+  LANE_FIELDS,
+  resolveBudget,
+  resolveLaneBudget,
+} from "../config.js";
+export type {
+  BriefLane,
+  LaneBudget,
+  ResolvedBudget,
+  ResolvedLaneBudget,
+} from "../config.js";
+
 /**
  * Fraction of the facts reserve the PINNED set alone must reach, by rendered
  * chars, before a fact write earns a warning. Pinned facts are a delivery

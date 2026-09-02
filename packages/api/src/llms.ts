@@ -93,11 +93,23 @@ Returns vision + facts + recent sessions + related docs, each lane given a reser
 budget so no lane can evict another. \`meta\` reports what was delivered per lane and
 \`droppedItems\` names, by typed id, exactly which **facts and sessions** did not fit — so you
 can fetch them with \`ground_get\`. **Vision is the one exemption**: it has no typed id, so it
-truncates text instead of dropping rows and reports the cut in \`meta.vision.chars\`;
-\`ground_vision_get\` returns it in full. Nothing is withheld without being either named or counted.
+truncates text instead of dropping rows and reports the cut in \`meta.vision.chars\` plus a
+per-row account in \`meta.vision.rows[]\` (\`{ ref: "vision:12", scope, chars, clipped,
+suppressedDetailChars }\`); \`ground_vision_get\` returns it in full. Nothing is withheld
+without being either named or counted.
 That truncation is now a **legacy path only** — the write cap means a newly written vision
 always fits its reserve. A row still reporting \`truncated: true\` predates the cap and should
 be trimmed at its next edit.
+
+**A vision \`summary\` REPLACES \`details\` in the brief — it is not additive.** Setting a
+summary on a row whose body was being injected blanks that body at startup. The brief now says
+so: \`… vision:12 (project:x) shows its summary; N chars of details were not injected —
+ground_vision_get returns them.\`, and the same count appears as
+\`meta.vision.rows[].suppressedDetailChars\`.
+
+**When the facts index tier engages it labels itself**: \`… N more facts compressed to index
+lines (topic — trigger only) to fit the facts budget — ground_get for the full text:\`,
+followed by the compressed lines. A compressed line is not a short fact; it is a clipped one.
 
 **Pass \`timezone\`.** The session line carries a DATE ONLY, rendered UTC when you omit it.
 West of UTC that means work logged in your local evening reads as TOMORROW, and you will
@@ -134,21 +146,55 @@ exists without reading content you were not scoped to.
 
 - \`POST /facts\` — upserts on \`(scope, topicKey)\` as a **merge-patch**: omitted fields keep
   their existing value. Supply \`topicKey\` to revise a rule in place; omit it and every call
-  writes a new row.
+  writes a new row. Capped — see "The budget contract".
 - \`POST /sessions\` — log what happened. \`summary\` is the line an agent sees at startup;
-  \`details\` is the body recall searches.
+  \`details\` is the body recall searches. Both capped — see "The budget contract".
 - \`PATCH /sessions/:id\` — correct a work-log entry in place (partial; omitted fields keep
   their value). Use it instead of logging a second, contradicting row. \`DELETE /sessions/:id\`
   removes one outright.
 - \`POST /docs/ingest\` — walks absolute paths, chunks, embeds, and delete-before-inserts
   changed files. Idempotent: unchanged files skip. A path that does not exist or cannot be
   read is a 400 (\`INGEST_PATH_UNREADABLE\`), never a 200 with \`scanned: 0\`.
-- \`POST /vision\` — the direction. \`summary\` is injected at startup; \`details\` is neither
-  injected nor recalled — read it back with \`GET /vision\`. \`details\` is **capped**: over
-  \`brief.reserve.vision\` x 4 chars (**1600** on the shipped default) the write is rejected
-  with a 400. See "How to write a vision".
+- \`POST /vision\` — the direction. \`summary\` is injected at startup **instead of**
+  \`details\`, not alongside it; \`details\` is neither injected nor recalled once a summary
+  exists — read it back with \`GET /vision\`. **Both fields are capped** at
+  \`brief.reserve.vision\` x 4 chars (**1600** on the shipped default); over it the write is
+  rejected with a 400. See "How to write a vision".
 
 Facts are never written by inference. Synthesis proposes; only an operator promotes.
+
+## The budget contract
+
+Every lane that feeds the startup brief is governed by ONE table, and both sides of it come
+from the same numbers: the **read reserve** the brief truncates to, and the **write caps** your
+POST/PATCH is checked against. No lane cap is stated anywhere else, and \`GET /health\`
+publishes the table this service is actually enforcing (plus, per lane, how many stored rows
+currently exceed it) — read it rather than assuming.
+
+Shipped defaults:
+
+| lane | field | over the row share | over the lane cap |
+|---|---|---|---|
+| vision | \`details\`, \`summary\` | — (one row IS the lane) | **400** over 1600 chars |
+| facts | \`fact\` + \` — detail\` | warning at 450 chars | **400** over 3600 chars |
+| sessions | \`summary\` | warning at 250 chars | **400** over 2000 chars |
+| sessions | \`details\` | — (never injected) | **400** over 16000 chars |
+
+Two tiers, on purpose:
+
+- **Over the lane cap is a 400.** One row that consumes a whole lane leaves nothing for any
+  other row in it. The error names the cap and how many chars to trim.
+- **Over the per-row share is a warning, never a silent truncation and never a rejection.**
+  Facts carry it in \`delivery.warning\`; sessions carry it in a \`budget\` object on the 201/200
+  body (\`{ lane, warning, rowCapChars, laneCapChars, bodyCapChars }\`). The row IS stored — it
+  is just eating a neighbour's slot in the brief.
+- \`session.details\` is never injected into the brief (the lane renders summaries only), so it
+  has no row share to exceed — only the ceiling. That is why a session log may be 8x longer
+  than the lane that carries its summary.
+
+Caps move with the reserve: raising \`brief.reserve.<lane>\` (or \`brief.budget.<lane>\`) in
+\`config.toml\` raises what may be written and what may be delivered together. Nothing to edit
+in two places — and nothing to guess, because /health prints the resolved result.
 
 ## How to write a fact
 
@@ -255,7 +301,7 @@ it, so the fix lands everywhere instead of leaving the next agent a dangling ref
 
 | Method | Path | |
 |---|---|---|
-| GET | \`/health\` | liveness; auth-exempt |
+| GET | \`/health\` | liveness + counts + the resolved budget table and per-lane over-cap counts; auth-exempt |
 | GET | \`/llms.txt\` | this document; auth-exempt |
 | GET | \`/openapi.json\` | full schema for every route below |
 | GET · POST · PATCH · DELETE | \`/facts\` \`/facts/:id\` | durable rules |

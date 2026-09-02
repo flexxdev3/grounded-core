@@ -104,7 +104,7 @@ export const openApiDocument = {
           warning: {
             type: "string",
             description:
-              'Present only when delivered is false, e.g. "rank 23 of 23 — most consumers request the top 8".',
+              'Present when any write-time check fires; several are joined with "; ". Rank ("rank 23 of 23 — most consumers request the top 8"), pinned-set pressure, one-line terseness, and the budget contract\'s per-row share ("\"fact\" is 512 chars, over the 450-char per-row share of the facts lane ...").',
           },
         },
       },
@@ -141,7 +141,7 @@ export const openApiDocument = {
           summary: {
             type: "string",
             description:
-              "Short form injected at SessionStart. Never recalled. Omitted falls back to truncated `details` for injection.",
+              "Short form injected at SessionStart, INSTEAD of `details` — not alongside it. Setting a summary means the brief stops injecting the body (the brief says so, and reports the withheld chars as meta.vision.rows[].suppressedDetailChars). Omitted falls back to truncated `details` for injection. Capped by the same vision cap as `details`, since this is the field the brief actually injects.",
           },
           scope: { type: "string" },
           createdBy: { type: "string" },
@@ -164,12 +164,42 @@ export const openApiDocument = {
           createdAt: { type: "string" },
         },
       },
+      SessionBudgetSignal: {
+        type: "object",
+        description:
+          "Budget-contract WARNING attached to a session write response. Present only when a field exceeded its per-row share (the row was still stored) — over the lane cap or the body cap the write is a 400 instead. Sessions have no delivery rank to carry this, so it rides on its own key.",
+        required: ["lane", "warning", "rowCapChars", "laneCapChars", "bodyCapChars"],
+        properties: {
+          lane: { type: "string", enum: ["sessions"] },
+          warning: { type: "string" },
+          rowCapChars: { type: "integer" },
+          laneCapChars: { type: "integer" },
+          bodyCapChars: { type: ["integer", "null"] },
+        },
+      },
+      SessionWriteResponse: {
+        allOf: [
+          { $ref: "#/components/schemas/Session" },
+          {
+            type: "object",
+            properties: { budget: { $ref: "#/components/schemas/SessionBudgetSignal" } },
+          },
+        ],
+      },
       SessionInput: {
         type: "object",
         required: ["summary"],
         properties: {
-          summary: { type: "string" },
-          details: { type: "string" },
+          summary: {
+            type: "string",
+            description:
+              "The line the brief injects, and the only session field it budgets. Over its per-row share (`brief.reserve.sessions` x 4 / rows — 250 chars shipped) the write succeeds with a `budget` warning; over the whole lane cap (2000 shipped) it is a 400.",
+          },
+          details: {
+            type: "string",
+            description:
+              "The body recall searches. NEVER injected into the brief, so it has no per-row share — only a ceiling (`bodyFactor` x the lane cap, 16000 chars shipped) past which the write is a 400.",
+          },
           project: { type: "string" },
           workspace: { type: "string" },
           agent: { type: "string" },
@@ -240,6 +270,28 @@ export const openApiDocument = {
             properties: {
               returned: { type: "integer" },
               available: { type: "integer" },
+            },
+          },
+          rows: {
+            type: "array",
+            description:
+              "Text-truncated lanes only (today: the brief's vision lane). Per-ROW char accounting, so a clipped row is NAMED rather than only summed into `chars` — vision's stand-in for `droppedItems`, which it cannot use (no sourceType arm). `ref` is `vision:<id>`, NOT a typedId: it does not resolve via GET /get/{typedId}; read it back with GET /vision. `suppressedDetailChars` is non-zero when the row has a `summary` and the brief therefore injected the summary INSTEAD of `details`.",
+            items: {
+              type: "object",
+              required: ["ref", "scope", "chars", "clipped"],
+              properties: {
+                ref: { type: "string", example: "vision:12" },
+                scope: { type: "string" },
+                chars: {
+                  type: "object",
+                  properties: {
+                    returned: { type: "integer" },
+                    available: { type: "integer" },
+                  },
+                },
+                clipped: { type: "boolean" },
+                suppressedDetailChars: { type: "integer" },
+              },
             },
           },
           bySource: {
@@ -406,11 +458,54 @@ export const openApiDocument = {
           counts: {
             type: "object",
             properties: {
-              facts: { type: "integer" },
+              facts: {
+                type: "integer",
+                description:
+                  "ACTIVE facts — the same basis GET /facts uses by default, so the two routes can never be read as contradicting each other. Archived rows are reported separately as factsArchived; facts + factsArchived is the raw table count.",
+              },
+              factsArchived: { type: "integer", description: "Archived facts." },
               sessions: { type: "integer" },
               docs: { type: "integer" },
               documents: { type: "integer" },
               bytes: { type: "integer", description: "on-disk size of grounded tables+indexes" },
+            },
+          },
+          budget: {
+            type: "object",
+            description:
+              "THE CONTEXT BUDGET CONTRACT, as this running service resolves it. One record per brief lane covering both sides: the read reserve the brief truncates to, and the write caps every POST/PATCH derives from it. Published here so a stale deployed image or a drifted row is visible without probing the API with a write. Every number is derived from one table (config `brief.budget` / `brief.reserve`); no route restates a cap.",
+            additionalProperties: {
+              type: "object",
+              properties: {
+                reserveTok: { type: "integer", description: "lane budget in tokens (chars/4)." },
+                rows: { type: "integer", description: "rows the lane expects to deliver in one brief." },
+                laneCapChars: {
+                  type: "integer",
+                  description: "reserveTok x 4. A single row over this is a 400 on write — it would consume the entire lane.",
+                },
+                rowCapChars: {
+                  type: "integer",
+                  description: "laneCapChars / rows. Over it is a WARNING on write, never a rejection and never a silent truncation. Equals laneCapChars on vision, whose lane is one row.",
+                },
+                bodyCapChars: {
+                  type: ["integer", "null"],
+                  description: "Cap for a stored field the brief never renders (sessions.details). Null when the lane has no such field.",
+                },
+                briefField: { type: "string", description: "the stored field the reserve pays for." },
+                bodyField: { type: ["string", "null"], description: "a stored field the brief never renders." },
+                conformance: {
+                  type: "object",
+                  description:
+                    "How many STORED rows currently violate the caps above. Cached for 60s and bounded by a per-lane scan ceiling; `complete: false` means the scan did not see every row, so the counts are a floor.",
+                  properties: {
+                    checked: { type: "integer" },
+                    overRowCap: { type: "integer" },
+                    overLaneCap: { type: "integer" },
+                    overBodyCap: { type: "integer" },
+                    complete: { type: "boolean" },
+                  },
+                },
+              },
             },
           },
         },
@@ -435,7 +530,8 @@ export const openApiDocument = {
   paths: {
     "/health": {
       get: {
-        summary: "Service health",
+        summary:
+          "Service health — storage, embeddings, counts, and the resolved budget contract with per-lane over-cap counts",
         security: [],
         responses: {
           "200": {
@@ -486,6 +582,11 @@ export const openApiDocument = {
           content: { "application/json": { schema: { $ref: "#/components/schemas/FactInput" } } },
         },
         responses: {
+          "400": {
+            description:
+              "The fact's rendered payload (`fact` + ` — detail`) is over the facts LANE cap (`brief.reserve.facts` x 4 chars, 3600 on the shipped default; live value at GET /health `budget.facts.laneCapChars`). Rejected, never truncated; the message names the overage. Over the smaller per-ROW share the write SUCCEEDS and the overage is reported in `delivery.warning` instead.",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
           "201": {
             description:
               "Created fact, plus its write-time delivery rank. `delivery` is present on every write since a fresh fact is never archived.",
@@ -515,6 +616,11 @@ export const openApiDocument = {
           content: { "application/json": { schema: { $ref: "#/components/schemas/FactInput" } } },
         },
         responses: {
+          "400": {
+            description:
+              "The patched text is over the facts lane cap (live value at GET /health `budget.facts.laneCapChars`). Measured on the fields the patch carries, so it can only under-count, never over-reject; a merge that lands over the smaller per-row share comes back as a `delivery.warning` on the 200.",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
           "200": {
             description:
               "Updated fact, plus its write-time delivery rank. `delivery` is omitted (not a zero rank) when the patch archived the fact — an archived fact has no delivery position.",
@@ -589,9 +695,9 @@ export const openApiDocument = {
           },
           "400": {
             description:
-              "`details` is over the vision cap (`brief.reserve.vision` x 4 chars, 1600 on the " +
-              "shipped default). The write is rejected, never truncated; the message names the " +
-              "overage in chars.",
+              "`details` or `summary` is over the vision cap (`brief.reserve.vision` x 4 chars, " +
+              "1600 on the shipped default; read the live value from GET /health `budget.vision`). " +
+              "The write is rejected, never truncated; the message names the overage in chars.",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
           },
         },
@@ -645,8 +751,16 @@ export const openApiDocument = {
         },
         responses: {
           "201": {
-            description: "Created session",
-            content: { "application/json": { schema: { $ref: "#/components/schemas/Session" } } },
+            description:
+              "Created session. Carries a `budget` warning when `summary` exceeded its per-row share.",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/SessionWriteResponse" } },
+            },
+          },
+          "400": {
+            description:
+              "`summary` is over the sessions lane cap, or `details` is over the sessions body cap (live values at GET /health `budget.sessions`). Rejected, never truncated.",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
           },
         },
       },
@@ -677,8 +791,16 @@ export const openApiDocument = {
         },
         responses: {
           "200": {
-            description: "Updated session",
-            content: { "application/json": { schema: { $ref: "#/components/schemas/Session" } } },
+            description:
+              "Updated session. Carries a `budget` warning when `summary` exceeded its per-row share.",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/SessionWriteResponse" } },
+            },
+          },
+          "400": {
+            description:
+              "`summary` is over the sessions lane cap, or `details` is over the sessions body cap. Rejected, never truncated.",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
           },
           "404": {
             description: "Not found",

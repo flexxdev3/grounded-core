@@ -192,6 +192,26 @@ export interface DeliveryMeta {
    * indexed fact is NOT in `droppedItems` (it survived, just compressed) —
    * see `BriefResult.indexedItems`. */
   indexed?: number;
+  /**
+   * Text-truncating lanes only (today: the brief's `vision` lane). Per-ROW
+   * char accounting, so a clipped row is NAMED rather than only summed into
+   * `chars`. This is vision's answer to `droppedItems`, which it cannot use:
+   * `ref` is `vision:<id>`, deliberately NOT a `TypedId` — there is no vision
+   * arm in `SourceType` and it does not resolve via `Store.get()`; recover the
+   * row with `GET /vision` / `ground_vision_get`.
+   *
+   * `clipped` is true when the reserve cut this row's injected text.
+   * `suppressedDetailChars` is non-zero when the row has a `summary` and the
+   * brief therefore injected the summary INSTEAD of `details` — content that
+   * never reached the brief at all and would otherwise be invisible.
+   */
+  rows?: Array<{
+    ref: string;
+    scope: string;
+    chars: { returned: number; available: number };
+    clipped: boolean;
+    suppressedDetailChars?: number;
+  }>;
   /** POST /recall only: per-source-type breakdown. `returned` is counted AFTER
    * the global limit cut (recall's `limit` is a total across sources), so
    * Σ bySource[*].returned === meta.returned always — MCP's meta line and the
@@ -347,6 +367,25 @@ export interface GroundedConfig {
    * because it's not a truncatable lane.
    */
   brief: {
+    /**
+     * THE budget table — one record per lane covering BOTH sides of the
+     * contract: the read reserve the brief truncates to, and the write caps
+     * every POST/PATCH derives from it. Defined and documented in config.ts
+     * (`LANE_BUDGETS`), resolved by `resolveBudget(cfg)`, published by
+     * `GET /health`. Optional so an older `config.toml` (or a hand-built
+     * config in a test) still resolves — `reserve` below is then the source
+     * for the lane sizes and everything else comes from `LANE_BUDGETS`.
+     */
+    budget?: Record<
+      "vision" | "facts" | "sessions",
+      { reserveTok: number; rows: number; bodyFactor: number; indexTok?: number }
+    >;
+    /**
+     * Back-compat projection of `budget.<lane>.reserveTok`. Still the
+     * documented override key, still honoured by `config.toml`; `loadConfig`
+     * folds it into the table and re-projects it, so the two can never hold
+     * different numbers.
+     */
     reserve: {
       vision: number;
       facts: number;
@@ -648,7 +687,56 @@ export interface HealthReport {
    * `docs` counts chunks; `documents` counts distinct source files (chunk_idx = 0).
    * `bytes` is the on-disk size of the grounded tables+indexes (0 when unavailable).
    */
-  counts: { facts: number; sessions: number; docs: number; documents: number; bytes: number };
+  counts: {
+    /**
+     * ACTIVE facts — the same basis `GET /facts` uses by default. The store
+     * adapters count raw rows here; the API layer replaces the value with the
+     * status-filtered count and reports the remainder as `factsArchived`, so
+     * `/health` and `/facts` can never be read as contradicting each other
+     * (they said 36 and 34 respectively before this).
+     */
+    facts: number;
+    /** Archived facts. Present on the API's `/health` payload; adapters that
+     *  build a HealthReport directly may omit it. `facts + factsArchived` is
+     *  the raw table count. */
+    factsArchived?: number;
+    sessions: number;
+    docs: number;
+    documents: number;
+    bytes: number;
+  };
+  /**
+   * The resolved per-lane budget table (`resolveBudget(cfg)`) plus, per lane,
+   * how many STORED rows currently exceed it. Added by the API layer, not by
+   * the storage adapters. This is what makes a stale deployed image or a
+   * drifted row visible without probing: the caps a running service is
+   * actually enforcing are published next to the count of rows that violate
+   * them.
+   */
+  budget?: Record<
+    "vision" | "facts" | "sessions",
+    {
+      reserveTok: number;
+      rows: number;
+      laneCapChars: number;
+      rowCapChars: number;
+      bodyCapChars: number | null;
+      briefField: string;
+      bodyField: string | null;
+      /** rows whose brief-rendered field exceeds `rowCapChars` (a warning at
+       *  write time) and `laneCapChars` (a 400 at write time), and whose
+       *  unrendered body exceeds `bodyCapChars` (also a 400). */
+      conformance: {
+        checked: number;
+        overRowCap: number;
+        overLaneCap: number;
+        overBodyCap: number;
+        /** false when the scan hit its own row ceiling and did not see every
+         *  stored row — the counts are then a floor. */
+        complete: boolean;
+      };
+    }
+  >;
 }
 
 export interface ListOptions {

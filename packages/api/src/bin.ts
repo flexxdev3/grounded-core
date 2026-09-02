@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { bootstrap, loadConfig, openStore } from "@grounded/core";
+import { resolveBudget } from "@grounded/core/delivery";
 import { startServer } from "./server.js";
 
 async function main(): Promise<void> {
@@ -31,9 +32,10 @@ async function main(): Promise<void> {
     port,
     host,
     ui,
-    typicalFactLimit: config.delivery.typicalFactLimit,
-    factsReserveTok: config.brief.reserve.facts,
-    visionReserveTok: config.brief.reserve.vision,
+    // One resolved table instead of three loose numbers: the write caps, the
+    // brief's read reserves and /health's published contract now all come from
+    // the same object, so a config.toml edit moves them together.
+    budget: resolveBudget(config),
   });
   console.log(`grounded-api listening on ${server.url}`);
   console.log(server.ui ? `console: ${server.url}/` : "console: not built (headless)");

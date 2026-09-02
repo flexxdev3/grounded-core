@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import type { Store } from "@grounded/core/contract";
+import type { ResolvedBudget } from "@grounded/core/delivery";
 import { createApp } from "./app.js";
 import { resolveUiDist, serveUi } from "./static.js";
 
@@ -10,6 +11,16 @@ export interface StartServerOptions {
   host?: string;
   /** serve the built console UI (default: true when @grounded/ui is present). */
   ui?: boolean;
+  /**
+   * The resolved Context Budget Contract table — `resolveBudget(config)`. ONE
+   * object carrying every lane's read reserve and the write caps derived from
+   * it; the bin threads it from the loaded config so the running service
+   * enforces, and publishes on /health, exactly what config.toml says.
+   *
+   * The three per-lane options below predate it and still work (they are
+   * folded into the table), but `budget` wins when both are supplied.
+   */
+  budget?: ResolvedBudget;
   /** `cfg.delivery.typicalFactLimit` — the rank threshold the fact-write routes
    *  use to decide whether a new fact warrants a "you will not be seen" warning.
    *  Threaded from the resolved config by the bin; omitting it falls back to the
@@ -39,6 +50,7 @@ export interface RunningServer {
 export function startServer(opts: StartServerOptions): Promise<RunningServer> {
   const app = createApp(opts.store, {
     ...(opts.token ? { token: opts.token } : {}),
+    ...(opts.budget ? { budget: opts.budget } : {}),
     ...(opts.typicalFactLimit !== undefined
       ? { typicalFactLimit: opts.typicalFactLimit }
       : {}),

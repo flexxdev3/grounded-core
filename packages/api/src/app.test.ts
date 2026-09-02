@@ -3,8 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, openStore } from "@grounded/core";
+import { resolveBudget } from "@grounded/core/delivery";
 import type { GroundedConfig, Store } from "@grounded/core/contract";
 import { createApp } from "./app.js";
+import { LLMS_TXT } from "./llms.js";
+import { openApiDocument } from "./openapi.js";
 
 function sqliteConfig(home: string): GroundedConfig {
   const cfg = defaultConfig(home);
@@ -1080,5 +1083,282 @@ describe("@grounded/api vision cap", () => {
       await store.close?.();
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Context Budget Contract — write side. Every lane, not just vision, and
+// derived from the table rather than from numbers typed into these tests.
+// ---------------------------------------------------------------------------
+describe("@grounded/api lane write caps", () => {
+  let home: string;
+  let store: Store;
+  let app: ReturnType<typeof createApp>;
+  const budget = resolveBudget(defaultConfig("/tmp/nowhere"));
+
+  beforeAll(async () => {
+    home = mkdtempSync(join(tmpdir(), "grounded-api-lane-caps-"));
+    store = await openStore(sqliteConfig(home));
+    app = createApp(store);
+  });
+
+  afterAll(async () => {
+    await store.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const send = (path: string, body: unknown, method = "POST"): Promise<Response> =>
+    app.fetch(
+      new Request(`http://local.test${path}`, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+
+  it("rejects a fact whose rendered line would consume the whole facts lane", async () => {
+    const over = await send("/facts", {
+      fact: "f".repeat(budget.facts.laneCapChars + 1),
+      scope: "cap-test",
+    });
+    expect(over.status).toBe(400);
+    const body = await over.json();
+    expect(body.code).toBe("VALIDATION_ERROR");
+    expect(body.error).toContain(`${budget.facts.laneCapChars}-char facts lane cap`);
+    // Names the overage, so the author does not have to count.
+    expect(body.error).toContain("Trim 1 chars");
+  });
+
+  it("measures the fact against `fact — detail`, the string the lane actually pays for", async () => {
+    const over = await send("/facts", {
+      fact: "short fact",
+      detail: "d".repeat(budget.facts.laneCapChars),
+      scope: "cap-test",
+    });
+    expect(over.status).toBe(400);
+    expect((await over.json()).error).toContain("facts lane cap");
+  });
+
+  it("WARNS rather than rejects a fact over its per-row share, and stores it", async () => {
+    const res = await send("/facts", {
+      fact: "over-share fact",
+      detail: "d".repeat(budget.facts.rowCapChars),
+      scope: "cap-test",
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.delivery.warning).toContain(`${budget.facts.rowCapChars}-char per-row share`);
+    expect(body.delivery.warning).toContain("crowd other facts out of the brief");
+  });
+
+  it("says nothing about the budget for a fact that fits", async () => {
+    const res = await send("/facts", { fact: "a terse fact", scope: "cap-test" });
+    expect(res.status).toBe(201);
+    expect((await res.json()).delivery.warning ?? "").not.toContain("per-row share");
+  });
+
+  it("applies the same cap on PATCH /facts/:id", async () => {
+    const created = await send("/facts", { fact: "patch target", scope: "cap-test" });
+    const { id } = await created.json();
+    const over = await send(
+      `/facts/${id}`,
+      { detail: "d".repeat(budget.facts.laneCapChars + 1) },
+      "PATCH",
+    );
+    expect(over.status).toBe(400);
+    expect((await over.json()).error).toContain("facts lane cap");
+  });
+
+  it("rejects a session summary that would eat the whole recent-work lane", async () => {
+    const over = await send("/sessions", {
+      summary: "s".repeat(budget.sessions.laneCapChars + 1),
+    });
+    expect(over.status).toBe(400);
+    expect((await over.json()).error).toContain(`${budget.sessions.laneCapChars}-char sessions lane cap`);
+  });
+
+  it("WARNS on a session summary over its row share — 5 of 600 live sessions are, so a 400 would break real writes", async () => {
+    const res = await send("/sessions", {
+      summary: "s".repeat(budget.sessions.rowCapChars + 1),
+      project: "cap-test",
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.id).toBeGreaterThan(0);
+    expect(body.budget.lane).toBe("sessions");
+    expect(body.budget.warning).toContain(`${budget.sessions.rowCapChars}-char per-row share`);
+    expect(body.budget.rowCapChars).toBe(budget.sessions.rowCapChars);
+    expect(body.budget.bodyCapChars).toBe(budget.sessions.bodyCapChars);
+  });
+
+  it("lets session details run far past the summary cap, and rejects only past the body cap", async () => {
+    const ok = await send("/sessions", {
+      summary: "a normal session summary",
+      details: "d".repeat(budget.sessions.bodyCapChars!),
+      project: "cap-test",
+    });
+    expect(ok.status).toBe(201);
+    // No warning: `details` is never injected into the brief, so it has no
+    // per-row share to exceed — only the ceiling.
+    expect((await ok.json()).budget).toBeUndefined();
+
+    const over = await send("/sessions", {
+      summary: "a normal session summary",
+      details: "d".repeat(budget.sessions.bodyCapChars! + 1),
+      project: "cap-test",
+    });
+    expect(over.status).toBe(400);
+    expect((await over.json()).error).toContain(`${budget.sessions.bodyCapChars}-char sessions body cap`);
+  });
+
+  it("applies both session caps on PATCH /sessions/:id", async () => {
+    const created = await send("/sessions", { summary: "patch target", project: "cap-test" });
+    const { id } = await created.json();
+
+    const overBody = await send(
+      `/sessions/${id}`,
+      { details: "d".repeat(budget.sessions.bodyCapChars! + 1) },
+      "PATCH",
+    );
+    expect(overBody.status).toBe(400);
+
+    const warned = await send(
+      `/sessions/${id}`,
+      { summary: "s".repeat(budget.sessions.rowCapChars + 1) },
+      "PATCH",
+    );
+    expect(warned.status).toBe(200);
+    expect((await warned.json()).budget.warning).toContain("per-row share");
+  });
+
+  it("caps vision `summary` too — it is the field the brief actually injects", async () => {
+    const over = await send("/vision", {
+      details: "the real vision",
+      summary: "s".repeat(budget.vision.laneCapChars + 1),
+      scope: "project:summary-cap",
+    });
+    expect(over.status).toBe(400);
+    const body = await over.json();
+    expect(body.error).toContain('"summary" is');
+    expect(body.error).toContain(`${budget.vision.laneCapChars}-char vision cap`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Context Budget Contract — GET /health publishes the table it enforces,
+// plus how many stored rows currently violate it.
+// ---------------------------------------------------------------------------
+describe("@grounded/api health publishes the budget contract", () => {
+  let home: string;
+  let store: Store;
+  let app: ReturnType<typeof createApp>;
+  const budget = resolveBudget(defaultConfig("/tmp/nowhere"));
+
+  beforeAll(async () => {
+    home = mkdtempSync(join(tmpdir(), "grounded-api-health-budget-"));
+    store = await openStore(sqliteConfig(home));
+    app = createApp(store);
+  });
+
+  afterAll(async () => {
+    await store.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const health = async (): Promise<Record<string, any>> =>
+    (await app.fetch(new Request("http://local.test/health"))).json();
+
+  it("publishes every lane's caps, so a stale deploy is visible without probing it", async () => {
+    const body = await health();
+    expect(body.budget.vision.laneCapChars).toBe(budget.vision.laneCapChars);
+    expect(body.budget.facts.rowCapChars).toBe(budget.facts.rowCapChars);
+    expect(body.budget.sessions.bodyCapChars).toBe(budget.sessions.bodyCapChars);
+    expect(body.budget.sessions.briefField).toBe("summary");
+    expect(body.budget.sessions.bodyField).toBe("details");
+    expect(body.budget.facts.conformance).toMatchObject({
+      overRowCap: 0,
+      overLaneCap: 0,
+      complete: true,
+    });
+  });
+
+  it("reports facts on ONE basis — /health and /facts can no longer disagree", async () => {
+    for (let i = 0; i < 3; i++) {
+      await store.factsAdd({ fact: `health basis fact ${i}`, scope: "health-basis" });
+    }
+    const archived = await store.factsAdd({ fact: "archived one", scope: "health-basis" });
+    await store.factsUpdate(archived.id, { status: "archived" });
+
+    const listed = await (
+      await app.fetch(new Request("http://local.test/facts?limit=100"))
+    ).json();
+    // A fresh app instance: the conformance cache is per-app and the count is
+    // read live, so /health must match the list route exactly.
+    const freshApp = createApp(store);
+    const body = await (await freshApp.fetch(new Request("http://local.test/health"))).json();
+
+    expect(body.counts.facts).toBe(listed.data.length);
+    expect(body.counts.facts).toBe(3);
+    expect(body.counts.factsArchived).toBe(1);
+  });
+
+  it("counts rows that violate the contract, per lane", async () => {
+    // Written under the store, bypassing the API guards — exactly the shape a
+    // row takes when it predates the cap (or a stale image accepted it).
+    await store.sessionsAdd({
+      summary: "s".repeat(budget.sessions.rowCapChars + 50),
+      project: "conformance",
+    });
+    await store.sessionsAdd({
+      summary: "a fine summary",
+      details: "d".repeat(budget.sessions.bodyCapChars! + 1),
+      project: "conformance",
+    });
+
+    const freshApp = createApp(store);
+    const body = await (await freshApp.fetch(new Request("http://local.test/health"))).json();
+    expect(body.budget.sessions.conformance.overRowCap).toBe(1);
+    expect(body.budget.sessions.conformance.overBodyCap).toBe(1);
+    expect(body.budget.sessions.conformance.overLaneCap).toBe(0);
+    expect(body.budget.sessions.conformance.checked).toBeGreaterThan(0);
+  });
+});
+
+// An undocumented cap is a cap agents hit blind. These pin the two
+// agent-facing surfaces to the same table the routes enforce.
+describe("@grounded/api documents the budget contract it enforces", () => {
+  const budget = resolveBudget(defaultConfig("/tmp/nowhere"));
+
+  it("llms.txt states every lane's caps with the shipped numbers", () => {
+    expect(LLMS_TXT).toContain("## The budget contract");
+    for (const chars of [
+      budget.vision.laneCapChars,
+      budget.facts.rowCapChars,
+      budget.facts.laneCapChars,
+      budget.sessions.rowCapChars,
+      budget.sessions.laneCapChars,
+      budget.sessions.bodyCapChars!,
+    ]) {
+      expect(LLMS_TXT).toContain(String(chars));
+    }
+    // The two traps the brief used to spring silently.
+    expect(LLMS_TXT).toContain("suppressedDetailChars");
+    expect(LLMS_TXT).toContain("compressed to index");
+  });
+
+  it("openapi documents the health budget table and every write cap it added", () => {
+    const doc = openApiDocument as any;
+    const health = doc.components.schemas.HealthReport.properties;
+    expect(health.budget.additionalProperties.properties.rowCapChars).toBeTruthy();
+    expect(health.budget.additionalProperties.properties.conformance).toBeTruthy();
+    expect(health.counts.properties.factsArchived).toBeTruthy();
+    expect(health.counts.properties.facts.description).toContain("ACTIVE");
+
+    expect(doc.paths["/facts"].post.responses["400"]).toBeTruthy();
+    expect(doc.paths["/facts/{id}"].patch.responses["400"]).toBeTruthy();
+    expect(doc.paths["/sessions"].post.responses["400"]).toBeTruthy();
+    expect(doc.paths["/sessions/{id}"].patch.responses["400"]).toBeTruthy();
+    expect(doc.components.schemas.SessionBudgetSignal).toBeTruthy();
+    expect(doc.components.schemas.DeliveryMeta.properties.rows).toBeTruthy();
   });
 });
