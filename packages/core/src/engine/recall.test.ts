@@ -6,6 +6,7 @@ import {
   applyLaneFloor,
   scopeAffinity,
   scopeAffinityMultiplier,
+  lexicalMeta,
   scopeFilterMeta,
   splitScope,
   DEFAULT_SCOPE_AFFINITY,
@@ -363,5 +364,31 @@ describe("scopeFilterMeta", () => {
       appliedTo: ["doc"],
       exempt: [],
     });
+  });
+});
+
+
+describe("lexicalMeta", () => {
+  it("reports strict when the query matched as written", () => {
+    expect(lexicalMeta(7, [], true)).toEqual({
+      mode: "strict",
+      candidates: 7,
+      relaxedSources: [],
+      vectorOnly: false,
+    });
+  });
+
+  it("reports relaxed and names the lanes that fell back", () => {
+    const m = lexicalMeta(3, ["fact"], true);
+    expect(m.mode).toBe("relaxed");
+    expect(m.relaxedSources).toEqual(["fact"]);
+    expect(m.vectorOnly).toBe(false);
+  });
+
+  it("reports none, and flags a vector-only ranking when the vector lane is live", () => {
+    expect(lexicalMeta(0, [], true).mode).toBe("none");
+    expect(lexicalMeta(0, [], true).vectorOnly).toBe(true);
+    // no vector lane either — the answer is empty, not vector-only.
+    expect(lexicalMeta(0, [], false).vectorOnly).toBe(false);
   });
 });

@@ -38,12 +38,14 @@ import {
   fuseLane,
   orderResults,
   rankFlat,
+  lexicalMeta,
   scopeFilterMeta,
   withEffectiveSourceCaps,
   type CandidateMeta,
   type RecallContext,
   type FusedItem,
   type LaneHit,
+  type LexicalMode,
   type SessionFilter,
 } from "../engine/recall.js";
 import {
@@ -993,15 +995,48 @@ export class PostgresStore implements Store {
 
   // ---- recall ------------------------------------------------------------
 
+  /**
+   * Run the lexical lane under the shared strict-then-relaxed policy.
+   *
+   * `websearch_to_tsquery` ANDs bare words, so a natural-language query ("is
+   * zap decommissioned yet") requires EVERY term in one row and routinely
+   * matched nothing — recall then degraded to a pure ANN ranking, silently.
+   * Only when the strict query matches nothing is the same parsed tsquery
+   * retried with its `&` operators rewritten to `|`: the terms are already
+   * stemmed and stopword-stripped by the websearch parser, so the fallback
+   * reuses that work instead of re-tokenising, and phrase/negation operators
+   * are carried through untouched. A precise match is never diluted, because
+   * the fallback only ever runs on an EMPTY strict lane.
+   */
+  private async lexicalLaneWithFallback(
+    table: string,
+    query: string,
+    filter: SessionFilter | undefined,
+    limit: number,
+    docScopes?: string[],
+  ): Promise<{ hits: LaneHit[]; relaxed: boolean }> {
+    const strict = await this.lexicalLane(table, query, filter, limit, docScopes, "strict");
+    if (strict.length > 0) return { hits: strict, relaxed: false };
+    const relaxed = await this.lexicalLane(table, query, filter, limit, docScopes, "relaxed");
+    return { hits: relaxed, relaxed: relaxed.length > 0 };
+  }
+
   private async lexicalLane(
     table: string,
     query: string,
     filter: SessionFilter | undefined,
     limit: number,
     docScopes?: string[],
+    mode: LexicalMode = "strict",
   ): Promise<LaneHit[]> {
     if (!query.trim()) return [];
     const params: unknown[] = [query];
+    // strict: the query as written (websearch ANDs bare words). relaxed: the
+    // SAME parsed tsquery with its conjunctions rewritten to disjunctions.
+    const tsq =
+      mode === "strict"
+        ? `websearch_to_tsquery('english', $1)`
+        : `replace(websearch_to_tsquery('english', $1)::text, '&', '|')::tsquery`;
     // doc lane: push the scope predicate INTO the candidate query. Filtering
     // after a top-N fetch was the real "declared a lane, got zero docs" bug —
     // the N best candidates are dominated by the default lane, so the declared
@@ -1024,9 +1059,9 @@ export class PostgresStore implements Store {
     }
     params.push(limit);
     const limitIdx = params.length;
-    const sql = `select id, ts_rank_cd(search_tsv, websearch_to_tsquery('english', $1)) as rank
+    const sql = `select id, ts_rank_cd(search_tsv, ${tsq}) as rank
                  from ${this.q(table)}
-                 where search_tsv @@ websearch_to_tsquery('english', $1)${projSql}${scopeSql}
+                 where search_tsv @@ ${tsq}${projSql}${scopeSql}
                  order by rank desc limit $${limitIdx}`;
     const res = await this.pool.query(sql, params);
     return (res.rows as Row[]).map((r, i) => ({ id: Number(r.id), rank: i }));
@@ -1138,6 +1173,9 @@ export class PostgresStore implements Store {
     const scopesDeclared = !!(opts?.scopes && opts.scopes.length > 0);
     const docScopes = scopesDeclared ? opts!.scopes! : ["global"];
     const ctx: RecallContext = { query, project: opts?.project };
+    // lexical accounting for meta.lexical — raw hits, pre-filter, pre-fusion.
+    let lexCandidates = 0;
+    const relaxedSources: SourceType[] = [];
     const wantVector =
       !opts?.lexicalOnly && this.vectorActive() && query.trim().length > 0;
     const queryVec = wantVector ? await this.embedOne(query) : null;
@@ -1166,7 +1204,10 @@ export class PostgresStore implements Store {
           : undefined;
       const laneScopes = st === "doc" ? docScopes : undefined;
       const rawVec = await this.vectorLane(table, queryVec, proj, laneN, laneScopes);
-      const rawLex = await this.lexicalLane(table, query, proj, laneN, laneScopes);
+      const lexRes = await this.lexicalLaneWithFallback(table, query, proj, laneN, laneScopes);
+      const rawLex = lexRes.hits;
+      lexCandidates += rawLex.length;
+      if (lexRes.relaxed) relaxedSources.push(st);
       let vec = rawVec;
       let lex = rawLex;
       const ids = new Set<number>();
@@ -1252,6 +1293,7 @@ export class PostgresStore implements Store {
         truncated,
         limit,
         bySource,
+        lexical: lexicalMeta(lexCandidates, relaxedSources, queryVec !== null),
         scopeFilter: scopeFilterMeta(sources, docScopes, scopesDeclared),
       },
     };
@@ -1294,6 +1336,8 @@ export class PostgresStore implements Store {
       const table = tableFor[st];
       const proj: SessionFilter | undefined =
         st === "session" ? { project: opts?.project } : undefined;
+      // strict, and deliberately NOT `lexicalLaneWithFallback`: a dependency
+      // tripwire must fire on the subject, not on resemblance to part of it.
       const lex = await this.lexicalLane(table, subject, proj, laneN);
       if (lex.length === 0) continue;
       const ids = lex.map((h) => h.id);

@@ -551,6 +551,63 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.docsPrune({ remove: true });
     });
 
+    it("recall: a natural-language query still anchors on the lexical lane — strict falls back to OR, and meta names the degradation", async () => {
+      // The literal desk #72 query. `websearch_to_tsquery` ANDs bare words and
+      // FTS5 now does the same, so "is zap decommissioned yet" satisfies no row
+      // in full — before the fallback the lexical lane returned nothing and the
+      // ranking was pure ANN noise, with nothing in the response saying so.
+      const answer = await store.factsAdd({
+        fact: "zzqlexanswer the zap host 194.156.89.5 was retired from the fleet",
+        scope: "global",
+      });
+      const decoy = await store.factsAdd({
+        fact: "zzqlexdecoy an unrelated rule about commit message style",
+        scope: "global",
+      });
+
+      try {
+        const relaxed = await store.recall("is zap decommissioned yet", {
+          sources: ["fact"],
+          limit: 5,
+        });
+        // the row that actually names the subject is reachable again...
+        const hit = relaxed.data.find((r) => r.id === answer.id);
+        expect(hit).toBeDefined();
+        // ...and it got there lexically, not by nearest-neighbour luck
+        // (this suite runs embeddings=none, so there is no vector lane at all).
+        expect(hit!.matchedBy).toBe("lexical");
+        // ...and the fallback is stated, not silent
+        expect(relaxed.meta.lexical?.mode).toBe("relaxed");
+        expect(relaxed.meta.lexical?.relaxedSources).toContain("fact");
+        expect(relaxed.meta.lexical!.candidates).toBeGreaterThan(0);
+
+        // a query whose terms are all present in one row reports `strict` —
+        // the fallback never fires over a real match and never dilutes one.
+        const strict = await store.recall("zzqlexanswer retired", {
+          sources: ["fact"],
+          limit: 5,
+        });
+        expect(strict.meta.lexical?.mode).toBe("strict");
+        expect(strict.meta.lexical?.relaxedSources).toEqual([]);
+        expect(strict.data.some((r) => r.id === answer.id)).toBe(true);
+        expect(strict.data.some((r) => r.id === decoy.id)).toBe(false);
+
+        // nothing matched even relaxed: the lane contributed zero, and says so.
+        const none = await store.recall("zzqnolexicalmatchanywhere", {
+          sources: ["fact"],
+          limit: 5,
+        });
+        expect(none.meta.lexical?.mode).toBe("none");
+        expect(none.meta.lexical?.candidates).toBe(0);
+        // vectorOnly is about the RANKING, not the query: with embeddings off
+        // there is no vector lane to fall back to, so this is false here.
+        expect(none.meta.lexical?.vectorOnly).toBe(false);
+      } finally {
+        await store.factsDelete(answer.id);
+        await store.factsDelete(decoy.id);
+      }
+    });
+
     it("recall: a project-scoped fact outranks an unrelated global fact on its own subject (scope affinity)", async () => {
       // the global fact deliberately mentions the token TWICE, so it wins the
       // lexical lane outright — scope is the only thing that can flip the order.

@@ -314,6 +314,52 @@ export function rankFlat(
 }
 
 /**
+ * How the lexical lane matched, and whether it contributed at all.
+ *
+ *  - `strict`  — the query matched AS WRITTEN: every term present in the same
+ *                row. The precise reading, and the default attempt.
+ *  - `relaxed` — no row satisfied every term in at least one requested source,
+ *                so that lane was retried with the terms OR-ed. Fires ONLY on a
+ *                strict lane that returned zero rows, so it can add signal
+ *                where there was none and can never dilute a strict match.
+ *  - `none`    — even relaxed matched nothing anywhere. If the vector lane is
+ *                live, THIS RANKING IS VECTOR-ONLY.
+ *
+ * Why this is reported rather than left to the reader: a natural-language
+ * query ("is zap decommissioned yet") ANDs its bare words in postgres'
+ * `websearch_to_tsquery`, matched nothing, and recall degraded to a pure ANN
+ * ranking whose whole score spread was noise (0.032-0.040) — silently. An agent
+ * must be able to see that its ranking had no lexical anchor without running an
+ * experiment.
+ */
+export type LexicalMode = "strict" | "relaxed" | "none";
+
+/**
+ * `DeliveryMeta.lexical` for one recall call.
+ *
+ * `candidates` counts RAW lexical lane hits summed across the requested
+ * sources, before scope/status filtering and before fusion — it answers "did
+ * the lexical half of hybrid recall fire", not "how many rows survived".
+ * `relaxedSources` names the lanes that fell back, because a query can match
+ * strictly in docs and not at all in facts; `mode` is `relaxed` if ANY lane
+ * did.
+ */
+export function lexicalMeta(
+  candidates: number,
+  relaxedSources: SourceType[],
+  vectorActive: boolean,
+): NonNullable<import("../contract.js").DeliveryMeta["lexical"]> {
+  const mode: LexicalMode =
+    candidates === 0 ? "none" : relaxedSources.length > 0 ? "relaxed" : "strict";
+  return {
+    mode,
+    candidates,
+    relaxedSources: [...relaxedSources],
+    vectorOnly: candidates === 0 && vectorActive,
+  };
+}
+
+/**
  * Minimum doc slots reserved inside `limit` when the caller EXPLICITLY declared
  * `scopes`. One, not more: the point is that a caller who filtered the doc lane
  * always learns whether that lane had an answer, not that docs get a quota.

@@ -83,7 +83,7 @@ Given a query string:
 2. Run two lanes per source type:
    - **vector lane** — cosine similarity over the record's embedding (top N).
    - **lexical lane** — full-text rank (`bm25()` in SQLite FTS5 / `ts_rank_cd` over
-     `websearch_to_tsquery` in Postgres) (top N).
+     `websearch_to_tsquery` in Postgres) (top N), under the **strict-then-relaxed** policy below.
 3. **Fuse with Reciprocal Rank Fusion**: `score = Σ 1 / (rrfK + rank_in_lane)`, `rrfK` default 60.
    `matchedBy` = `both` when an item ranks in both lanes, else the single lane.
 4. Apply **boosts**:
@@ -102,6 +102,34 @@ Given a query string:
 
 If embeddings are disabled/unavailable, run lexical-only and set `matchedBy="lexical"`. Never error
 just because embeddings are off — degrade gracefully.
+
+**Lexical lane: strict, then relaxed, and always reported.** Both adapters run one policy:
+
+1. **strict** — the query as written, all terms required in the same row (`websearch_to_tsquery` ANDs
+   bare words; SQLite quotes each token and joins with `AND`).
+2. **relaxed** — only if a lane's strict query matched **zero** rows, retry it with the terms OR-ed.
+   Postgres rewrites the `&` operators of the already-parsed tsquery to `|`, so stemming, stopword
+   removal, phrases and negations carry through unchanged. Because it fires only on an empty lane, the
+   fallback can add signal where there was none and can never dilute a precise match. It is decided per
+   source type — a query can match strictly in docs and not at all in facts.
+
+This is a cross-adapter *correctness* fix, not a tuning knob: SQLite always OR-ed and Postgres always
+ANDs, so the same query was broad on one adapter and empty on the other. The empty case was the
+damaging one — a natural-language query ("is zap decommissioned yet") satisfied no row in full, the
+lexical half of hybrid recall contributed nothing, and the answer was a pure ANN ordering whose entire
+score spread was noise, **with nothing in the response saying so**.
+
+So the lane now reports itself, in `meta.lexical`:
+
+| field | meaning |
+|---|---|
+| `mode` | `strict` \| `relaxed` \| `none` (nothing matched even relaxed) |
+| `candidates` | raw lexical hits summed over the requested sources, pre-filter, pre-fusion |
+| `relaxedSources` | the lanes that fell back |
+| `vectorOnly` | **the one to read**: no lexical anchor at all and the vector lane is live — treat a small score spread as noise, not a verdict |
+
+`impact()` is deliberately **strict-only**: a dependency tripwire must fire on the subject, not on
+resemblance to part of it. OR-ing a multi-word subject would invent dependencies that do not exist.
 
 **Scope affinity (fact lane).** A fact's own `scope` is ranking signal, not just a filter dimension:
 someone narrowed that fact on purpose. Three optional, independently disable-able knobs (set any to

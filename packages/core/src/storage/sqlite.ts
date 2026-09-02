@@ -41,12 +41,14 @@ import {
   fuseLane,
   orderResults,
   rankFlat,
+  lexicalMeta,
   scopeFilterMeta,
   withEffectiveSourceCaps,
   type CandidateMeta,
   type RecallContext,
   type FusedItem,
   type LaneHit,
+  type LexicalMode,
   type SessionFilter,
 } from "../engine/recall.js";
 
@@ -74,15 +76,23 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-/** FTS5 MATCH-safe query: quote each token, OR them together. */
-function sanitizeFts(query: string): string {
+/**
+ * FTS5 MATCH-safe query: quote each token, join them by the requested mode.
+ *
+ * `strict` ANDs the terms (the query as written), `relaxed` ORs them. Both
+ * forms exist so this adapter can run the SAME strict-then-fallback policy as
+ * postgres — see `lexicalLane`. Before that policy the two adapters silently
+ * disagreed on the same query: sqlite ALWAYS OR-ed, postgres' websearch parser
+ * always ANDs, so a two-word query was broad here and empty there.
+ */
+function sanitizeFts(query: string, mode: LexicalMode = "strict"): string {
   const tokens = query
     .toLowerCase()
     .split(/[^a-z0-9_]+/i)
     .map((t) => t.trim())
     .filter((t) => t.length > 0);
   if (tokens.length === 0) return "";
-  return tokens.map((t) => `"${t}"`).join(" OR ");
+  return tokens.map((t) => `"${t}"`).join(mode === "strict" ? " AND " : " OR ");
 }
 
 export class SqliteStore implements Store {
@@ -1119,6 +1129,31 @@ export class SqliteStore implements Store {
 
   // ---- recall ------------------------------------------------------------
 
+  /**
+   * Run the lexical lane under the shared strict-then-relaxed policy.
+   *
+   * `strictExpr` is the query as written (terms ANDed). Only when it matches
+   * NOTHING is `relaxedExpr` (terms ORed) tried, so a precise match is never
+   * diluted, and a natural-language query that satisfies no row in full still
+   * anchors the ranking on its rare terms instead of leaving it to the ANN lane.
+   */
+  private lexicalLaneWithFallback(
+    ftsTable: string,
+    mainTable: string,
+    strictExpr: string,
+    relaxedExpr: string,
+    filter: SessionFilter | undefined,
+    limit: number,
+    docScopes?: string[],
+  ): { hits: LaneHit[]; relaxed: boolean } {
+    const strict = this.lexicalLane(ftsTable, mainTable, strictExpr, filter, limit, docScopes);
+    if (strict.length > 0 || relaxedExpr === strictExpr) {
+      return { hits: strict, relaxed: false };
+    }
+    const relaxed = this.lexicalLane(ftsTable, mainTable, relaxedExpr, filter, limit, docScopes);
+    return { hits: relaxed, relaxed: relaxed.length > 0 };
+  }
+
   private lexicalLane(
     ftsTable: string,
     mainTable: string,
@@ -1318,7 +1353,11 @@ export class SqliteStore implements Store {
     // supplies — and laneN grows with limit, so large limits need no
     // adjustment either.
     const laneN = Math.max(limit * 3, 20);
-    const matchExpr = sanitizeFts(query);
+    const matchExpr = sanitizeFts(query, "strict");
+    const relaxedExpr = sanitizeFts(query, "relaxed");
+    // lexical accounting for meta.lexical — raw hits, pre-filter, pre-fusion.
+    let lexCandidates = 0;
+    const relaxedSources: SourceType[] = [];
     // sourceCaps is a per-lane RANKING cap, never a bound on the total answer:
     // widen it to at least `limit` so one lane can supply the whole flat
     // top-`limit`. Full rationale on effectiveSourceCaps.
@@ -1340,13 +1379,17 @@ export class SqliteStore implements Store {
 
     if (sources.includes("fact")) {
       const rawVec = this.vectorLane("vec_facts", queryVec, laneN);
-      const rawLex = this.lexicalLane(
+      const lexRes = this.lexicalLaneWithFallback(
         "fts_facts",
         "facts",
         matchExpr,
+        relaxedExpr,
         undefined,
         laneN,
       );
+      const rawLex = lexRes.hits;
+      lexCandidates += rawLex.length;
+      if (lexRes.relaxed) relaxedSources.push("fact");
       const ids = unionIds(rawVec, rawLex);
       const meta = this.factsMeta(ids);
       // meta is already filtered to status='active'; drop any lane hit whose
@@ -1381,13 +1424,17 @@ export class SqliteStore implements Store {
         project: opts?.project,
         workspace: opts?.workspace,
       };
-      const rawLex = this.lexicalLane(
+      const lexRes = this.lexicalLaneWithFallback(
         "fts_sessions",
         "sessions",
         matchExpr,
+        relaxedExpr,
         sessionFilter,
         laneN,
       );
+      const rawLex = lexRes.hits;
+      lexCandidates += rawLex.length;
+      if (lexRes.relaxed) relaxedSources.push("session");
       // when a session filter is set, restrict the vector lane the same way
       const filteredVec =
         sessionFilter.project || sessionFilter.workspace
@@ -1409,7 +1456,18 @@ export class SqliteStore implements Store {
 
     if (sources.includes("doc")) {
       const rawVec = this.vectorLane("vec_docs", queryVec, laneN, docScopes);
-      const rawLex = this.lexicalLane("fts_docs", "docs", matchExpr, undefined, laneN, docScopes);
+      const lexRes = this.lexicalLaneWithFallback(
+        "fts_docs",
+        "docs",
+        matchExpr,
+        relaxedExpr,
+        undefined,
+        laneN,
+        docScopes,
+      );
+      const rawLex = lexRes.hits;
+      lexCandidates += rawLex.length;
+      if (lexRes.relaxed) relaxedSources.push("doc");
       const ids = unionIds(rawVec, rawLex);
       const meta = this.docsMeta(ids, docScopes);
       // meta is already filtered to the declared scopes; drop any lane hit whose
@@ -1466,6 +1524,7 @@ export class SqliteStore implements Store {
       truncated: anyTruncated,
       limit,
       bySource,
+      lexical: lexicalMeta(lexCandidates, relaxedSources, queryVec !== null),
       scopeFilter: scopeFilterMeta(sources, docScopes, scopesDeclared),
     };
     return { data, meta };
@@ -1482,7 +1541,12 @@ export class SqliteStore implements Store {
     const sources: SourceType[] = opts?.sources ?? ["fact", "session", "doc"];
     const limit = opts?.limit ?? 20;
     const laneN = Math.max(limit * 3, 20);
-    const matchExpr = sanitizeFts(subject);
+    // STRICT, and no relaxed fallback: a dependency tripwire must fire on the
+    // subject, not on resemblance to part of it. OR-ing a multi-word subject
+    // would invent dependencies that do not exist — the opposite of what an
+    // agent about to delete something needs. (Postgres' websearch parser ANDs
+    // by default, so this is also what makes the two adapters agree here.)
+    const matchExpr = sanitizeFts(subject, "strict");
     const declaredScopes = opts?.scopes && opts.scopes.length > 0 ? opts.scopes : ["global"];
     // `limit` is authoritative for impact — recall's sourceCaps are a RANKING
     // cap (a top-N reading list) and must not bound a dependency pre-flight.

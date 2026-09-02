@@ -213,6 +213,25 @@ export interface DeliveryMeta {
    * partition the REQUESTED sources — a source the caller excluded appears in
    * neither.
    */
+  /**
+   * POST /recall only: whether the LEXICAL half of hybrid recall actually
+   * fired, and how.
+   *
+   * `mode` is `strict` when the query matched as written, `relaxed` when a lane
+   * matched nothing with every term and was retried with the terms OR-ed, and
+   * `none` when even that matched nothing anywhere. `vectorOnly` is the one an
+   * agent should read: true means the ranking has NO lexical anchor and is a
+   * pure nearest-neighbour ordering, where a small score spread is noise rather
+   * than a verdict. `candidates` is the raw pre-fusion lexical hit count summed
+   * over the requested sources; `relaxedSources` names the lanes that fell back
+   * (a query can match strictly in docs and not at all in facts).
+   */
+  lexical?: {
+    mode: "strict" | "relaxed" | "none";
+    candidates: number;
+    relaxedSources: SourceType[];
+    vectorOnly: boolean;
+  };
   scopeFilter?: {
     declared: string[];
     defaulted: boolean;
