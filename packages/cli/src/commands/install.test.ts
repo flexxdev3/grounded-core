@@ -261,11 +261,45 @@ describe("cabinet and options", () => {
     });
   });
 
-  // KNOWN DEFECT: packages/cli/src/commands/install.ts:142 — --image is accepted by
-  // the parser for every method but only reaches materializeDocker. A systemd install
-  // with --image silently ignores it rather than rejecting the flag.
-  it("KNOWN DEFECT: --image is silently dropped on the systemd path", async () => {
-    await run(["install", "-y", "--method", "systemd-user", "--image", "ghcr.io/acme/grounded:1"]);
+  // FIXED: --image used to be accepted for every method but only reached
+  // materializeDocker, so a systemd install silently ignored it. It is a
+  // Docker-only concept (systemd runs the npm-published grounded-api directly),
+  // so it is now rejected rather than dropped.
+  it("rejects --image on the systemd path instead of silently dropping it", async () => {
+    await expect(
+      run(["install", "-y", "--method", "systemd-user", "--image", "ghcr.io/acme/grounded:1"]),
+    ).rejects.toThrow(/--image applies only to --method docker/);
+    expect(materializeSystemd).not.toHaveBeenCalled();
+    expect(materializeDocker).not.toHaveBeenCalled();
+  });
+
+  it("the --image rejection names both ways forward and the offending ref", async () => {
+    const err = await run([
+      "install", "-y", "--method", "systemd-system", "--image", "ghcr.io/acme/grounded:1",
+    ]).catch((e: Error) => e);
+    const msg = (err as Error).message;
+    expect(msg).toContain("ghcr.io/acme/grounded:1");
+    expect(msg).toContain("--method docker --image ghcr.io/acme/grounded:1");
+    expect(msg).toContain("grounded install --method systemd-system");
+  });
+
+  it("rejects --image before bootstrapping anything", async () => {
+    await expect(
+      run(["install", "-y", "--method", "systemd-user", "--image", "ghcr.io/acme/grounded:1"]),
+    ).rejects.toThrow(/--image applies only to --method docker/);
+    expect(bootstrap).not.toHaveBeenCalled();
+    expect(writeManifest).not.toHaveBeenCalled();
+  });
+
+  it("still accepts --image on the docker path", async () => {
+    await run(["install", "-y", "--method", "docker", "--image", "ghcr.io/acme/grounded:1"]);
+    expect(materializeDocker).toHaveBeenCalledWith(
+      expect.objectContaining({ image: "ghcr.io/acme/grounded:1" }),
+    );
+  });
+
+  it("leaves the systemd path untouched when --image is absent", async () => {
+    await run(["install", "-y", "--method", "systemd-user"]);
     expect(materializeSystemd).toHaveBeenCalledWith("user", {
       home: expect.any(String),
       port: 7437,

@@ -12,12 +12,34 @@ describe("parseInteger", () => {
     expect(() => parseInteger("")).toThrow(/expected an integer/);
   });
 
-  // KNOWN DEFECT: packages/cli/src/util/parse.ts:2 — parseInt truncates instead of
-  // rejecting, so "7437abc" and "1.9" are silently accepted as 7437 / 1. A --port
-  // typo therefore lands on a different port than the operator typed.
-  it("KNOWN DEFECT: truncates trailing garbage and fractions instead of rejecting", () => {
-    expect(parseInteger("7437abc")).toBe(7437);
-    expect(parseInteger("1.9")).toBe(1);
+  // FIXED: parseInt used to truncate rather than reject, so "7437abc" and "1.9"
+  // were silently accepted as 7437 / 1 — a --port typo landed on a port the
+  // operator never typed.
+  it("rejects trailing garbage and fractions instead of truncating them", () => {
+    expect(() => parseInteger("7437abc")).toThrow(/expected an integer, got "7437abc"/);
+    expect(() => parseInteger("1.9")).toThrow(/expected an integer, got "1.9"/);
+    expect(() => parseInteger("7437 ")).toThrow(/expected an integer/);
+    expect(() => parseInteger(" 7437")).toThrow(/expected an integer/);
+    expect(() => parseInteger("0x1f")).toThrow(/expected an integer/);
+    expect(() => parseInteger("1e3")).toThrow(/expected an integer/);
+  });
+
+  it("names the value parseInt would have silently produced", () => {
+    // the whole point: show the operator the number they did not mean to type
+    expect(() => parseInteger("7437abc")).toThrow(/would silently read this as 7437/);
+    expect(() => parseInteger("1.9")).toThrow(/would silently read this as 1/);
+    // nothing salvageable → a plain example instead of a bogus suggestion
+    expect(() => parseInteger("abc")).toThrow(/expected a whole number, e\.g\. 7437/);
+  });
+
+  it("accepts an explicit plus sign and zero", () => {
+    expect(parseInteger("+7437")).toBe(7437);
+    expect(parseInteger("0")).toBe(0);
+    expect(parseInteger("-0")).toBe(-0);
+  });
+
+  it("rejects integers too large to represent exactly", () => {
+    expect(() => parseInteger("9007199254740993")).toThrow(/out of range/);
   });
 });
 
@@ -29,6 +51,21 @@ describe("parseFloatOpt", () => {
 
   it("throws on non-numeric input", () => {
     expect(() => parseFloatOpt("high")).toThrow(/expected a number, got "high"/);
+  });
+
+  // same defect class as parseInteger: parseFloat("0.75xyz") used to yield 0.75
+  it("rejects trailing garbage rather than truncating it", () => {
+    expect(() => parseFloatOpt("0.75xyz")).toThrow(/expected a number, got "0.75xyz"/);
+  });
+
+  it("rejects empty/whitespace input instead of reading it as 0", () => {
+    expect(() => parseFloatOpt("")).toThrow(/expected a number/);
+    expect(() => parseFloatOpt("   ")).toThrow(/expected a number/);
+  });
+
+  it("rejects Infinity and NaN, which are not usable option values", () => {
+    expect(() => parseFloatOpt("Infinity")).toThrow(/expected a number/);
+    expect(() => parseFloatOpt("NaN")).toThrow(/expected a number/);
   });
 });
 

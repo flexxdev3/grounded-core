@@ -35,7 +35,7 @@ export function installCommand(global: () => GlobalOpts): Command {
     .description("stand Grounded up as a persistent service (Docker or systemd)")
     .option("--port <n>", `listen port (default ${DEFAULT_PORT})`)
     .option("--method <m>", "skip the menu: docker | systemd-user | systemd-system")
-    .option("--image <ref>", "docker image ref to run (pulled if remote; else built from source)")
+    .option("--image <ref>", "docker only: image ref to run (pulled if remote; else built from source)")
     .option("--token <tok>", "require this bearer token for the API")
     .option("-y, --yes", "accept defaults, no prompts")
     .option("--force", "install even if an instance is already detected")
@@ -112,7 +112,24 @@ export function installCommand(global: () => GlobalOpts): Command {
         method = await select("How should Grounded run?", choices, defaultIdx);
       }
 
-      // 4. Confirm.
+      // 4. --image is a Docker-only concept. systemd installs the npm-published
+      // grounded-api and runs it directly — there is no container and no image
+      // ref to honour, so threading the flag through would be meaningless. An
+      // accepted-and-ignored flag is the same silent lie as a bare image tag
+      // that can never be pulled: reject it and name the two ways forward.
+      if (opts.image && method !== "docker") {
+        return fail(
+          `--image applies only to --method docker; ${METHOD_LABEL[method]} does not run a ` +
+            `container image.\n` +
+            `  ${METHOD_LABEL[method]} installs the published @grounded/api package and runs it\n` +
+            `  directly, so there is nothing for "${opts.image}" to apply to.\n\n` +
+            `  do one of:\n` +
+            `    1. install the image in a container:  grounded install --method docker --image ${opts.image}\n` +
+            `    2. keep this method and drop the flag: grounded install --method ${method}`,
+        );
+      }
+
+      // 5. Confirm.
       line();
       field("method", METHOD_LABEL[method]);
       field("cabinet", home);
@@ -123,7 +140,7 @@ export function installCommand(global: () => GlobalOpts): Command {
         return line(c.dim("aborted."));
       }
 
-      // 5. Bootstrap the cabinet (dirs + config + migrations). Idempotent.
+      // 6. Bootstrap the cabinet (dirs + config + migrations). Idempotent.
       line(c.dim("• preparing cabinet…"));
       try {
         const b = await bootstrap({ home });
@@ -132,7 +149,7 @@ export function installCommand(global: () => GlobalOpts): Command {
         return fail(`bootstrap failed: ${(err as Error).message}`);
       }
 
-      // 6. Materialize the chosen backend.
+      // 7. Materialize the chosen backend.
       line(c.dim(`• installing via ${METHOD_LABEL[method]}…`));
       try {
         if (method === "docker") {
@@ -145,7 +162,7 @@ export function installCommand(global: () => GlobalOpts): Command {
         return fail((err as Error).message);
       }
 
-      // 7. Wait for health.
+      // 8. Wait for health.
       line(c.dim("• waiting for the service to come up…"));
       const healthy = await healthPoll(port);
       if (!healthy) {
@@ -155,7 +172,7 @@ export function installCommand(global: () => GlobalOpts): Command {
         );
       }
 
-      // 8. Record the source of truth for future re-runs.
+      // 9. Record the source of truth for future re-runs.
       const manifest: InstallManifest = {
         method,
         port,
@@ -168,7 +185,7 @@ export function installCommand(global: () => GlobalOpts): Command {
         /* non-fatal: detection still works via health/label/unit probes */
       }
 
-      // 9. Done — point the user at the console + agent wiring.
+      // 10. Done — point the user at the console + agent wiring.
       line();
       header("Grounded is live ✓");
       field("console", `http://127.0.0.1:${port}/`);
