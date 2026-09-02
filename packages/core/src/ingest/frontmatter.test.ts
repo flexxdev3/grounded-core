@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { splitFrontmatter } from "./frontmatter.js";
+import { splitFrontmatter, parseFrontmatterTags } from "./frontmatter.js";
 
 describe("splitFrontmatter", () => {
   it("splits normal frontmatter", () => {
@@ -56,5 +56,34 @@ describe("splitFrontmatter", () => {
     const { frontmatter, body } = splitFrontmatter(text);
     expect(frontmatter).toBe("type: note");
     expect(body).toBe("# Real Heading\nbody prose\n");
+  });
+});
+
+describe("parseFrontmatterTags", () => {
+  it("reads scope and project scalars", () => {
+    const { frontmatter } = splitFrontmatter(
+      "---\ntype: handoff\nscope: global\nproject: stunt3d\n---\n\nbody\n",
+    );
+    expect(parseFrontmatterTags(frontmatter)).toEqual({ scope: "global", project: "stunt3d" });
+  });
+
+  it("strips quotes and trailing comments", () => {
+    expect(parseFrontmatterTags(`scope: "archive" # moved here`)).toEqual({ scope: "archive" });
+    expect(parseFrontmatterTags("project: 'alpha'")).toEqual({ project: "alpha" });
+  });
+
+  it("ignores nested keys, lists, maps, empties and unknown keys", () => {
+    const block = [
+      "tags: [a, b]",
+      "meta:",
+      "  scope: nested-should-not-win",
+      "scope:",
+      "status: active",
+    ].join("\n");
+    expect(parseFrontmatterTags(block)).toEqual({});
+  });
+
+  it("returns nothing for a doc with no frontmatter", () => {
+    expect(parseFrontmatterTags(null)).toEqual({});
   });
 });

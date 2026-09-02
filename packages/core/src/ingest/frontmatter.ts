@@ -53,3 +53,46 @@ export function splitFrontmatter(text: string): SplitDoc {
 
   return { frontmatter: block, body };
 }
+
+/** The frontmatter keys ingest honours as per-file tags. */
+export interface FrontmatterTags {
+  /** doc lane, e.g. "global" | "archive" | "administration". */
+  scope?: string;
+  /** owning project. */
+  project?: string;
+}
+
+/**
+ * Read the tag keys ingest cares about out of a raw frontmatter block.
+ *
+ * Deliberately not a YAML parser: only top-level `key: value` scalar lines are
+ * read, quotes are stripped, and anything else (lists, nested maps, comments,
+ * empty values) is ignored rather than guessed at. A wrong tag is worse than no
+ * tag — an ingest that mis-reads a lane puts a document in the wrong place, and
+ * that is the failure this whole path exists to prevent.
+ */
+export function parseFrontmatterTags(block: string | null): FrontmatterTags {
+  const out: FrontmatterTags = {};
+  if (!block) return out;
+  for (const rawLine of block.split(/\r\n|\n/)) {
+    // top-level keys only — an indented line belongs to a nested structure.
+    if (/^\s/.test(rawLine)) continue;
+    const m = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(rawLine);
+    if (!m) continue;
+    const key = m[1]!.toLowerCase();
+    if (key !== "scope" && key !== "project") continue;
+    let value = m[2]!.trim();
+    // strip a trailing `# comment`, then surrounding quotes.
+    value = value.replace(/\s+#.*$/, "").trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+      (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+    ) {
+      value = value.slice(1, -1).trim();
+    }
+    // lists/maps/empties are not scalars — leave them unset.
+    if (!value || value.startsWith("[") || value.startsWith("{")) continue;
+    out[key] = value;
+  }
+  return out;
+}

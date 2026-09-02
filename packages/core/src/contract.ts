@@ -199,6 +199,26 @@ export interface DeliveryMeta {
    * candidate count for that lane, so `truncated` fires whenever the lane had
    * more to give or saturated its candidate window. */
   bySource?: Partial<Record<SourceType, { returned: number; available: number; truncated: boolean }>>;
+  /**
+   * POST /recall only: what the `scopes` filter actually did.
+   *
+   * `scopes` is the DOC-LANE filter and always has been (a fact's own scope is
+   * a different axis, filtered by `project` — see `RecallOptions.scopes` and
+   * `ImpactResult.scope`). That was invisible: a caller who passed
+   * `scopes:["archive"]` and got back only global-scoped FACTS had no way to
+   * learn the filter never applied to them. This says so, every time.
+   *
+   * `declared` is the effective lane set (the default `["global"]` when the
+   * caller passed none, with `defaulted: true`). `appliedTo` / `exempt`
+   * partition the REQUESTED sources — a source the caller excluded appears in
+   * neither.
+   */
+  scopeFilter?: {
+    declared: string[];
+    defaulted: boolean;
+    appliedTo: SourceType[];
+    exempt: SourceType[];
+  };
 }
 
 export interface ListResult<T> { data: T[]; meta: DeliveryMeta; }
@@ -265,6 +285,20 @@ export interface GroundedConfig {
       recencyHalfLifeDays: number;
       /** multiplier for active (vs archived) docs. */
       activeStatus: number;
+      /** SCOPE AFFINITY (fact lane). Optional — absent keys fall back to the
+       * DEFAULT_SCOPE_* constants in engine/recall.ts, so a config written
+       * before these existed keeps its behaviour. Set any of them to 1 to
+       * disable that tier. See `scopeAffinityMultiplier`.
+       *
+       * multiplier when the fact's scope names the caller's declared `project`,
+       * or its name appears as a word in the query. Default 1.5. */
+      scopeAffinity?: number;
+      /** multiplier when the caller declared a project and the fact is scoped
+       * to a DIFFERENT project. Demotes, never drops. Default 0.8. */
+      scopeMismatch?: number;
+      /** multiplier for a deliberately narrowed (non-global) fact under a
+       * context that neither names nor contradicts it. Default 1.3. */
+      scopeSpecificity?: number;
     };
   };
   ingest: {
@@ -342,6 +376,14 @@ export interface RecallOptions {
    * Doc-lane scope filter: match any of these lanes (OR). Defaults to
    * `['global']` when omitted, so callers that declare nothing never see
    * non-global lanes (e.g. "administration") in recall results.
+   *
+   * DOC LANE ONLY, deliberately, and now VISIBLY: a fact's `scope`
+   * ("global"/"project:x") is a different axis on a same-named column and is
+   * filtered by `project`, exactly as `impact()` documents. Every recall
+   * response reports which sources the filter applied to in
+   * `meta.scopeFilter`, and the scope-exempt lanes cannot evict the filtered
+   * lane out of the answer entirely (`applyLaneFloor`) — the two halves of the
+   * fix for "declared a lane, got six off-lane facts and no signal".
    */
   scopes?: string[];
 }
@@ -527,8 +569,10 @@ export interface IngestOptions {
   /** kind override. */
   kind?: string;
   machine?: string;
-  /** lane, e.g. "global" (default) | "administration". Batch-level only — applies to
-   * every chunk in this ingest call, not per-file. */
+  /** lane, e.g. "global" (default) | "administration". Batch-level DEFAULT: it
+   * applies to every file in this ingest call that does not declare its own
+   * `scope:` in frontmatter. A file that does declares wins, and the
+   * disagreement is reported in `IngestReport.frontmatterOverrides`. */
   scope?: string;
   /** owning project for every doc in this batch. Overrides the path-derived
    * project (see `ingest.projectSegment`) — set it when the tree does not
@@ -548,6 +592,24 @@ export interface IngestReport {
   retagged: number;
   removed: number;
   paths: string[];
+  /**
+   * Per-file frontmatter/batch-tag disagreements, one entry per field.
+   *
+   * A doc's own frontmatter WINS over the batch tag (`IngestOptions.scope` /
+   * `.project`) — a file that declares `scope: global` is not silently dragged
+   * into an `archive` ingest by the directory it happens to sit in. That is
+   * exactly how the canonical stunt3d record became unreachable at default
+   * scope. Whenever the two disagree the ingest says so here instead of
+   * resolving it in silence; empty on every ingest where they agree.
+   */
+  frontmatterOverrides?: {
+    path: string;
+    field: "scope" | "project";
+    /** what the file's own frontmatter declared — the value that won. */
+    frontmatter: string;
+    /** what the batch tag would have applied. */
+    batch: string | null;
+  }[];
 }
 
 export interface TimelineOptions {

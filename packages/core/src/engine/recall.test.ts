@@ -3,6 +3,14 @@ import { defaultConfig } from "../config.js";
 import {
   rrf,
   fuseLane,
+  applyLaneFloor,
+  scopeAffinity,
+  scopeAffinityMultiplier,
+  scopeFilterMeta,
+  splitScope,
+  DEFAULT_SCOPE_AFFINITY,
+  DEFAULT_SCOPE_MISMATCH,
+  DEFAULT_SCOPE_SPECIFICITY,
   recencyMultiplier,
   orderResults,
   rankFlat,
@@ -207,5 +215,153 @@ describe("rankFlat (recall ordering)", () => {
     ]);
     const ranked = rankFlat(items, meta);
     expect(ranked.map((o) => o.id)).toEqual([11, 10]);
+  });
+});
+
+
+describe("scope affinity (fact lane)", () => {
+  const cfg = defaultConfig("/tmp/x");
+
+  it("splits a scope into kind + name; a bare scope has no kind", () => {
+    expect(splitScope("project:stunt3d")).toEqual({ kind: "project", name: "stunt3d" });
+    expect(splitScope("global")).toEqual({ kind: null, name: "global" });
+  });
+
+  it("global and unscoped facts are neutral (multiplier 1)", () => {
+    expect(scopeAffinity("global", {})).toBe("neutral");
+    expect(scopeAffinity(undefined, { project: "stunt3d" })).toBe("neutral");
+    expect(scopeAffinityMultiplier("global", { project: "stunt3d" }, cfg)).toBe(1);
+  });
+
+  it("matches when the caller declares that project", () => {
+    expect(scopeAffinity("project:stunt3d", { project: "stunt3d" })).toBe("match");
+    expect(scopeAffinityMultiplier("project:stunt3d", { project: "stunt3d" }, cfg)).toBe(
+      DEFAULT_SCOPE_AFFINITY,
+    );
+  });
+
+  it("matches when the query names the scope, word-bounded", () => {
+    expect(scopeAffinity("project:stunt3d", { query: "what is left on stunt3d" })).toBe("match");
+    // a substring is not a match: "api" must not fire on "apiary"
+    expect(scopeAffinity("project:api", { query: "the apiary notes" })).toBe("specific");
+  });
+
+  it("mismatches a different declared project, and demotes rather than drops", () => {
+    expect(scopeAffinity("project:stunt3d", { project: "grounded" })).toBe("mismatch");
+    const m = scopeAffinityMultiplier("project:stunt3d", { project: "grounded" }, cfg);
+    expect(m).toBe(DEFAULT_SCOPE_MISMATCH);
+    expect(m).toBeGreaterThan(0);
+  });
+
+  it("a non-project scope under a declared project is specific, not a mismatch", () => {
+    expect(scopeAffinity("agent:claude", { project: "grounded" })).toBe("specific");
+  });
+
+  it("a deliberately narrowed fact outranks an unrelated global one inside the noise band", () => {
+    // the shape of the live defect: the scoped fact sits at the WORSE lexical
+    // rank and still has to win, because it is the one that was narrowed to
+    // this subject on purpose.
+    const meta = new Map<number, CandidateMeta>([
+      [1, { sourceType: "fact", id: 1, importance: 0.6, factScope: "global" }],
+      [2, { sourceType: "fact", id: 2, importance: 0.6, factScope: "project:stunt3d" }],
+    ]);
+    const lex = [
+      { id: 1, rank: 0 },
+      { id: 2, rank: 1 },
+    ];
+    const off = {
+      ...cfg,
+      recall: { ...cfg.recall, boosts: { ...cfg.recall.boosts, scopeSpecificity: 1 } },
+    };
+    const before = fuseLane("fact", [], lex, meta, off, Date.now(), { query: "is zap dead yet" });
+    expect(before[0]!.id).toBe(1);
+
+    const after = fuseLane("fact", [], lex, meta, cfg, Date.now(), { query: "is zap dead yet" });
+    expect(after[0]!.id).toBe(2);
+    expect(after.find((f) => f.id === 2)!.score / before.find((f) => f.id === 2)!.score).toBeCloseTo(
+      DEFAULT_SCOPE_SPECIFICITY,
+    );
+  });
+
+  it("every tier is disable-able by config (set the knob to 1)", () => {
+    const flat = {
+      ...cfg,
+      recall: {
+        ...cfg.recall,
+        boosts: {
+          ...cfg.recall.boosts,
+          scopeAffinity: 1,
+          scopeMismatch: 1,
+          scopeSpecificity: 1,
+        },
+      },
+    };
+    expect(scopeAffinityMultiplier("project:a", { project: "a" }, flat)).toBe(1);
+    expect(scopeAffinityMultiplier("project:a", { project: "b" }, flat)).toBe(1);
+    expect(scopeAffinityMultiplier("project:a", {}, flat)).toBe(1);
+  });
+});
+
+describe("applyLaneFloor", () => {
+  const facts: FusedItem[] = [1, 2, 3, 4].map((id) => ({
+    sourceType: "fact" as const,
+    id,
+    score: 1 / id,
+    matchedBy: "lexical" as const,
+  }));
+  const doc: FusedItem = { sourceType: "doc", id: 9, score: 0.01, matchedBy: "lexical" };
+
+  it("promotes the best out-of-window doc into the window, evicting the worst other-type item", () => {
+    const out = applyLaneFloor([...facts, doc], "doc", 1, 3);
+    const window = out.slice(0, 3);
+    expect(window.some((f) => f.sourceType === "doc")).toBe(true);
+    // the two best facts keep their slots; the third is demoted, not dropped
+    expect(window[0]!.id).toBe(1);
+    expect(window[1]!.id).toBe(2);
+    expect(out).toHaveLength(5);
+    expect(out.map((f) => f.id)).toContain(3);
+  });
+
+  it("is a no-op when the window already meets the floor, or the lane is empty", () => {
+    const already = [doc, ...facts];
+    expect(applyLaneFloor(already, "doc", 1, 3)).toBe(already);
+    expect(applyLaneFloor(facts, "doc", 1, 3)).toBe(facts);
+  });
+
+  it("floor 0 (the default read-set) never touches flat ranking", () => {
+    const input = [...facts, doc];
+    expect(applyLaneFloor(input, "doc", 0, 3)).toBe(input);
+  });
+
+  it("never turns the answer into a single-lane quota — floor is clamped to limit-1", () => {
+    const docs: FusedItem[] = [9, 10, 11].map((id) => ({
+      sourceType: "doc" as const,
+      id,
+      score: 0.001 * id,
+      matchedBy: "lexical" as const,
+    }));
+    const out = applyLaneFloor([...facts, ...docs], "doc", 5, 2).slice(0, 2);
+    expect(out.filter((f) => f.sourceType === "doc")).toHaveLength(1);
+    expect(out.filter((f) => f.sourceType === "fact")).toHaveLength(1);
+  });
+});
+
+describe("scopeFilterMeta", () => {
+  it("reports the lanes the filter applied to and the sources exempt from it", () => {
+    expect(scopeFilterMeta(["fact", "session", "doc"], ["archive"], true)).toEqual({
+      declared: ["archive"],
+      defaulted: false,
+      appliedTo: ["doc"],
+      exempt: ["fact", "session"],
+    });
+  });
+
+  it("names the default read-set and flags it as defaulted", () => {
+    expect(scopeFilterMeta(["doc"], ["global"], false)).toEqual({
+      declared: ["global"],
+      defaulted: true,
+      appliedTo: ["doc"],
+      exempt: [],
+    });
   });
 });

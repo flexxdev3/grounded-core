@@ -33,11 +33,15 @@ import type {
   VisionInput,
 } from "../contract.js";
 import {
+  applyLaneFloor,
+  DOC_LANE_FLOOR,
   fuseLane,
   orderResults,
   rankFlat,
+  scopeFilterMeta,
   withEffectiveSourceCaps,
   type CandidateMeta,
+  type RecallContext,
   type FusedItem,
   type LaneHit,
   type SessionFilter,
@@ -50,7 +54,7 @@ import {
 } from "../engine/brief.js";
 import { walk } from "../ingest/walker.js";
 import { stripPrivateBlocks } from "../ingest/private.js";
-import { splitFrontmatter } from "../ingest/frontmatter.js";
+import { splitFrontmatter, parseFrontmatterTags } from "../ingest/frontmatter.js";
 import { chunkText, deriveTitle } from "../ingest/chunk.js";
 import { projectFromPath } from "../ingest/project.js";
 import { isReadableDir } from "../ingest/walker.js";
@@ -764,7 +768,12 @@ export class PostgresStore implements Store {
     const source = opts?.source ?? "default";
     const kind = opts?.kind ?? "markdown";
     const machine = opts?.machine ?? null;
-    const scope = opts?.scope ?? "global";
+    // batch scope is a DEFAULT, not an override: a file that declares its own
+    // `scope:` in frontmatter wins, and the disagreement is reported. See
+    // IngestReport.frontmatterOverrides.
+    const batchScope = opts?.scope ?? "global";
+    const overrides: NonNullable<IngestReport["frontmatterOverrides"]> = [];
+    report.frontmatterOverrides = overrides;
     const dryRun = opts?.dryRun ?? false;
 
     const unreadable = rootPaths.filter((p) => !isReadableDir(p));
@@ -781,9 +790,11 @@ export class PostgresStore implements Store {
           continue;
         }
         const stripped = this.cfg.ingest.stripPrivate ? stripPrivateBlocks(raw) : raw;
-        const content = this.cfg.ingest.stripFrontmatter
-          ? splitFrontmatter(stripped).body
-          : stripped;
+        // frontmatter is ALWAYS split for its tags, even when the configured
+        // ingest keeps it in the indexed body.
+        const split = splitFrontmatter(stripped);
+        const fmTags = parseFrontmatterTags(split.frontmatter);
+        const content = this.cfg.ingest.stripFrontmatter ? split.body : stripped;
         const title = deriveTitle(content, file.relPath);
         const chunks = chunkText(
           content,
@@ -793,8 +804,26 @@ export class PostgresStore implements Store {
         if (chunks.length === 0) continue;
         const mtime = new Date(file.mtimeMs).toISOString();
         const docPath = file.absPath;
-        const project =
+        const dirProject =
           opts?.project ?? projectFromPath(docPath, this.cfg.ingest.projectSegment);
+        const project = fmTags.project ?? dirProject;
+        const scope = fmTags.scope ?? batchScope;
+        if (fmTags.scope && fmTags.scope !== batchScope) {
+          overrides.push({
+            path: docPath,
+            field: "scope",
+            frontmatter: fmTags.scope,
+            batch: batchScope,
+          });
+        }
+        if (fmTags.project && dirProject && fmTags.project !== dirProject) {
+          overrides.push({
+            path: docPath,
+            field: "project",
+            frontmatter: fmTags.project,
+            batch: dirProject,
+          });
+        }
 
         const existingRes = await this.pool.query(
           `select id, chunk_idx, body_hash, source, kind, machine, scope, project from ${this.q("docs")} where path = $1`,
@@ -969,9 +998,19 @@ export class PostgresStore implements Store {
     query: string,
     filter: SessionFilter | undefined,
     limit: number,
+    docScopes?: string[],
   ): Promise<LaneHit[]> {
     if (!query.trim()) return [];
     const params: unknown[] = [query];
+    // doc lane: push the scope predicate INTO the candidate query. Filtering
+    // after a top-N fetch was the real "declared a lane, got zero docs" bug —
+    // the N best candidates are dominated by the default lane, so the declared
+    // lane never reaches the fusion step at all.
+    let scopeSql = "";
+    if (table === "docs" && docScopes && docScopes.length > 0) {
+      params.push(docScopes);
+      scopeSql = ` and scope = any($${params.length}::text[])`;
+    }
     // project/workspace are session-only dimensions — facts and docs carry
     // neither column and are returned unfiltered.
     let projSql = "";
@@ -987,7 +1026,7 @@ export class PostgresStore implements Store {
     const limitIdx = params.length;
     const sql = `select id, ts_rank_cd(search_tsv, websearch_to_tsquery('english', $1)) as rank
                  from ${this.q(table)}
-                 where search_tsv @@ websearch_to_tsquery('english', $1)${projSql}
+                 where search_tsv @@ websearch_to_tsquery('english', $1)${projSql}${scopeSql}
                  order by rank desc limit $${limitIdx}`;
     const res = await this.pool.query(sql, params);
     return (res.rows as Row[]).map((r, i) => ({ id: Number(r.id), rank: i }));
@@ -998,10 +1037,17 @@ export class PostgresStore implements Store {
     queryVec: number[] | null,
     filter: SessionFilter | undefined,
     limit: number,
+    docScopes?: string[],
   ): Promise<LaneHit[]> {
     if (!queryVec || !this.vectorActive()) return [];
     const params: unknown[] = [pgvector.toSql(queryVec)];
     let projSql = "where embedding is not null";
+    // same pushdown as the lexical lane — an out-of-lane row must never consume
+    // one of the `limit` nearest-neighbour slots.
+    if (table === "docs" && docScopes && docScopes.length > 0) {
+      params.push(docScopes);
+      projSql += ` and scope = any($${params.length}::text[])`;
+    }
     if (table === "sessions" && filter?.project) {
       params.push(filter.project);
       projSql += ` and project = $${params.length}`;
@@ -1029,7 +1075,7 @@ export class PostgresStore implements Store {
       // survive recall — filtering here (not just demoting) means a lane
       // hit with no meta entry can be dropped by the caller. See recall().
       const res = await this.pool.query(
-        `select id, pinned, importance, status from ${this.q("facts")} where id = any($1) and status = 'active'`,
+        `select id, pinned, importance, status, scope from ${this.q("facts")} where id = any($1) and status = 'active'`,
         [ids],
       );
       for (const r of res.rows as Row[]) {
@@ -1038,6 +1084,7 @@ export class PostgresStore implements Store {
           id: Number(r.id),
           pinned: Boolean(r.pinned),
           importance: Number(r.importance),
+          factScope: String(r.scope),
         });
       }
     } else if (sourceType === "session") {
@@ -1084,6 +1131,13 @@ export class PostgresStore implements Store {
     // widen it to at least `limit` so one lane can supply the whole flat
     // top-`limit`. Full rationale on effectiveSourceCaps.
     const recallCfg = withEffectiveSourceCaps(this.cfg, limit);
+    // default doc-lane read-set is ['global'] when the caller declares nothing —
+    // the leak fix that keeps e.g. an "administration" lane out of the default
+    // engineering recall pool. Hoisted here because it now feeds the candidate
+    // queries themselves, not just the post-fetch meta filter.
+    const scopesDeclared = !!(opts?.scopes && opts.scopes.length > 0);
+    const docScopes = scopesDeclared ? opts!.scopes! : ["global"];
+    const ctx: RecallContext = { query, project: opts?.project };
     const wantVector =
       !opts?.lexicalOnly && this.vectorActive() && query.trim().length > 0;
     const queryVec = wantVector ? await this.embedOne(query) : null;
@@ -1110,17 +1164,14 @@ export class PostgresStore implements Store {
         st === "session"
           ? { project: opts?.project, workspace: opts?.workspace }
           : undefined;
-      const rawVec = await this.vectorLane(table, queryVec, proj, laneN);
-      const rawLex = await this.lexicalLane(table, query, proj, laneN);
+      const laneScopes = st === "doc" ? docScopes : undefined;
+      const rawVec = await this.vectorLane(table, queryVec, proj, laneN, laneScopes);
+      const rawLex = await this.lexicalLane(table, query, proj, laneN, laneScopes);
       let vec = rawVec;
       let lex = rawLex;
       const ids = new Set<number>();
       for (const h of vec) ids.add(h.id);
       for (const h of lex) ids.add(h.id);
-      // default doc-lane read-set is ['global'] when the caller declares nothing —
-      // this is the leak fix that keeps e.g. an "administration" lane out of the
-      // default engineering recall pool.
-      const docScopes = opts?.scopes && opts.scopes.length > 0 ? opts.scopes : ["global"];
       const meta = await this.metaFor(st, [...ids], docScopes);
       // `meta.size` is the honest per-source `available`: ids that had a lexical
       // or vector hit AND passed scope/status filtering, computed before the
@@ -1142,7 +1193,7 @@ export class PostgresStore implements Store {
       // No per-lane `.slice(0, limit)`: `limit` is a total across sources now,
       // applied once by rankFlat below. sourceCaps still caps inside fuseLane,
       // but at `recallCfg`'s effective (>= limit) width — see recallCfg above.
-      const laneFused = fuseLane(st, vec, lex, meta, recallCfg);
+      const laneFused = fuseLane(st, vec, lex, meta, recallCfg, Date.now(), ctx);
       for (const f of laneFused) {
         fused.push(f);
         const m = meta.get(f.id);
@@ -1164,7 +1215,12 @@ export class PostgresStore implements Store {
     // toRecallResult is async and returns null when the row vanished between
     // the lane query and the hydrate, so slicing first would silently under-fill
     // the answer. Walk the full ranking, skip nulls, stop at `limit`.
-    const ordered = rankFlat(fused, orderMeta);
+    const ordered = applyLaneFloor(
+      rankFlat(fused, orderMeta),
+      "doc",
+      scopesDeclared && sources.includes("doc") ? DOC_LANE_FLOOR : 0,
+      limit,
+    );
     const out: RecallResult[] = [];
     for (const f of ordered) {
       if (out.length >= limit) break;
@@ -1196,6 +1252,7 @@ export class PostgresStore implements Store {
         truncated,
         limit,
         bySource,
+        scopeFilter: scopeFilterMeta(sources, docScopes, scopesDeclared),
       },
     };
   }

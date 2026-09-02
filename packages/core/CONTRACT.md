@@ -68,6 +68,15 @@ Rules every adapter must honor:
 
 Idempotent ingest: skip a chunk whose `bodyHash` is unchanged (this is why re-ingest is cheap).
 
+**Frontmatter beats the batch tag.** `IngestOptions.scope` / `.project` are per-batch DEFAULTS. A file
+that declares `scope:` or `project:` in its own YAML frontmatter keeps what it declared — a document
+is not dragged into another lane by the directory it happens to sit under. Every disagreement is
+reported per file in `IngestReport.frontmatterOverrides` (`{path, field, frontmatter, batch}`), so the
+resolution is visible in the `POST /docs/ingest` response instead of silent. Only `scope` and
+`project` are read, and only as top-level scalars — this is not a YAML parser, and a mis-read tag
+would file a document in the wrong place. `status` is NOT read: it is a lifecycle column owned by
+ingest and `docsPrune` (active / archived / missing), not a frontmatter assertion.
+
 ## Hybrid recall (the heart — identical across adapters)
 Given a query string:
 1. If embeddings enabled and not `lexicalOnly`: embed the query once.
@@ -78,7 +87,8 @@ Given a query string:
 3. **Fuse with Reciprocal Rank Fusion**: `score = Σ 1 / (rrfK + rank_in_lane)`, `rrfK` default 60.
    `matchedBy` = `both` when an item ranks in both lanes, else the single lane.
 4. Apply **boosts**:
-   - facts: `× boosts.pinned` if pinned; `× (1 + boosts.importance × importance)`.
+   - facts: `× boosts.pinned` if pinned; `× (1 + boosts.importance × importance)`; `× scope affinity`
+     (below).
    - sessions: recency decay using `boosts.recencyHalfLifeDays` (newer ranks higher).
    - docs: `× boosts.activeStatus` for active vs archived.
 5. Apply **source caps** (`sourceCaps[type]`) — a per-lane RANKING cap inside fusion, applied before the
@@ -93,9 +103,39 @@ Given a query string:
 If embeddings are disabled/unavailable, run lexical-only and set `matchedBy="lexical"`. Never error
 just because embeddings are off — degrade gracefully.
 
+**Scope affinity (fact lane).** A fact's own `scope` is ranking signal, not just a filter dimension:
+someone narrowed that fact on purpose. Three optional, independently disable-able knobs (set any to
+`1`), all under `recall.boosts`, all applied to facts only:
+
+| knob | default | fires when |
+|---|---|---|
+| `scopeAffinity` | 1.5 | the scope names the caller's declared `project`, **or** its name appears as a whole word in the query |
+| `scopeMismatch` | 0.8 | the caller declared a project and the fact is scoped to a **different** one — a demotion, never a filter |
+| `scopeSpecificity` | 1.3 | a non-global scope under a context that neither names nor contradicts it |
+
+Global (and unscoped) facts are neutral, `× 1`. Why specificity earns a boost at all: RRF spreads
+*inside* one lane are routinely noise (a `project:stunt3d` fact carrying the query's rare terms scored
+0.032 against three global facts sharing no term with the query at 0.040), and a deliberately narrowed
+fact is the better answer inside that band. Absent config keys fall back to these defaults, so a
+`config.toml` written before they existed is unaffected.
+
 **Doc lane scoping.** `RecallOptions.scopes` (default `['global']` when omitted) filters out-of-lane
-docs in SQL — they never reach the caller (filter-then-drop). This is the one behaviour `impact()`
-(below) deliberately does NOT share.
+docs (filter-then-drop) — they never reach the caller. This is the one behaviour `impact()` (below)
+deliberately does NOT share. Three properties make it honest:
+
+- **Pushed into the candidate query**, not applied after it. Postgres filters both lanes in SQL
+  exactly; SQLite filters the FTS lane in SQL and over-fetches the vector lane 5× before filtering,
+  because `sqlite-vec` applies `k` before any join. Filtering *after* a top-N fetch was the original
+  defect: the N best candidates are dominated by the default lane, so a declared lane could return
+  **zero rows while holding the best match**.
+- **`scopes` is the DOC lane only** — a fact's `scope` is a different axis on a same-named column,
+  filtered by `project` (identical to `impact()`'s rule). Every recall response now states this in
+  `meta.scopeFilter`: `{ declared, defaulted, appliedTo, exempt }` over the REQUESTED sources. The
+  exemption is never silent.
+- **The exempt lanes cannot evict the filtered one.** When `scopes` is declared explicitly, the doc
+  lane keeps at least one slot inside `limit` (`applyLaneFloor`, floor clamped to `limit - 1` so the
+  answer never becomes a per-lane quota). Facts may out-rank docs; they may not make the lane the
+  caller filtered on invisible. On the default read-set the floor is 0 and flat ranking is untouched.
 
 ## Reverse lookup (`Store.impact`)
 The pre-flight before stopping, removing, or renaming infrastructure — "what depends on this subject?"

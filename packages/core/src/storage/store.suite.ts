@@ -504,6 +504,157 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       await store.docsPrune({ remove: true });
     });
 
+    it("recall: a declared lane cannot be evicted by the scope-exempt fact lane, and meta says the filter did not apply to facts", async () => {
+      // The desk #72 shape: declare a non-default lane, and get back nothing but
+      // off-lane facts with no signal that the filter never touched them.
+      const dir = mkdtempSync(join(tmpdir(), "grounded-lane-floor-test-"));
+      writeFileSync(
+        join(dir, "lane-floor-doc.md"),
+        "# Lane Floor Doc\n\nzzqlanefloortoken decommission record for the declared lane.\n",
+        "utf8",
+      );
+      await store.docsIngest([dir], { source: "lane-floor-test", scope: "zzqfloorlane" });
+
+      const noise: number[] = [];
+      for (const n of [1, 2, 3, 4]) {
+        const f = await store.factsAdd({
+          fact: `zzqlanefloortoken unrelated global rule number ${n}`,
+          scope: "global",
+        });
+        noise.push(f.id);
+      }
+
+      const res = await store.recall("zzqlanefloortoken", {
+        scopes: ["zzqfloorlane"],
+        limit: 3,
+      });
+      // the lane that DID match the filter keeps a slot no matter how the facts rank
+      expect(res.data.some((r) => r.sourceType === "doc")).toBe(true);
+      expect(res.data.length).toBe(3);
+      // ...and the exemption is stated, not silent
+      expect(res.meta.scopeFilter).toEqual({
+        declared: ["zzqfloorlane"],
+        defaulted: false,
+        appliedTo: ["doc"],
+        exempt: ["fact", "session"],
+      });
+
+      // control: at the DEFAULT read-set the lane stays invisible and the floor
+      // never fires — flat ranking is untouched when the caller declared nothing.
+      const dflt = await store.recall("zzqlanefloortoken", { limit: 3 });
+      expect(dflt.data.some((r) => r.sourceType === "doc")).toBe(false);
+      expect(dflt.meta.scopeFilter?.defaulted).toBe(true);
+      expect(dflt.meta.scopeFilter?.declared).toEqual(["global"]);
+
+      for (const id of noise) await store.factsDelete(id);
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
+    it("recall: a project-scoped fact outranks an unrelated global fact on its own subject (scope affinity)", async () => {
+      // the global fact deliberately mentions the token TWICE, so it wins the
+      // lexical lane outright — scope is the only thing that can flip the order.
+      const globalFact = await store.factsAdd({
+        fact: "zzqaffinitytoken zzqaffinitytoken a global rule about something else entirely",
+        scope: "global",
+      });
+      const scopedFact = await store.factsAdd({
+        fact: "zzqaffinitytoken the zap host 194.156.89.5 is decommissioned",
+        scope: "project:zzqaffproj",
+      });
+
+      const neutral = (await store.recall("zzqaffinitytoken", {
+        sources: ["fact"],
+        limit: 5,
+      })).data;
+      expect(neutral[0]!.id).toBe(scopedFact.id);
+
+      // declaring the project is a stronger match still
+      const matched = (await store.recall("zzqaffinitytoken", {
+        sources: ["fact"],
+        project: "zzqaffproj",
+        limit: 5,
+      })).data;
+      expect(matched[0]!.id).toBe(scopedFact.id);
+
+      // ...and a DIFFERENT declared project demotes it below the global fact,
+      // without dropping it — a mismatch is a demotion, never a filter.
+      const mismatched = (await store.recall("zzqaffinitytoken", {
+        sources: ["fact"],
+        project: "zzqotherproj",
+        limit: 5,
+      })).data;
+      expect(mismatched[0]!.id).toBe(globalFact.id);
+      expect(mismatched.some((r) => r.id === scopedFact.id)).toBe(true);
+
+      await store.factsDelete(globalFact.id);
+      await store.factsDelete(scopedFact.id);
+    });
+
+    it("docs: a doc's own frontmatter beats the batch scope/project tag, and the disagreement is reported", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grounded-fm-precedence-test-"));
+      writeFileSync(
+        join(dir, "fm-declared-doc.md"),
+        [
+          "---",
+          "type: migration",
+          "scope: global",
+          "status: active",
+          "project: zzqfmproj",
+          "---",
+          "",
+          "# Frontmatter Declared Doc",
+          "",
+          "zzqfmprecedencetoken the canonical record.",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      writeFileSync(
+        join(dir, "fm-silent-doc.md"),
+        "# Silent Doc\n\nzzqfmsilenttoken no frontmatter here.\n",
+        "utf8",
+      );
+
+      const report = await store.docsIngest([dir], {
+        source: "fm-precedence-test",
+        scope: "zzqarchivelane",
+      });
+
+      // the file that declared a lane keeps it; the one that declared nothing
+      // takes the batch tag.
+      const rows = (await store.docsList({ source: "fm-precedence-test" })).data;
+      const declared = rows.filter((d) => d.path.endsWith("fm-declared-doc.md"));
+      const silent = rows.filter((d) => d.path.endsWith("fm-silent-doc.md"));
+      expect(declared.length).toBeGreaterThan(0);
+      expect(silent.length).toBeGreaterThan(0);
+      for (const d of declared) {
+        expect(d.scope).toBe("global");
+        expect(d.project).toBe("zzqfmproj");
+      }
+      for (const d of silent) expect(d.scope).toBe("zzqarchivelane");
+
+      // and the override is VISIBLE in the ingest response — exactly one entry,
+      // for the one file that disagreed.
+      const overrides = report.frontmatterOverrides ?? [];
+      expect(overrides).toHaveLength(1);
+      expect(overrides[0]!.field).toBe("scope");
+      expect(overrides[0]!.frontmatter).toBe("global");
+      expect(overrides[0]!.batch).toBe("zzqarchivelane");
+      expect(overrides[0]!.path).toContain("fm-declared-doc.md");
+
+      // the payoff: the declared doc is reachable at the DEFAULT read-set,
+      // instead of being dragged into the archive lane by its directory.
+      const found = (await store.recall("zzqfmprecedencetoken", {
+        sources: ["doc"],
+        limit: 5,
+      })).data;
+      expect(found.some((r) => r.snippet.includes("zzqfmprecedencetoken"))).toBe(true);
+
+      rmSync(dir, { recursive: true, force: true });
+      await store.docsPrune({ remove: true });
+    });
+
     it("docs: re-ingesting unchanged files with a different scope runs a tag-only retag, not an update", async () => {
       const dir = mkdtempSync(join(tmpdir(), "grounded-retag-test-"));
       writeFileSync(
