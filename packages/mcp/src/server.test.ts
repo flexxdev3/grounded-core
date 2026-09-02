@@ -87,6 +87,22 @@ const call = (name: string, args: Record<string, unknown> = {}) =>
   client.callTool({ name, arguments: args }) as Promise<CallToolResult>;
 const textOf = (r: CallToolResult) => (r.content as { text: string }[]).map((c) => c.text).join("\n");
 
+/**
+ * Schema violations surface as a JSON-RPC -32602 (InvalidParams) — the
+ * protocol's 400 — and the SDK renders the zod issues as a JSON array. Pull the
+ * human message back out so assertions read against the wording, not the dump.
+ */
+function validationMessage(r: CallToolResult): string {
+  const raw = textOf(r);
+  const start = raw.indexOf("[");
+  if (start === -1) return raw;
+  try {
+    return (JSON.parse(raw.slice(start)) as { message: string }[]).map((i) => i.message).join("; ");
+  } catch {
+    return raw;
+  }
+}
+
 // ---- the tool registry -------------------------------------------------------
 
 const EXPECTED_TOOLS = [
@@ -277,18 +293,83 @@ describe("argument validation", () => {
     expect((await invalid("ground_docs_ingest", { paths: [] })).isError).toBe(true);
   });
 
-  // KNOWN DEFECT: packages/mcp/src/server.ts:132+ — every inputSchema is a plain
-  // (non-strict) zod object, so unknown keys are STRIPPED rather than rejected.
-  // The HTTP surface 400s on an unknown body key; here a typo'd argument name is
-  // silently dropped and the tool runs as if the caller never passed it. An agent
-  // sending {query, limmit: 200} gets the default limit with no signal at all.
-  it("KNOWN DEFECT: unknown arguments are silently ignored, not rejected like the HTTP surface", async () => {
-    const r = await call("ground_recall", { query: "x", limmit: 200, nonsense: true });
-    expect(r.isError).toBeFalsy();
-    const opts = lastArgs("recall")![1] as Record<string, unknown>;
-    expect(opts).not.toHaveProperty("limmit");
-    expect(opts).not.toHaveProperty("limit"); // the typo silently became "no limit"
+  // Grounded's standing rule: unknown body keys are a 400 on every JSON route —
+  // a silently-ignored option is a 200 that lies. MCP is the primary agent
+  // contract, so every tool schema is strict and the refusal is worded the way
+  // packages/api/src/app.ts rejectUnknownKeys words its 400.
+  describe("unknown arguments are rejected, never silently stripped", () => {
+    it("refuses a typo'd option instead of running with the default", async () => {
+      const r = await invalid("ground_recall", { query: "x", limmit: 200 });
+      expect(r.isError).toBe(true);
+      expect(validationMessage(r)).toContain('unknown field "limmit"');
+      expect(calls).toHaveLength(0); // never reached the store
+    });
+
+    it("refuses with the JSON-RPC 400 code (-32602 InvalidParams) and names the tool", async () => {
+      const r = await call("ground_recall", { query: "x", limmit: 200 });
+      expect(r.isError).toBe(true);
+      const raw = textOf(r);
+      expect(raw).toContain("-32602"); // InvalidParams — the protocol's 400
+      expect(raw).toContain("Invalid arguments for tool ground_recall");
+    });
+
+    it("names every offending key and pluralises, like the HTTP 400 does", async () => {
+      const r = await invalid("ground_recall", { query: "x", limmit: 1, nonsense: true });
+      expect(validationMessage(r)).toContain('unknown fields "limmit", "nonsense"');
+    });
+
+    it("names the keys the tool DOES accept so the caller can self-correct", async () => {
+      const msg = validationMessage(await invalid("ground_recall", { query: "x", scope: "global" }));
+      expect(msg).toContain(
+        "this tool accepts: query, limit, project, sources, lexicalOnly, scopes",
+      );
+    });
+
+    it("rejects on every tool, not just recall — one strict schema each", async () => {
+      const cases: [string, Record<string, unknown>][] = [
+        ["ground_impact", { subject: "5433", lexicalOnly: true }], // impact is lexical by construction
+        ["ground_get", { typedId: "doc:12", full: true }],
+        ["ground_brief", { scopes: ["global"] }], // the real /brief lane is docScopes
+        ["ground_facts_add", { fact: "f", piinned: true }],
+        ["ground_facts_list", { statuses: "all" }],
+        ["ground_session_add", { summary: "s", tag: "x" }],
+        ["ground_docs_ingest", { paths: ["/tmp"], recursive: true }],
+        ["ground_docs_prune", { delete: true }],
+        ["ground_vision_set", { details: "d", scopes: ["global"] }],
+        ["ground_timeline", { around: 1, limit: 5 }],
+        ["ground_health", { verbose: true }], // even the zero-arg tool
+      ];
+      for (const [tool, args] of cases) {
+        calls = [];
+        const r = await invalid(tool, args);
+        expect(r.isError, tool).toBe(true);
+        expect(validationMessage(r), tool).toContain("unknown field");
+        expect(calls, `${tool} reached the store`).toHaveLength(0);
+      }
+    });
+
+    it("publishes the rule in the JSON Schema so a client can see it first", async () => {
+      const { tools } = await client.listTools();
+      for (const t of tools) {
+        expect((t.inputSchema as { additionalProperties?: unknown }).additionalProperties, t.name).toBe(
+          false,
+        );
+      }
+    });
+
+    it("still accepts every documented key — strictness did not narrow the contract", async () => {
+      const r = await call("ground_recall", {
+        query: "x",
+        limit: 5,
+        project: "grounded",
+        sources: ["fact"],
+        lexicalOnly: false,
+        scopes: ["global"],
+      });
+      expect(r.isError).toBeFalsy();
+    });
   });
+
 });
 
 // ---- progressive disclosure --------------------------------------------------

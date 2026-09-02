@@ -77,6 +77,18 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
+/** When set, service.ts sees this as its own module path — used to simulate the
+ *  shape of an npm install (the CLI living under node_modules/). */
+let moduleFileOverride: string | null = null;
+
+vi.mock("node:url", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:url")>();
+  return {
+    ...actual,
+    fileURLToPath: (u: string | URL) => moduleFileOverride ?? actual.fileURLToPath(u),
+  };
+});
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, existsSync: (p: string) => existing.has(String(p)) };
@@ -105,6 +117,7 @@ beforeEach(() => {
   spawnCalls = [];
   teeWrites = [];
   existing = new Set();
+  moduleFileOverride = null;
   spawnExit = () => 0;
   execOut = () => "";
   delete process.env.GROUNDED_IMAGE;
@@ -155,9 +168,32 @@ describe("dockerBuildContext", () => {
     expect(dockerBuildContext()).toBeNull();
   });
 
-  it("returns null when neither the env override nor the repo guess has a Dockerfile", async () => {
+  it("returns null when neither the env override nor the guess yields a context", async () => {
     const { dockerBuildContext } = await loadService();
     expect(dockerBuildContext()).toBeNull();
+  });
+
+  // The npm-install shape: installed from the registry, the same four-levels-up
+  // walk lands inside node_modules/, where an unrelated Dockerfile would have
+  // been built as if it were ours. It must say null, not guess.
+  it("refuses a guess under node_modules even when every marker is present", async () => {
+    moduleFileOverride = "/home/u/proj/node_modules/@grounded/cli/dist/util/service.js";
+    const { dockerBuildContext } = await loadService();
+    const guess = "/home/u/proj/node_modules";
+    existing = new Set(
+      ["Dockerfile", "packages", "pnpm-workspace.yaml"].map((m) => join(guess, m)),
+    );
+    expect(dockerBuildContext()).toBeNull();
+  });
+
+  it("still resolves a real in-checkout root through the same walk", async () => {
+    moduleFileOverride = "/home/u/grounded-core/packages/cli/dist/util/service.js";
+    const { dockerBuildContext } = await loadService();
+    const root = "/home/u/grounded-core";
+    existing = new Set(
+      ["Dockerfile", "packages", "pnpm-workspace.yaml"].map((m) => join(root, m)),
+    );
+    expect(dockerBuildContext()).toBe(root);
   });
 
   // The four-levels-up guess is only meaningful in a repo checkout. Installed

@@ -73,6 +73,41 @@ function renderImpactCard(r: ImpactResult): string {
   return `[${r.typedId}] ${r.title}${tail}\n  ${meta} · ${r.citation}\n  ${r.snippet}`;
 }
 
+/**
+ * Wrap a tool's input shape in a STRICT object.
+ *
+ * Grounded's standing rule: unknown body keys are a 400 on every JSON route —
+ * a silently-ignored option is a 200 that lies. MCP is the *primary* agent
+ * contract, so it is the surface where that lie costs most: an agent that sends
+ * `limmit` instead of `limit` gets a different result set and has no way to
+ * know. zod objects are non-strict by default, which stripped exactly those
+ * keys, so every tool here must opt in explicitly.
+ *
+ * The errorMap reproduces the HTTP layer's wording (`rejectUnknownKeys` in
+ * packages/api/src/app.ts) so the two agent-facing surfaces phrase the same
+ * refusal the same way. `additionalProperties: false` now also rides along in
+ * the published JSON Schema, so a well-behaved client can see the rule before
+ * it breaks it.
+ */
+function strictInput<T extends z.ZodRawShape>(shape: T) {
+  const allowed = Object.keys(shape);
+  return z
+    .object(shape, {
+      errorMap: (issue, ctx) => {
+        if (issue.code === z.ZodIssueCode.unrecognized_keys) {
+          const keys = issue.keys.map((k) => `"${k}"`).join(", ");
+          return {
+            message:
+              `unknown field${issue.keys.length > 1 ? "s" : ""} ${keys} — ` +
+              `this tool accepts: ${allowed.join(", ")}`,
+          };
+        }
+        return { message: ctx.defaultError };
+      },
+    })
+    .strict();
+}
+
 const SOURCE_TYPES = ["fact", "session", "doc"] as const;
 
 /** Same ceilings the HTTP routes enforce (packages/api/src/app.ts) — the two
@@ -129,7 +164,7 @@ export function createServer(
       description:
         "Hybrid search across facts, sessions, and docs. Returns compact cited cards " +
         "(no full bodies). Pick a typedId and call ground_get or ground_timeline for detail.",
-      inputSchema: {
+      inputSchema: strictInput({
         query: z.string().describe("natural-language query"),
         limit: z.number().int().positive().max(MAX_RECALL_LIMIT).optional().describe("total results across sources (default 10, max 200)"),
         project: z.string().optional().describe("scope filter for facts/sessions"),
@@ -141,7 +176,7 @@ export function createServer(
           .describe(
             'filters the doc lane; defaults to ["global"] — pass e.g. ["global","administration"] to also include another lane, not just the other lane alone',
           ),
-      },
+      }),
     },
     guard(async ({ query, limit, project, sources, lexicalOnly, scopes }) => {
       const { data, meta } = await store.recall(query, {
@@ -176,7 +211,7 @@ export function createServer(
         "not a search. Lexical-only by construction: subject is a literal token, not a natural-language " +
         "query. Deliberately crosses lane boundaries — out-of-lane doc hits are still returned, but " +
         "content-withheld: you learn THAT a dependency exists and where, not what it says.",
-      inputSchema: {
+      inputSchema: strictInput({
         subject: z.string().describe("literal token to search for — a container name, a port, a path"),
         limit: z.number().int().positive().max(MAX_RECALL_LIMIT).optional().describe("total results across sources (default 20, max 200)"),
         project: z.string().optional().describe("scope filter for facts/sessions"),
@@ -188,7 +223,7 @@ export function createServer(
             'doc lanes whose CONTENT you may see; defaults to ["global"]. Does NOT filter the result ' +
               "set — out-of-lane hits are still returned, content withheld.",
           ),
-      },
+      }),
     },
     guard(async ({ subject, limit, project, sources, scopes }) => {
       const { data, meta } = await store.impact(subject, {
@@ -217,12 +252,12 @@ export function createServer(
     {
       title: "Timeline",
       description: "Sessions around an anchor (session id or query). Use after ground_recall to expand context.",
-      inputSchema: {
+      inputSchema: strictInput({
         around: z.number().int().optional().describe("anchor session id"),
         query: z.string().optional().describe("anchor by query instead of id"),
         project: z.string().optional(),
         window: z.number().int().positive().optional().describe("entries before/after the anchor"),
-      },
+      }),
     },
     guard(async ({ around, query, project, window }) => {
       const sessions = await store.sessionsTimeline({
@@ -240,12 +275,12 @@ export function createServer(
     {
       title: "Get",
       description: "Fetch the full record for a typedId (e.g. fact:2, session:274, doc:1091).",
-      inputSchema: {
+      inputSchema: strictInput({
         typedId: z
           .string()
           .regex(TYPED_ID_RE, "expected <fact|session|doc>:<id>")
           .describe("typed id from a recall card"),
-      },
+      }),
     },
     guard(async ({ typedId }) => {
       const record = await store.get(typedId as TypedId);
@@ -259,7 +294,7 @@ export function createServer(
     {
       title: "Brief",
       description: "Assemble scoped startup context (recent sessions + facts + related docs). Markdown by default.",
-      inputSchema: {
+      inputSchema: strictInput({
         agent: z.string().optional(),
         project: z.string().optional(),
         machine: z.string().optional(),
@@ -278,7 +313,7 @@ export function createServer(
           .describe(
             'IANA zone (e.g. "America/Chicago") for the rendered session dates; defaults to UTC. Display only — stored instants and the JSON createdAt are always UTC. Pass your local zone: the markdown line is a DATE ONLY, so west of UTC anything logged in the local evening otherwise renders as tomorrow',
           ),
-      },
+      }),
     },
     guard(async ({ agent, project, machine, cwd, query, format, docScopes, timezone }) => {
       const opts: BriefOptions = {
@@ -303,9 +338,9 @@ export function createServer(
       title: "Get vision",
       description:
         "Get the active Global Vision and, when project is given, that Project Vision — the direction the work serves.",
-      inputSchema: {
+      inputSchema: strictInput({
         project: z.string().optional().describe("project name (loads its Project Vision too)"),
-      },
+      }),
     },
     guard(async ({ project }) => {
       const global = await store.visionGet("global");
@@ -324,7 +359,7 @@ export function createServer(
         "ground_vision_get. `summary` is the short form injected at SessionStart; omit it to fall back to a " +
         "truncated `details` for injection. `details` is CAPPED — objectives and committed next steps only, " +
         "history belongs in sessions. Over the cap the write is rejected, not truncated.",
-      inputSchema: {
+      inputSchema: strictInput({
         details: z
           .string()
           .describe(
@@ -335,7 +370,7 @@ export function createServer(
           .optional()
           .describe("short form injected at SessionStart; never recalled. Falls back to truncated details when omitted."),
         scope: z.string().optional().describe('"global" (default) or "project:<name>"'),
-      },
+      }),
     },
     guard(async ({ details, summary, scope }) => {
       const capError = visionCapError(details, visionCap);
@@ -360,7 +395,7 @@ export function createServer(
         "its stored value) instead of creating a second, competing row. Restating a pinned fact through " +
         "this tool without repeating pinned:true will NOT unpin it. An archived fact holding the same " +
         "key does not block a fresh active row from claiming it.",
-      inputSchema: {
+      inputSchema: strictInput({
         fact: z.string().describe("the sharp one-liner rule"),
         scope: z.string().optional().describe('e.g. "global", "project:x", "agent:y"'),
         category: z.string().optional(),
@@ -382,7 +417,7 @@ export function createServer(
               'virtually every call. "derived" is reserved for synthesis inferring a fact from other data; it must ' +
               "never be used to make a guess look like operator truth.",
           ),
-      },
+      }),
     },
     guard(async ({ fact, scope, category, detail, topicKey, pinned, importance, status, origin }) => {
       const created = await store.factsAdd({
@@ -409,7 +444,7 @@ export function createServer(
     {
       title: "Update fact",
       description: "Edit a fact in place by id. Only provided fields change; re-embeds when text changes.",
-      inputSchema: {
+      inputSchema: strictInput({
         id: z.number().int().describe("fact id"),
         fact: z.string().optional().describe("the sharp one-liner rule"),
         scope: z.string().optional(),
@@ -426,7 +461,7 @@ export function createServer(
             '"stated" = an operator or agent asserted this outright. "derived" is reserved for synthesis and ' +
               "must never be used to present an inference as operator truth. Omit to leave the fact's existing origin untouched.",
           ),
-      },
+      }),
     },
     guard(async ({ id, fact, scope, category, detail, topicKey, pinned, importance, status, origin }) => {
       const updated = await store.factsUpdate(id, {
@@ -453,14 +488,14 @@ export function createServer(
     {
       title: "List facts",
       description: "List facts, pinned/importance first. Defaults to active facts only.",
-      inputSchema: {
+      inputSchema: strictInput({
         scope: z.string().optional(),
         limit: z.number().int().positive().max(MAX_LIST_LIMIT).optional(),
         status: z
           .enum(["active", "archived", "all"])
           .optional()
           .describe('defaults to "active"; "all" returns every status'),
-      },
+      }),
     },
     guard(async ({ scope, limit, status }) => {
       const facts = await store.factsList({
@@ -477,7 +512,7 @@ export function createServer(
     {
       title: "Delete fact",
       description: "Delete a fact by id.",
-      inputSchema: { id: z.number().int().describe("fact id") },
+      inputSchema: strictInput({ id: z.number().int().describe("fact id") }),
     },
     guard(async ({ id }) => {
       const ok = await store.factsDelete(id);
@@ -490,14 +525,14 @@ export function createServer(
     {
       title: "Add session",
       description: "Append a session (work-log entry).",
-      inputSchema: {
+      inputSchema: strictInput({
         summary: z.string().describe("one-line summary"),
         details: z.string().optional(),
         project: z.string().optional(),
         agent: z.string().optional(),
         machine: z.string().optional(),
         tags: z.array(z.string()).optional(),
-      },
+      }),
     },
     guard(async ({ summary, details, project, agent, machine, tags }) => {
       const created = await store.sessionsAdd({
@@ -518,7 +553,7 @@ export function createServer(
       title: "Update session",
       description:
         "Edit a session in place (partial patch; omitted fields keep their value). Use this to correct a work-log entry instead of writing a second one.",
-      inputSchema: {
+      inputSchema: strictInput({
         id: z.number().int().describe("session id"),
         summary: z.string().optional(),
         details: z.string().optional(),
@@ -528,7 +563,7 @@ export function createServer(
         machine: z.string().optional(),
         tags: z.array(z.string()).optional(),
         source: z.string().optional(),
-      },
+      }),
     },
     guard(async ({ id, ...patch }) => {
       const updated = await store.sessionsUpdate(id, patch);
@@ -541,7 +576,7 @@ export function createServer(
     {
       title: "Delete session",
       description: "Delete a session (work-log entry) by id. Not reversible.",
-      inputSchema: { id: z.number().int().describe("session id") },
+      inputSchema: strictInput({ id: z.number().int().describe("session id") }),
     },
     guard(async ({ id }) => {
       const ok = await store.sessionsDelete(id);
@@ -554,14 +589,14 @@ export function createServer(
     {
       title: "Ingest docs",
       description: "Ingest/index files or directories. Idempotent (bodyHash dedupe). Returns an IngestReport.",
-      inputSchema: {
+      inputSchema: strictInput({
         paths: z.array(z.string()).min(1).describe("file or directory paths"),
         source: z.string().optional().describe("logical source label"),
         kind: z.string().optional(),
         machine: z.string().optional().describe("machine label to tag ingested rows with"),
         scope: z.string().optional().describe('lane to tag ingested rows with (default "global")'),
         dryRun: z.boolean().optional().describe("report changes without writing"),
-      },
+      }),
     },
     guard(async ({ paths, source, kind, machine, scope, dryRun }) => {
       const report = await store.docsIngest(paths, {
@@ -583,9 +618,9 @@ export function createServer(
         "Reconcile doc rows against files on disk: mark rows missing, or delete them with remove:true. " +
         "Distinct from IngestReport.removed (stale chunk indexes inside re-chunked files, not orphan detection) — " +
         "use this tool, not that field, to detect orphaned rows.",
-      inputSchema: {
+      inputSchema: strictInput({
         remove: z.boolean().optional().describe("delete orphaned rows instead of marking them missing (default false)"),
-      },
+      }),
     },
     guard(async ({ remove }) => {
       const report = await store.docsPrune({
@@ -600,7 +635,7 @@ export function createServer(
     {
       title: "Health",
       description: "Storage + embedding + record-count health report.",
-      inputSchema: {},
+      inputSchema: strictInput({}),
     },
     guard(async () => {
       const report = await store.health();
