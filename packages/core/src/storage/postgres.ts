@@ -85,9 +85,30 @@ export class PostgresStore implements Store {
     if (!cfg.storage.url) throw new StoreError("postgres adapter requires storage.url");
     this.schema = cfg.storage.schema ?? "public";
     this.dims = embedder.enabled ? embedder.dims : (cfg.embeddings.dims ?? 768);
-    this.pool = new pg.Pool({ connectionString: cfg.storage.url });
-    this.pool.on("connect", (client) => {
-      void pgvector.registerType(client);
+    this.pool = new pg.Pool({
+      connectionString: cfg.storage.url,
+      // AWAITED, unlike the `pool.on("connect")` listener this replaces.
+      // pg-pool 3.14 runs `options.onConnect` and calls `_afterConnect` only
+      // once it settles (pg-pool/index.js:288-303), so the client is never
+      // handed to the pending acquire while the type-registration query is
+      // still in flight. The event listener had no such contract: it fired the
+      // query and returned, and the caller's very first query raced it —
+      // "Calling client.query() when the client is already executing a query",
+      // a deprecation on every boot that pg@9 turns into an error.
+      onConnect: async (client) => {
+        // Best-effort by design. A rejection here DESTROYS the client and
+        // fails the acquire, and `registerTypes` throws outright when the
+        // vector type is absent — which is exactly the state of a fresh
+        // database before `init()` runs the migration that creates the
+        // extension. Vector parsing is an enhancement; losing it must never
+        // take the whole pool down. `init()` registers authoritatively after
+        // the migration.
+        try {
+          await pgvector.registerTypes(client);
+        } catch {
+          // no vector type in this database (yet) — lexical-only until there is.
+        }
+      },
     });
   }
 
@@ -111,8 +132,13 @@ export class PostgresStore implements Store {
     const { postgresSchema } = await import("./migrations/postgres.js");
     const client = await this.pool.connect();
     try {
-      await pgvector.registerType(client);
+      // Migration FIRST: it runs `create extension if not exists vector`, so on
+      // a fresh database the type does not exist until this line. Registering
+      // before it threw, and this client would have gone on without a vector
+      // parser. onConnect's best-effort pass already ran and no-oped in that
+      // case; this is the authoritative registration.
       await client.query(postgresSchema(this.schema, this.dims));
+      await pgvector.registerTypes(client);
     } finally {
       client.release();
     }
