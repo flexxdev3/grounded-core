@@ -119,7 +119,7 @@ Point it at a **scratch database**, never a live one — the suite drops and rec
 `grounded_test` schema at the start of every run (no teardown, so it's inspectable after a failed run).
 
 Contributing guide: [`CONTRIBUTING.md`](CONTRIBUTING.md). Architecture and engine reference:
-[`TECH-SPECS.md`](TECH-SPECS.md); normative behavior: [`packages/core/CONTRACT.md`](packages/core/CONTRACT.md).
+normative behavior + implementation notes: [`packages/core/CONTRACT.md`](packages/core/CONTRACT.md).
 
 ## License
 

@@ -4,7 +4,7 @@ The frozen type surface is [`src/contract.ts`](src/contract.ts). This file speci
 every implementation must honor. API / MCP / installer depend only on the `Store` interface + these rules.
 
 ## Source-of-truth references
-- Recall mechanics, schemas, embedding flow → repo [`TECH-SPECS.md`](../../TECH-SPECS.md).
+- Recall mechanics, schemas, embedding flow → the project TECH-SPECS (homelab-context `corpus/grounded/TECH-SPECS.md`).
 - Adaptability principles + contribution workflow → repo [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
 ## Records
@@ -35,17 +35,20 @@ intentional; don't "fix" it into an envelope.
 - **Project Vision** (`scope="project:<name>"`) — where one project is going and why it exists.
 
 Rules every adapter must honor:
-- **One active record per scope.** `visionSet` inserts the new record as `active` and marks the prior
-  active record for that scope `superseded` with `superseded_by` → new id (lineage kept, same as facts).
-  There is no separate supersede call — set IS the supersede. Enforced by a partial unique index on
-  `(scope) where status='active'`.
+- **One record per scope, edited in place.** `unique(scope)` — there is no `status` column, no
+  `superseded_by`, and no lineage. `visionSet` upserts on `scope`: the prior text is overwritten, not
+  archived. The vestigial `status` column and `idx_vision_active` partial index are explicitly dropped
+  by the postgres migration for cabinets created before this was settled.
 - **Always injected, never ranked.** Vision renders in every brief (see below) but is **excluded from
-  recall** — `SourceType` stays `fact | session | doc`. No embedding, no FTS row.
-- `visionGet(scope)` returns the one record for the scope or null; `visionSet` edits it in place
-  (`unique(scope)`, no status/supersede/history). `visionList` supports a `scope` filter.
-- `summary` (short, injected at SessionStart) and `details` (full narrative, recalled via `ground_recall`,
-  never injected) are separate columns. A null `summary` falls back to truncated `details` for injection,
-  so rows written before this column existed keep working without a backfill.
+  recall** — `SourceType` stays `fact | session | doc`. No embedding, no FTS row, and `recall.ts`
+  does not reference vision at all.
+- `visionGet(scope)` returns the one record for the scope or null; `visionList` supports a `scope`
+  filter; `visionDelete(id)` is the only way to remove one (there is no PATCH — correcting a row
+  means delete + recreate, which loses `source`).
+- `summary` (short, injected at SessionStart) and `details` (the full narrative) are separate columns.
+  Neither is recalled; `details` is read only via `visionGet`/`visionList`/`GET /vision`. A null
+  `summary` falls back to truncated `details` for injection, so rows written before this column
+  existed keep working without a backfill.
 
 ## Embedding providers
 - `ollama` (default): `POST {baseUrl}/api/embeddings { model, prompt }` → `.embedding` (768 floats for

@@ -62,12 +62,13 @@ export interface Vision {
   /** "global" | "project:<name>". */
   scope: string;
   /**
-   * The short form injected at SessionStart. Never recalled. A null `summary`
+   * The short form injected at SessionStart. A null `summary`
    * falls back to truncated `details` for injection, so existing rows (written
    * before this column existed) keep working without a backfill.
    */
   summary: string | null;
-  /** the vision itself — narrative markdown. Recalled; never injected. */
+  /** the vision itself — narrative markdown. Never recalled, never injected;
+   *  read via visionGet/visionList (GET /vision) only. */
   details: string;
   createdBy?: string | null;
   source?: string | null;

@@ -2,7 +2,7 @@
 
 Thanks for helping. This file is the practical checklist; behavior guarantees live in
 [`packages/core/CONTRACT.md`](packages/core/CONTRACT.md) and the architecture in
-[`TECH-SPECS.md`](TECH-SPECS.md).
+[`packages/core/CONTRACT.md`](packages/core/CONTRACT.md).
 
 ## Requirements
 
