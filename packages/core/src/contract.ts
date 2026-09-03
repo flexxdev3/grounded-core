@@ -150,6 +150,12 @@ export interface RecallResult {
   citation: string;
   /** short matched excerpt for the card. */
   snippet: string;
+  /** DOCS ONLY. How many chunks of this file matched and were rolled up into
+   * this one row — recall returns one result per DOCUMENT, represented by its
+   * best-scoring chunk (`id`/`citation` name that chunk). `1` means only one
+   * chunk matched. Absent on facts and sessions, which have nothing to roll
+   * up. Additive-optional: a consumer that ignores it sees no change. */
+  chunks?: number;
 }
 
 /** Full record union returned by Store.get(). */
@@ -170,8 +176,15 @@ export interface DeliveryMeta {
    * the character arithmetic in `chars`, never here. */
   returned: number;
   /** rows that matched before limit/offset/source-cap. A real computed quantity,
-   * never derived from data.length. See recall()'s lane-saturation note for the
-   * one case where this is a documented floor. */
+   * never derived from data.length.
+   *
+   * ON `POST /recall` IT IS A FLOOR, NOT AN EXACT TOTAL. There is no honest
+   * exact number to compute: the vector lane has no match predicate at all,
+   * only a `k`. Recall counts matches inside a candidate pool sized from the
+   * limit (`laneN = max(limit * 3, 20)`), so the SAME query reports a larger
+   * `available` at a larger limit. Read it as "at least this many matched",
+   * never as a budget for deciding whether to raise `limit`. Every other list
+   * endpoint counts exactly. */
   available: number;
   /** returned < available, OR text was cut inside a kept row (see `chars`), OR
    * the candidate fetch itself was capped before `available` could be computed
@@ -253,10 +266,16 @@ export interface DeliveryMeta {
     vectorOnly: boolean;
   };
   scopeFilter?: {
+    /** the DOC-lane set (`RecallOptions.scopes`). */
     declared: string[];
     defaulted: boolean;
     appliedTo: SourceType[];
     exempt: SourceType[];
+    /** the FACT-lane set (`recallFactScopes`) — a DIFFERENT axis that happens
+     * to sit on a same-named column, reported separately rather than folded
+     * into `declared`. Present only when the fact lane was actually narrowed,
+     * which is exactly when `"fact"` appears in `appliedTo`. */
+    factScopes?: string[];
   };
 }
 
@@ -315,10 +334,30 @@ export interface GroundedConfig {
     rrfK: number;
     /** max results returned per source type (anti-domination cap). */
     sourceCaps: Record<SourceType, number>;
+    /**
+     * Ceiling on how much of a MULTI-SOURCE answer one lane may occupy, as a
+     * share of the caller's total `limit` (fact 0.25, session 0.5, doc 1).
+     * Applied by `effectiveSourceCaps` on top of the widened `sourceCaps`, so
+     * a lane can still be wider than its raw cap but never dominate the flat
+     * ranking. Single-source recall (`sources:["fact"]`) is EXEMPT — a caller
+     * that asked for one lane gets its full limit. A share of 1, or a missing
+     * entry, is unbounded. Optional: absent = today's unbounded behaviour.
+     */
+    laneShare?: Partial<Record<SourceType, number>>;
+    /**
+     * Tiebreak order for `rankFlat` when fused scores tie EXACTLY (routine:
+     * a single-lane rank-0 hit is exactly 1/rrfK). Default
+     * `["doc","fact","session"]`. Archived docs are always forced last,
+     * whatever this says. Optional: absent = the default order.
+     */
+    tieBreakOrder?: SourceType[];
     boosts: {
-      /** multiplier for pinned facts. */
+      /** multiplier for pinned facts. Default 1.0 (off): pinned facts are
+       * already guaranteed into the SessionStart brief, so a retrieval boost
+       * on top of that pays for the same fact twice. */
       pinned: number;
-      /** weight applied to fact.importance (0..1). */
+      /** weight applied to fact.importance (0..1). Default 0.5 — a write-time
+       * curation weight tilts ties, it does not override retrieval. */
       importance: number;
       /** recency half-life in days for sessions. */
       recencyHalfLifeDays: number;
@@ -336,7 +375,9 @@ export interface GroundedConfig {
        * to a DIFFERENT project. Demotes, never drops. Default 0.8. */
       scopeMismatch?: number;
       /** multiplier for a deliberately narrowed (non-global) fact under a
-       * context that neither names nor contradicts it. Default 1.3. */
+       * context that neither names nor contradicts it. Default 1.0 (off) —
+       * under the fact-scope hard filter this tier could only ever inflate
+       * `agent:`/`machine:` rows, with no query evidence. */
       scopeSpecificity?: number;
     };
   };
@@ -426,8 +467,25 @@ export interface RecallOptions {
    * no workspace dimension and are returned unfiltered, exactly as `project`
    * behaves). */
   workspace?: string;
-  /** scope filter for facts/sessions, e.g. project name. */
+  /**
+   * Project narrowing, e.g. "sentient". A HARD filter on BOTH the session lane
+   * (`sessions.project`) and the fact lane, where it means the fact scope set
+   * `["global", "project:<name>"]` — global guardrails always pass, another
+   * project's facts are DROPPED, not merely demoted. It used to be a hard
+   * `where` for sessions and a mere multiplier for facts, so narrowing to a
+   * project shrank the session lane and left the fact lane at full width. Docs
+   * are unaffected — they are narrowed by `scopes` instead. Override the fact
+   * set explicitly with `factScopes`.
+   */
   project?: string;
+  /**
+   * FACT-lane scope filter: match any of these fact scopes (OR). Overrides the
+   * set `project` would imply. Omitted AND no `project` = NO fact-scope filter
+   * at all, deliberately: a plain recall and the SessionStart brief must keep
+   * seeing `agent:`/`machine:` facts, which no `project` can name. Mirrors
+   * `BriefOptions.factScopes`.
+   */
+  factScopes?: string[];
   /** force lexical-only even if embeddings are enabled. */
   lexicalOnly?: boolean;
   /**

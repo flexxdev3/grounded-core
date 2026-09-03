@@ -689,11 +689,12 @@ describe("brief: relatedDocs holds one row per file", () => {
 
   it("the fixture really does produce multiple chunks per file (the cause)", async () => {
     // Guards the premise: without multi-chunk files the dedupe test proves
-    // nothing. This is the shape recall returns and /recall must keep.
+    // nothing. It used to read that premise off duplicate PATHS in recall's
+    // output; recall now rolls chunks up per document, so the same premise is
+    // read off the rollup count instead.
     const chunkHits = await store.recall(TOKEN, { sources: ["doc"], limit: RELATED_DOCS_FETCH });
     expect(chunkHits.data.length).toBeGreaterThan(RELATED_DOCS_LIMIT);
-    const paths = chunkHits.data.map((d) => d.path);
-    expect(new Set(paths).size).toBeLessThan(paths.length);
+    expect(chunkHits.data.some((d) => (d.chunks ?? 1) > 1)).toBe(true);
   });
 
   it("contains each path at most once, keeping that path's best chunk", async () => {
@@ -725,11 +726,25 @@ describe("brief: relatedDocs holds one row per file", () => {
     expect(new Set(brief.relatedDocs.map((d) => d.path)).size).toBe(RELATED_DOCS_LIMIT);
   });
 
-  it("does not change /recall — chunk-level rows are still correct there", async () => {
+  it("/recall now rolls chunks up per document too — the brief's dedupe is no longer the only place", async () => {
+    // This assertion is INVERTED from what it used to say. It read "recall
+    // still returns chunk-level duplicate paths" — the brief deduped, recall
+    // did not. Recall now returns one row per DOCUMENT, so the duplicates it
+    // guarded are gone; `dedupeDocsByPath` stays as the brief's own guarantee
+    // (and its unit tests below still cover it directly).
     const res = await store.recall(TOKEN, { sources: ["doc"], limit: 5 });
-    expect(res.data.length).toBe(5);
     const paths = res.data.map((d) => d.path);
-    expect(new Set(paths).size).toBeLessThan(paths.length);
+    expect(new Set(paths).size).toBe(paths.length);
+    // KNOWN TRADE-OFF, asserted rather than glossed: the rollup collapses
+    // chunks INSIDE the candidate pool, and this fixture is deliberately
+    // hostile — 6 near-identical long files, so the laneN (max(limit*3,20))
+    // candidates are all chunks of the same 2 files and the answer legitimately
+    // under-fills `limit`. `truncated` says so. Recall does not escalate its
+    // fetch; `fillRelatedDocs` does, which is why the brief still fills all
+    // five slots on this same fixture (the test above).
+    expect(res.data.length).toBeLessThanOrEqual(5);
+    expect(res.data.length).toBeGreaterThan(0);
+    if (res.data.length < 5) expect(res.meta.truncated).toBe(true);
   });
 });
 

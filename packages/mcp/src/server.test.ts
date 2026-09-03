@@ -169,7 +169,7 @@ describe("input schemas", () => {
     const s = await schema("ground_recall");
     expect(s.required).toEqual(["query"]);
     expect(Object.keys(s.properties).sort()).toEqual(
-      ["lexicalOnly", "limit", "project", "query", "scopes", "sources"].sort(),
+      ["factScopes", "lexicalOnly", "limit", "project", "query", "scopes", "sources"].sort(),
     );
     expect(s.properties.limit).toMatchObject({ type: "integer", exclusiveMinimum: 0, maximum: 200 });
     expect((s.properties.sources as { items: { enum: string[] } }).items.enum).toEqual([

@@ -11,6 +11,7 @@ import {
   DEFAULT_SCOPE_AFFINITY,
   DEFAULT_SCOPE_MISMATCH,
   DEFAULT_SCOPE_SPECIFICITY,
+  DEFAULT_TIE_BREAK_ORDER,
 } from "./engine/recall.js";
 import type { GroundedConfig } from "./contract.js";
 
@@ -205,9 +206,23 @@ export function defaultConfig(home?: string): GroundedConfig {
     recall: {
       rrfK: 60,
       sourceCaps: { fact: 10, session: 10, doc: 10 },
+      // Ceiling on how much of a MULTI-SOURCE answer one lane may occupy, as a
+      // share of `limit`. Not a lane size (see LANE_BUDGETS, which is the brief's
+      // token table and is untouched by this) — a RANKING share, applied by
+      // effectiveSourceCaps. Single-source recall is exempt; share 1 = unbounded.
+      // Measured defect it bounds: limit 20 returned 15 facts / 5 docs.
+      laneShare: { fact: 0.25, session: 0.5, doc: 1 },
+      // EXACT-score tiebreak for rankFlat. Value from recall.ts, not restated.
+      tieBreakOrder: DEFAULT_TIE_BREAK_ORDER,
       boosts: {
-        pinned: 1.5,
-        importance: 1.0,
+        // pinned facts are ALREADY guaranteed into the SessionStart brief by
+        // `mustKeep` in engine/brief.ts — a retrieval boost on top of that pays
+        // for the same fact twice and made the fact lane structurally
+        // unbeatable. Pinned is a BRIEF privilege, not a retrieval one.
+        pinned: 1.0,
+        // a write-time curation weight, set without reference to the query: it
+        // should tilt ties, not override retrieval.
+        importance: 0.5,
         recencyHalfLifeDays: 30,
         activeStatus: 1.25,
         // Scope affinity (fact lane). Present in the resolved config rather

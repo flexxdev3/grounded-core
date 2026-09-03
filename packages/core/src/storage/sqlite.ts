@@ -42,6 +42,7 @@ import {
   orderResults,
   rankFlat,
   lexicalMeta,
+  recallFactScopes,
   scopeFilterMeta,
   withEffectiveSourceCaps,
   type CandidateMeta,
@@ -1144,39 +1145,54 @@ export class SqliteStore implements Store {
     relaxedExpr: string,
     filter: SessionFilter | undefined,
     limit: number,
-    docScopes?: string[],
+    laneScopes?: string[],
   ): { hits: LaneHit[]; relaxed: boolean } {
-    const strict = this.lexicalLane(ftsTable, mainTable, strictExpr, filter, limit, docScopes);
+    const strict = this.lexicalLane(ftsTable, mainTable, strictExpr, filter, limit, laneScopes);
     if (strict.length > 0 || relaxedExpr === strictExpr) {
       return { hits: strict, relaxed: false };
     }
-    const relaxed = this.lexicalLane(ftsTable, mainTable, relaxedExpr, filter, limit, docScopes);
+    const relaxed = this.lexicalLane(ftsTable, mainTable, relaxedExpr, filter, limit, laneScopes);
     return { hits: relaxed, relaxed: relaxed.length > 0 };
   }
 
+  /**
+   * `laneScopes` is the scope set for THIS table's `scope` column — the doc
+   * lane set for `docs`, the fact scope set for `facts`. Same column name, two
+   * different axes; the predicate is identical either way.
+   *
+   * The query is ASSEMBLED ONCE from accumulated `joins`/`conds`/`params`. It
+   * used to be rebuilt from scratch in each branch, and the sessions branch
+   * silently clobbered the scope join written by the branch above it — which
+   * only stayed harmless while the two could never both apply.
+   */
   private lexicalLane(
     ftsTable: string,
     mainTable: string,
     matchExpr: string,
     filter: SessionFilter | undefined,
     limit: number,
-    docScopes?: string[],
+    laneScopes?: string[],
   ): LaneHit[] {
     if (!matchExpr) return [];
-    let sql = `select f.rowid as id, bm25(${ftsTable}) as rank from ${ftsTable} f where ${ftsTable} match ?`;
     const params: unknown[] = [matchExpr];
-    // doc lane: push the scope predicate INTO the candidate query. Filtering
-    // after a top-N fetch was the real "declared a lane, got zero docs" bug —
-    // the N best candidates are dominated by the default lane, so the declared
-    // lane never reaches the fusion step at all.
-    if (mainTable === "docs" && docScopes && docScopes.length > 0) {
-      const ph = docScopes.map(() => "?").join(",");
-      sql = `select f.rowid as id, bm25(${ftsTable}) as rank from ${ftsTable} f join docs m on m.id = f.rowid where ${ftsTable} match ? and m.scope in (${ph})`;
-      params.push(...docScopes);
-    }
+    const joins: string[] = [];
+    const conds: string[] = [];
+    // docs AND facts: push the scope predicate INTO the candidate query.
+    // Filtering after a top-N fetch was the real "declared a lane, got zero
+    // docs" bug — the N best candidates are dominated by the default lane, so
+    // the declared lane never reaches the fusion step at all.
+    const scoped =
+      (mainTable === "docs" || mainTable === "facts") && !!laneScopes && laneScopes.length > 0;
     // project/workspace are session-only dimensions — facts and docs carry
     // neither column and are returned unfiltered.
-    const conds: string[] = [];
+    const sessionFiltered =
+      mainTable === "sessions" && !!(filter?.project || filter?.workspace);
+    if (scoped || sessionFiltered) joins.push(`join ${mainTable} m on m.id = f.rowid`);
+    if (scoped) {
+      const ph = laneScopes!.map(() => "?").join(",");
+      conds.push(`m.scope in (${ph})`);
+      params.push(...laneScopes!);
+    }
     if (mainTable === "sessions" && filter?.project) {
       conds.push("m.project = ?");
       params.push(filter.project);
@@ -1185,9 +1201,10 @@ export class SqliteStore implements Store {
       conds.push("m.workspace = ?");
       params.push(filter.workspace);
     }
-    if (conds.length > 0) {
-      sql = `select f.rowid as id, bm25(${ftsTable}) as rank from ${ftsTable} f join sessions m on m.id = f.rowid where ${ftsTable} match ? and ${conds.join(" and ")}`;
-    }
+    let sql = `select f.rowid as id, bm25(${ftsTable}) as rank from ${ftsTable} f${
+      joins.length > 0 ? ` ${joins.join(" ")}` : ""
+    } where ${ftsTable} match ?`;
+    if (conds.length > 0) sql += ` and ${conds.join(" and ")}`;
     sql += ` order by rank asc limit ?`;
     params.push(limit);
     let rows: Row[];
@@ -1200,23 +1217,29 @@ export class SqliteStore implements Store {
   }
 
   /**
-   * `docScopes` restricts the doc vector lane to the caller's declared lanes.
+   * `laneScopes` restricts a scoped vector lane to the caller's declared
+   * scopes — the doc lane set for `vec_docs`, the fact scope set for
+   * `vec_facts`. Same mechanism, two axes.
    *
    * sqlite-vec's KNN takes `k` before any join, so unlike the lexical lane the
    * predicate cannot be pushed into the query — it is an OVER-FETCH: ask for
-   * `k * VEC_SCOPE_OVERFETCH`, drop the out-of-lane rows, re-rank densely, cut
-   * to `limit`. That is a mitigation, not a guarantee: a lane that is a tiny
+   * `k * VEC_SCOPE_OVERFETCH`, drop the out-of-scope rows, re-rank densely, cut
+   * to `limit`. That is a mitigation, not a guarantee: a scope that is a tiny
    * fraction of a very large corpus can still be crowded out of the widened
-   * window. Postgres filters exactly, in SQL.
+   * window. It is moot on the fact lane, which is a few dozen rows, and real on
+   * a five-figure doc-chunk corpus. Postgres filters exactly, in SQL.
    */
   private vectorLane(
     vecTable: string,
     queryVec: number[] | null,
     limit: number,
-    docScopes?: string[],
+    laneScopes?: string[],
   ): LaneHit[] {
     if (!queryVec || !this.vectorActive()) return [];
-    const scoped = vecTable === "vec_docs" && docScopes && docScopes.length > 0;
+    // the table carrying the `scope` column for this vector index.
+    const scopeTable =
+      vecTable === "vec_docs" ? "docs" : vecTable === "vec_facts" ? "facts" : null;
+    const scoped = scopeTable !== null && !!laneScopes && laneScopes.length > 0;
     const k = scoped ? limit * VEC_SCOPE_OVERFETCH : limit;
     let rows: Row[];
     try {
@@ -1231,12 +1254,12 @@ export class SqliteStore implements Store {
     if (scoped && rows.length > 0) {
       const ids = rows.map((r) => Number(r.id));
       const ph = ids.map(() => "?").join(",");
-      const scopePh = docScopes!.map(() => "?").join(",");
+      const scopePh = laneScopes!.map(() => "?").join(",");
       const keep = new Set(
         (
           this.db
-            .prepare(`select id from docs where id in (${ph}) and scope in (${scopePh})`)
-            .all(...ids, ...docScopes!) as Row[]
+            .prepare(`select id from ${scopeTable} where id in (${ph}) and scope in (${scopePh})`)
+            .all(...ids, ...laneScopes!) as Row[]
         ).map((r) => Number(r.id)),
       );
       rows = rows.filter((r) => keep.has(Number(r.id))).slice(0, limit);
@@ -1244,18 +1267,27 @@ export class SqliteStore implements Store {
     return rows.map((r, i) => ({ id: Number(r.id), rank: i }));
   }
 
-  private factsMeta(ids: number[]): Map<number, CandidateMeta> {
+  private factsMeta(ids: number[], scopes?: string[]): Map<number, CandidateMeta> {
     const map = new Map<number, CandidateMeta>();
     if (ids.length === 0) return map;
     const placeholders = ids.map(() => "?").join(",");
     // active only: an archived fact is a retracted rule and must not survive
     // recall — filtering here (not just demoting) means a lane hit with no
     // meta entry can be dropped by the caller. See recall().
+    // ...and scope-filtered when the caller narrowed the fact lane, mirroring
+    // docsMeta's non-flag branch. No new drop logic: recall() already re-ranks
+    // facts on `meta.has`.
+    const params: unknown[] = [...ids];
+    let scopeSql = "";
+    if (scopes && scopes.length > 0) {
+      scopeSql = ` and scope in (${scopes.map(() => "?").join(",")})`;
+      params.push(...scopes);
+    }
     const rows = this.db
       .prepare(
-        `select id, pinned, importance, status, scope from facts where id in (${placeholders}) and status = 'active'`,
+        `select id, pinned, importance, status, scope from facts where id in (${placeholders}) and status = 'active'${scopeSql}`,
       )
-      .all(...ids) as Row[];
+      .all(...params) as Row[];
     for (const r of rows) {
       map.set(Number(r.id), {
         sourceType: "fact",
@@ -1323,9 +1355,12 @@ export class SqliteStore implements Store {
     // survive recall — filtering here (not just demoting) means a lane hit with
     // no meta entry can be dropped by the caller. Mirrors the facts active-only filter.
     const scopePlaceholders = scopes.map(() => "?").join(",");
+    // `path` + `source` are the document-rollup key — one extra column each,
+    // read here so `fuseLane` can collapse a file's chunks without a second
+    // round trip. This meta type is engine-internal, not the frozen contract.
     const rows = this.db
       .prepare(
-        `select id, status from docs where id in (${placeholders}) and scope in (${scopePlaceholders})`,
+        `select id, status, path, source from docs where id in (${placeholders}) and scope in (${scopePlaceholders})`,
       )
       .all(...ids, ...scopes) as Row[];
     for (const r of rows) {
@@ -1333,6 +1368,8 @@ export class SqliteStore implements Store {
         sourceType: "doc",
         id: Number(r.id),
         active: String(r.status) === "active",
+        path: (r.path as string | null) ?? null,
+        source: (r.source as string | null) ?? null,
       });
     }
     return map;
@@ -1347,6 +1384,15 @@ export class SqliteStore implements Store {
     // queries themselves, not just the post-fetch meta filter.
     const scopesDeclared = !!(opts?.scopes && opts.scopes.length > 0);
     const docScopes = scopesDeclared ? opts!.scopes! : ["global"];
+    // FACT-lane scope set — a different axis on a same-named column. `null`
+    // when the caller declared neither `factScopes` nor `project`, which is
+    // today's unnarrowed behaviour and keeps `agent:`/`machine:` facts
+    // reachable from a plain recall.
+    const factScopes = recallFactScopes({
+      factScopes: opts?.factScopes,
+      project: opts?.project,
+    });
+    const factLaneScopes = factScopes ?? undefined;
     const ctx: RecallContext = { query, project: opts?.project };
     // laneN >= 3*limit and >= limit at every limit, so the widened fuse-cap
     // below can never ask a lane for more candidates than the SQL fetch
@@ -1361,7 +1407,10 @@ export class SqliteStore implements Store {
     // sourceCaps is a per-lane RANKING cap, never a bound on the total answer:
     // widen it to at least `limit` so one lane can supply the whole flat
     // top-`limit`. Full rationale on effectiveSourceCaps.
-    const recallCfg = withEffectiveSourceCaps(this.cfg, limit);
+    // ...then bounded by `recall.laneShare` so one lane cannot occupy the whole
+    // multi-source answer. `sources` is threaded in on purpose: a single-source
+    // recall is share-exempt.
+    const recallCfg = withEffectiveSourceCaps(this.cfg, limit, sources);
 
     const wantVector =
       !opts?.lexicalOnly && this.vectorActive() && query.trim().length > 0;
@@ -1378,7 +1427,7 @@ export class SqliteStore implements Store {
     > = {};
 
     if (sources.includes("fact")) {
-      const rawVec = this.vectorLane("vec_facts", queryVec, laneN);
+      const rawVec = this.vectorLane("vec_facts", queryVec, laneN, factLaneScopes);
       const lexRes = this.lexicalLaneWithFallback(
         "fts_facts",
         "facts",
@@ -1386,15 +1435,16 @@ export class SqliteStore implements Store {
         relaxedExpr,
         undefined,
         laneN,
+        factLaneScopes,
       );
       const rawLex = lexRes.hits;
       lexCandidates += rawLex.length;
       if (lexRes.relaxed) relaxedSources.push("fact");
       const ids = unionIds(rawVec, rawLex);
-      const meta = this.factsMeta(ids);
-      // meta is already filtered to status='active'; drop any lane hit whose
-      // id has no meta entry (archived) and re-rank so RRF ranks stay dense —
-      // mirrors filterSessionVecByProject below.
+      const meta = this.factsMeta(ids, factLaneScopes);
+      // meta is already filtered to status='active' (and to the declared fact
+      // scopes); drop any lane hit whose id has no meta entry and re-rank so
+      // RRF ranks stay dense — mirrors filterSessionVecByProject below.
       const vec = rawVec.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       const lex = rawLex.filter((h) => meta.has(h.id)).map((h, i) => ({ id: h.id, rank: i }));
       // No per-lane `.slice(0, limit)`: `limit` is a total across sources now,
@@ -1494,7 +1544,7 @@ export class SqliteStore implements Store {
     // wider than the total limit, so a strong lane can legitimately win most of
     // the answer without starving the others of candidates.
     const rankedAll = applyLaneFloor(
-      rankFlat(fused, orderMeta),
+      rankFlat(fused, orderMeta, this.cfg.recall.tieBreakOrder),
       "doc",
       scopesDeclared && sources.includes("doc") ? DOC_LANE_FLOOR : 0,
       limit,
@@ -1525,7 +1575,7 @@ export class SqliteStore implements Store {
       limit,
       bySource,
       lexical: lexicalMeta(lexCandidates, relaxedSources, queryVec !== null),
-      scopeFilter: scopeFilterMeta(sources, docScopes, scopesDeclared),
+      scopeFilter: scopeFilterMeta(sources, docScopes, scopesDeclared, factScopes),
     };
     return { data, meta };
   }
@@ -1731,6 +1781,9 @@ export class SqliteStore implements Store {
       source: d.source,
       citation: `doc:${d.source}/${d.path}#chunk${d.chunkIdx}`,
       snippet: truncate(d.body, 200),
+      // one result per DOCUMENT: `id`/`citation` name the best-scoring chunk,
+      // `chunks` says how many of this file's chunks matched. See fuseLane.
+      ...(f.chunks !== undefined ? { chunks: f.chunks } : {}),
     };
   }
 

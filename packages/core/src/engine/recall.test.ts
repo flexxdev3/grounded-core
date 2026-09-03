@@ -9,12 +9,15 @@ import {
   lexicalMeta,
   scopeFilterMeta,
   splitScope,
+  recallFactScopes,
+  GLOBAL_SCOPE,
   DEFAULT_SCOPE_AFFINITY,
   DEFAULT_SCOPE_MISMATCH,
   DEFAULT_SCOPE_SPECIFICITY,
   recencyMultiplier,
   orderResults,
   rankFlat,
+  DEFAULT_TIE_BREAK_ORDER,
   effectiveSourceCaps,
   withEffectiveSourceCaps,
   type CandidateMeta,
@@ -57,9 +60,11 @@ describe("fuseLane", () => {
     const out = fuseLane("fact", vec, [], meta, cfg);
     const f1 = out.find((o) => o.id === 1)!;
     const f2 = out.find((o) => o.id === 2)!;
-    // f1 boosted by pinned(1.5) * (1 + 1*1) = 3x
+    // multipliers read from the config, never restated here — the sibling test
+    // above does the same. f1 = pinned × (1 + importance·weight).
+    const b = cfg.recall.boosts;
     expect(f1.score).toBeGreaterThan(f2.score);
-    expect(f1.score).toBeCloseTo((1 / 60) * 1.5 * 2);
+    expect(f1.score).toBeCloseTo((1 / 60) * b.pinned * (1 + b.importance * 1));
   });
 
   // NOTE (effective-cap change): fuseLane still honours whatever cap the
@@ -90,13 +95,46 @@ describe("fuseLane", () => {
   });
 });
 
+describe("the doctrine, as arithmetic (docs are not crowded out by facts)", () => {
+  it("a doc matching BOTH lanes outscores a pinned importance-0.95 fact matching one", () => {
+    // THE measured bug: `{"query":"sentient charts","limit":20}` returned 15
+    // facts / 5 docs with the top 3 all pinned global facts, because the fact
+    // stack ceiling was 4.5× (pinned 1.5 × importance 2.0 × scope 1.5) against
+    // a doc's 1.25×. Live, fact:73 scored 0.046 on the VECTOR lane alone,
+    // above doc:369's 0.033 on BOTH. That must not be expressible again.
+    const cfg = defaultConfig("/tmp/x");
+    const factMeta = new Map<number, CandidateMeta>([
+      [1, { sourceType: "fact", id: 1, pinned: true, importance: 0.95, factScope: "global" }],
+    ]);
+    const docMeta = new Map<number, CandidateMeta>([
+      [2, { sourceType: "doc", id: 2, active: true }],
+    ]);
+    const fact = fuseLane("fact", [{ id: 1, rank: 0 }], [], factMeta, cfg)[0]!;
+    const doc = fuseLane("doc", [{ id: 2, rank: 0 }], [{ id: 2, rank: 0 }], docMeta, cfg)[0]!;
+    expect(doc.score).toBeGreaterThan(fact.score);
+    // and by a real margin, not a rounding accident
+    expect(doc.score / fact.score).toBeGreaterThan(1.5);
+  });
+
+  it("the fact stack's ceiling is now BELOW the old floor", () => {
+    const b = defaultConfig("/tmp/x").recall.boosts;
+    // old: pinned 1.5 × (1 + 1.0·1) × scopeAffinity 1.5 = 4.5
+    const ceiling = b.pinned * (1 + b.importance * 1) * (b.scopeAffinity ?? 1.5);
+    expect(ceiling).toBeCloseTo(2.25);
+    expect(ceiling).toBeLessThan(4.5);
+  });
+});
+
 describe("effectiveSourceCaps", () => {
   it("raises every cap that sits below the caller's total limit", () => {
     // The measured defect: with the 10/10/10 default, limit:40 returned 30 —
     // an undocumented ceiling at the sum of the caps — and the answer was the
     // union of per-lane top-10s rather than the global top-40.
     const cfg = defaultConfig("/tmp/x");
-    expect(effectiveSourceCaps(cfg, 40)).toEqual({ fact: 40, session: 40, doc: 40 });
+    // `laneShare` bounds this on top (see the laneShare cases below); read the
+    // widening on its own by taking the share out.
+    const unshared = { ...cfg, recall: { ...cfg.recall, laneShare: undefined } };
+    expect(effectiveSourceCaps(unshared, 40)).toEqual({ fact: 40, session: 40, doc: 40 });
     // single-source recall: one lane must be able to fill the whole answer
     expect(effectiveSourceCaps(cfg, 30).doc).toBe(30);
   });
@@ -106,18 +144,70 @@ describe("effectiveSourceCaps", () => {
     // candidate pool keeps that width, it is not overwritten with `limit`.
     const cfg = defaultConfig("/tmp/x");
     cfg.recall.sourceCaps = { fact: 50, session: 10, doc: 25 };
-    expect(effectiveSourceCaps(cfg, 20)).toEqual({ fact: 50, session: 20, doc: 25 });
+    const unshared = { ...cfg, recall: { ...cfg.recall, laneShare: undefined } };
+    expect(effectiveSourceCaps(unshared, 20)).toEqual({ fact: 50, session: 20, doc: 25 });
+    // with the default shares in force the bound wins for the shared lanes, but
+    // `doc: 1` is unbounded and the operator's wider 25 survives.
+    expect(effectiveSourceCaps(cfg, 20)).toEqual({ fact: 5, session: 10, doc: 25 });
   });
 
   it("leaves caps alone when they already equal the limit, and never mutates cfg", () => {
     const cfg = defaultConfig("/tmp/x");
-    const widened = withEffectiveSourceCaps(cfg, 40);
+    // share taken out so this reads the widening alone — the share bound has
+    // its own cases above.
+    const unshared = { ...cfg, recall: { ...cfg.recall, laneShare: undefined } };
+    const widened = withEffectiveSourceCaps(unshared, 40);
     expect(widened.recall.sourceCaps).toEqual({ fact: 40, session: 40, doc: 40 });
     // the source config is untouched — recall() must not leak a widened cap
     // into the store's long-lived cfg (or into impact()).
     expect(cfg.recall.sourceCaps).toEqual({ fact: 10, session: 10, doc: 10 });
     expect(widened.recall.boosts).toEqual(cfg.recall.boosts);
     expect(widened.recall.rrfK).toBe(cfg.recall.rrfK);
+  });
+
+  it("bounds a multi-source lane to ceil(limit * laneShare), and never to 0", () => {
+    // The measured defect the share exists for: at limit 20 the widening made
+    // every cap 20, and the fact lane returned 15 of the 20 rows.
+    const cfg = defaultConfig("/tmp/x");
+    expect(cfg.recall.laneShare).toEqual({ fact: 0.25, session: 0.5, doc: 1 });
+    expect(effectiveSourceCaps(cfg, 20, ["fact", "session", "doc"])).toEqual({
+      fact: 5,
+      session: 10,
+      doc: 20,
+    });
+    // the floor: a share can never round a lane out of the answer entirely
+    expect(effectiveSourceCaps(cfg, 1, ["fact", "doc"]).fact).toBe(1);
+    expect(effectiveSourceCaps(cfg, 2, ["fact", "doc"]).fact).toBe(1);
+  });
+
+  it("SINGLE-source recall is share-exempt — it gets its full limit", () => {
+    // The regression this design most risks. A caller that asks for one lane
+    // asked for that lane; the share is an anti-domination rule and there is
+    // nothing to dominate.
+    const cfg = defaultConfig("/tmp/x");
+    expect(effectiveSourceCaps(cfg, 20, ["fact"]).fact).toBe(20);
+    expect(effectiveSourceCaps(cfg, 3, ["fact"]).fact).toBe(10); // raw cap still wins when wider
+    expect(withEffectiveSourceCaps(cfg, 20, ["fact"]).recall.sourceCaps.fact).toBe(20);
+  });
+
+  it("laneShare.fact = 1 reproduces the pre-share behaviour exactly", () => {
+    const cfg = defaultConfig("/tmp/x");
+    const wide = {
+      ...cfg,
+      recall: { ...cfg.recall, laneShare: { fact: 1, session: 1, doc: 1 } },
+    };
+    expect(effectiveSourceCaps(wide, 20)).toEqual({ fact: 20, session: 20, doc: 20 });
+    // ...as does dropping the key altogether
+    const none = { ...cfg, recall: { ...cfg.recall, laneShare: undefined } };
+    expect(effectiveSourceCaps(none, 40)).toEqual({ fact: 40, session: 40, doc: 40 });
+  });
+
+  it("uses Math.min against the widened cap, not Math.max", () => {
+    // With Math.max, a configured sourceCaps.fact of 10 would re-create the
+    // original defect at limit 20 (cap 20, share ignored).
+    const cfg = defaultConfig("/tmp/x");
+    cfg.recall.sourceCaps = { fact: 10, session: 10, doc: 10 };
+    expect(effectiveSourceCaps(cfg, 20).fact).toBe(5);
   });
 
   it("a widened cfg lets one lane put more than the raw cap into the ranking", () => {
@@ -197,12 +287,34 @@ describe("rankFlat (recall ordering)", () => {
       ["doc:10", { sourceType: "doc", id: 10, active: true }],
     ]);
     const ranked = rankFlat(items, meta);
+    // DEFAULT_TIE_BREAK_ORDER leads with docs: on an EXACT tie the doc wins.
+    // It used to lead with facts (copied from `orderResults`), which was a
+    // third place the fact lane won by construction rather than by relevance.
     expect(ranked.map((o) => `${o.sourceType}:${o.id}`)).toEqual([
+      "doc:10",
       "fact:1",
       "fact:3",
       "session:5",
-      "doc:10",
     ]);
+  });
+
+  it("honours a custom tieBreakOrder, and still forces archived docs last", () => {
+    const items: FusedItem[] = [
+      { sourceType: "doc", id: 10, score: 1 / 60, matchedBy: "lexical" },
+      { sourceType: "doc", id: 12, score: 1 / 60, matchedBy: "lexical" },
+      { sourceType: "session", id: 5, score: 1 / 60, matchedBy: "lexical" },
+      { sourceType: "fact", id: 1, score: 1 / 60, matchedBy: "lexical" },
+    ];
+    const meta = new Map<string, CandidateMeta>([
+      ["doc:10", { sourceType: "doc", id: 10, active: true }],
+      // archived: last regardless of where "doc" sits in the order
+      ["doc:12", { sourceType: "doc", id: 12, active: false }],
+    ]);
+    expect(
+      rankFlat(items, meta, ["session", "fact", "doc"]).map((o) => `${o.sourceType}:${o.id}`),
+    ).toEqual(["session:5", "fact:1", "doc:10", "doc:12"]);
+    // and the default is the config's
+    expect(defaultConfig("/tmp/x").recall.tieBreakOrder).toEqual(DEFAULT_TIE_BREAK_ORDER);
   });
 
   it("sorts an archived doc below an active doc at the same score", () => {
@@ -219,6 +331,57 @@ describe("rankFlat (recall ordering)", () => {
   });
 });
 
+
+describe("recallFactScopes (fact-lane hard filter)", () => {
+  it("a declared project means global + that project, nothing else", () => {
+    expect(recallFactScopes({ project: "alpha" })).toEqual([GLOBAL_SCOPE, "project:alpha"]);
+    expect(GLOBAL_SCOPE).toBe("global");
+  });
+
+  it("declaring NOTHING is null, not a filter — agent:/machine: facts survive", () => {
+    // deliberate: a plain /recall and the SessionStart brief must keep seeing
+    // scopes no `project` could ever name.
+    expect(recallFactScopes({})).toBeNull();
+    expect(recallFactScopes({ factScopes: [] })).toBeNull();
+    expect(recallFactScopes({ project: "" })).toBeNull();
+  });
+
+  it("explicit factScopes win over project, and are de-duplicated", () => {
+    expect(recallFactScopes({ factScopes: ["machine:x"], project: "alpha" })).toEqual([
+      "machine:x",
+    ]);
+    expect(recallFactScopes({ factScopes: ["global", "global", "agent:c"] })).toEqual([
+      "global",
+      "agent:c",
+    ]);
+  });
+});
+
+describe("scopeFilterMeta", () => {
+  const all: import("../contract.js").SourceType[] = ["fact", "session", "doc"];
+
+  it("leaves the fact lane exempt when it was not narrowed", () => {
+    const m = scopeFilterMeta(all, ["global"], false);
+    expect(m.appliedTo).toEqual(["doc"]);
+    expect(m.exempt).toEqual(["fact", "session"]);
+    expect(m.factScopes).toBeUndefined();
+  });
+
+  it("moves 'fact' from exempt to appliedTo when the fact lane WAS narrowed", () => {
+    const m = scopeFilterMeta(all, ["global"], false, ["global", "project:alpha"]);
+    expect(m.appliedTo).toEqual(["fact", "doc"]);
+    expect(m.exempt).toEqual(["session"]);
+    // reported on its own key: `declared` is the DOC set, a different axis.
+    expect(m.factScopes).toEqual(["global", "project:alpha"]);
+    expect(m.declared).toEqual(["global"]);
+  });
+
+  it("never claims the fact lane was filtered when facts were not requested", () => {
+    const m = scopeFilterMeta(["doc"], ["global"], true, ["global"]);
+    expect(m.appliedTo).toEqual(["doc"]);
+    expect(m.factScopes).toBeUndefined();
+  });
+});
 
 describe("scope affinity (fact lane)", () => {
   const cfg = defaultConfig("/tmp/x");
@@ -255,13 +418,21 @@ describe("scope affinity (fact lane)", () => {
   });
 
   it("a non-project scope under a declared project is specific, not a mismatch", () => {
+    // Still true of the classifier, and kept: a passing invariant is not
+    // deleted because it got harder to reach. Note that under a declared
+    // `project` the fact-scope HARD FILTER (`recallFactScopes`) now removes
+    // `agent:`/`machine:` rows in SQL upstream of this, so `specific` is
+    // reached in recall only when nothing was declared.
     expect(scopeAffinity("agent:claude", { project: "grounded" })).toBe("specific");
   });
 
-  it("a deliberately narrowed fact outranks an unrelated global one inside the noise band", () => {
-    // the shape of the live defect: the scoped fact sits at the WORSE lexical
-    // rank and still has to win, because it is the one that was narrowed to
-    // this subject on purpose.
+  it("scopeSpecificity is OFF by default — a narrowed fact gets no free lift", () => {
+    // Replaces the old "narrowed fact outranks an unrelated global one in the
+    // noise band" case. That doctrine is retired: `specific` promoted rows on
+    // no query evidence at all, and the foreign-project rows it was aimed at
+    // are now removed upstream by the fact-scope hard filter. A scope that the
+    // context neither names nor contradicts is worth exactly 1.
+    expect(DEFAULT_SCOPE_SPECIFICITY).toBe(1);
     const meta = new Map<number, CandidateMeta>([
       [1, { sourceType: "fact", id: 1, importance: 0.6, factScope: "global" }],
       [2, { sourceType: "fact", id: 2, importance: 0.6, factScope: "project:stunt3d" }],
@@ -270,18 +441,35 @@ describe("scope affinity (fact lane)", () => {
       { id: 1, rank: 0 },
       { id: 2, rank: 1 },
     ];
-    const off = {
-      ...cfg,
-      recall: { ...cfg.recall, boosts: { ...cfg.recall.boosts, scopeSpecificity: 1 } },
-    };
-    const before = fuseLane("fact", [], lex, meta, off, Date.now(), { query: "is zap dead yet" });
-    expect(before[0]!.id).toBe(1);
+    // neutral context: the better lexical rank wins, scope buys nothing.
+    const neutral = fuseLane("fact", [], lex, meta, cfg, Date.now(), {
+      query: "is the box dead yet",
+    });
+    expect(neutral[0]!.id).toBe(1);
+  });
 
-    const after = fuseLane("fact", [], lex, meta, cfg, Date.now(), { query: "is zap dead yet" });
-    expect(after[0]!.id).toBe(2);
-    expect(after.find((f) => f.id === 2)!.score / before.find((f) => f.id === 2)!.score).toBeCloseTo(
-      DEFAULT_SCOPE_SPECIFICITY,
-    );
+  it("the two surviving mechanisms still lift a narrowed fact over a global one", () => {
+    // `match` — the query NAMES the scope, or the caller DECLARES the project.
+    // Both read the caller's context; `specific` did not, which is why it went.
+    const meta = new Map<number, CandidateMeta>([
+      [1, { sourceType: "fact", id: 1, importance: 0.6, factScope: "global" }],
+      [2, { sourceType: "fact", id: 2, importance: 0.6, factScope: "project:stunt3d" }],
+    ]);
+    const lex = [
+      { id: 1, rank: 0 },
+      { id: 2, rank: 1 },
+    ];
+    const named = fuseLane("fact", [], lex, meta, cfg, Date.now(), {
+      query: "is stunt3d dead yet",
+    });
+    expect(named[0]!.id).toBe(2);
+    const declared = fuseLane("fact", [], lex, meta, cfg, Date.now(), { project: "stunt3d" });
+    expect(declared[0]!.id).toBe(2);
+    // and the lift is exactly the `match` tier
+    const base = fuseLane("fact", [], lex, meta, cfg, Date.now(), { query: "unrelated" });
+    expect(
+      named.find((f) => f.id === 2)!.score / base.find((f) => f.id === 2)!.score,
+    ).toBeCloseTo(DEFAULT_SCOPE_AFFINITY);
   });
 
   it("every tier is disable-able by config (set the knob to 1)", () => {

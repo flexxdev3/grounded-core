@@ -68,4 +68,44 @@ describe("sqlite vector lane (fake embedder)", () => {
     // matched in both vector and lexical lanes
     expect(["both", "vector", "lexical"]).toContain(top.matchedBy);
   });
+
+  it("vec_facts is scope-filtered by the over-fetch + post-filter path, not just the lexical lane", async () => {
+    // The lexical lane would MASK a broken vector filter: a query whose terms
+    // match no fact row leaves the fact lane vector-only, so an out-of-scope
+    // row that survives here can only have come through vec_facts.
+    const foreign = await store.factsAdd({
+      fact: "zzqvecscope a rule belonging to some other project entirely",
+      scope: "project:zzqforeign",
+    });
+    const mine = await store.factsAdd({
+      fact: "zzqvecscope a rule belonging to the declared project",
+      scope: "project:zzqmine",
+    });
+    try {
+      // no lexical anchor at all — pure ANN over vec_facts
+      const res = await store.recall("qqzz unmatchable gibberish token", {
+        sources: ["fact"],
+        project: "zzqmine",
+        limit: 10,
+      });
+      expect(res.meta.lexical?.mode).toBe("none");
+      expect(res.meta.lexical?.vectorOnly).toBe(true);
+      const ids = res.data.map((r) => r.id);
+      expect(ids).not.toContain(foreign.id);
+      expect(ids).toContain(mine.id);
+      expect(res.meta.scopeFilter?.appliedTo).toContain("fact");
+
+      // ...and with nothing declared the same vector lane returns both.
+      const open = await store.recall("qqzz unmatchable gibberish token", {
+        sources: ["fact"],
+        limit: 10,
+      });
+      const openIds = open.data.map((r) => r.id);
+      expect(openIds).toContain(foreign.id);
+      expect(openIds).toContain(mine.id);
+    } finally {
+      await store.factsDelete(foreign.id);
+      await store.factsDelete(mine.id);
+    }
+  });
 });

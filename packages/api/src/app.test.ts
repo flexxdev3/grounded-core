@@ -497,8 +497,17 @@ describe("@grounded/api delivery envelope", () => {
     }
     const body = await (await post("/recall", { query: token, limit: 10 })).json();
     expect(body.meta.bySource?.fact).toBeTruthy();
-    expect(body.meta.bySource.fact.returned).toBe(5);
+    // 3, not 5: this is a MULTI-SOURCE recall, so `recall.laneShare.fact`
+    // (0.25) bounds the fact lane to ceil(10 * 0.25). `available` is still the
+    // honest pre-cap match count — which is the point of this test.
+    expect(body.meta.bySource.fact.returned).toBe(3);
     expect(body.meta.bySource.fact.available).toBe(5);
+    expect(body.meta.bySource.fact.truncated).toBe(true);
+    // ...and a SINGLE-source recall is share-exempt: all 5 come back.
+    const only = await (
+      await post("/recall", { query: token, limit: 10, sources: ["fact"] })
+    ).json();
+    expect(only.meta.bySource.fact.returned).toBe(5);
   });
 
   it("POST /recall: limit is a total across sources, ranked by score", async () => {

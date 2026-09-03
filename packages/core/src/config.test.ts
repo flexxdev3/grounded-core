@@ -138,6 +138,6 @@ describe("recall scope-affinity boosts are configurable, not just hardcoded", ()
     );
     expect(cfg.recall.boosts.scopeSpecificity).toBe(1.0);
     expect(cfg.recall.boosts.scopeAffinity).toBe(DEFAULT_SCOPE_AFFINITY);
-    expect(cfg.recall.boosts.pinned).toBe(1.5);
+    expect(cfg.recall.boosts.pinned).toBe(defaultConfig("/tmp/nowhere").recall.boosts.pinned);
   });
 });

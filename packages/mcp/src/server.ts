@@ -167,7 +167,12 @@ export function createServer(
       inputSchema: strictInput({
         query: z.string().describe("natural-language query"),
         limit: z.number().int().positive().max(MAX_RECALL_LIMIT).optional().describe("total results across sources (default 10, max 200)"),
-        project: z.string().optional().describe("scope filter for facts/sessions"),
+        project: z
+          .string()
+          .optional()
+          .describe(
+            'HARD filter on the session lane AND the fact lane (fact scopes become ["global","project:<name>"]); docs are narrowed by `scopes` instead',
+          ),
         sources: z.array(z.enum(SOURCE_TYPES)).optional().describe("restrict to these source types"),
         lexicalOnly: z.boolean().optional().describe("force lexical-only (skip embeddings)"),
         scopes: z
@@ -176,15 +181,22 @@ export function createServer(
           .describe(
             'filters the doc lane; defaults to ["global"] — pass e.g. ["global","administration"] to also include another lane, not just the other lane alone',
           ),
+        factScopes: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'filters the FACT lane — a different axis from `scopes`; overrides the set `project` implies. Omitted with no `project` = no fact-scope filter at all',
+          ),
       }),
     },
-    guard(async ({ query, limit, project, sources, lexicalOnly, scopes }) => {
+    guard(async ({ query, limit, project, sources, lexicalOnly, scopes, factScopes }) => {
       const { data, meta } = await store.recall(query, {
         ...(limit !== undefined ? { limit } : {}),
         ...(project !== undefined ? { project } : {}),
         ...(sources !== undefined ? { sources: sources as SourceType[] } : {}),
         ...(lexicalOnly !== undefined ? { lexicalOnly } : {}),
         ...(scopes !== undefined ? { scopes } : {}),
+        ...(factScopes !== undefined ? { factScopes } : {}),
       });
       if (data.length === 0) {
         return { content: [{ type: "text", text: "No results.\n\n[]" }] };

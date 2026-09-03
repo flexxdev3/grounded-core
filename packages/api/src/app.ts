@@ -875,6 +875,7 @@ export function createApp(
     if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
     rejectUnknownKeys(body, [
       "query", "limit", "project", "workspace", "sources", "lexicalOnly", "scopes",
+      "factScopes",
     ]);
     const query = asString(body.query, "query");
     const sources = optStringArray(body.sources, "sources");
@@ -888,6 +889,9 @@ export function createApp(
       workspace: optString(body.workspace, "workspace"),
       lexicalOnly: optBool(body.lexicalOnly, "lexicalOnly"),
       scopes: optStringArray(body.scopes, "scopes"),
+      // FACT-lane scope set — a different axis from `scopes`, which is the doc
+      // lane. Omitted AND no `project` = no fact-scope filter at all.
+      factScopes: optStringArray(body.factScopes, "factScopes"),
     };
     return c.json(await store.recall(query, recallOpts));
   });

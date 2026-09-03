@@ -39,6 +39,7 @@ import {
   orderResults,
   rankFlat,
   lexicalMeta,
+  recallFactScopes,
   scopeFilterMeta,
   withEffectiveSourceCaps,
   type CandidateMeta,
@@ -1039,20 +1040,23 @@ export class PostgresStore implements Store {
     query: string,
     filter: SessionFilter | undefined,
     limit: number,
-    docScopes?: string[],
+    laneScopes?: string[],
   ): Promise<{ hits: LaneHit[]; relaxed: boolean }> {
-    const strict = await this.lexicalLane(table, query, filter, limit, docScopes, "strict");
+    const strict = await this.lexicalLane(table, query, filter, limit, laneScopes, "strict");
     if (strict.length > 0) return { hits: strict, relaxed: false };
-    const relaxed = await this.lexicalLane(table, query, filter, limit, docScopes, "relaxed");
+    const relaxed = await this.lexicalLane(table, query, filter, limit, laneScopes, "relaxed");
     return { hits: relaxed, relaxed: relaxed.length > 0 };
   }
 
+  /** `laneScopes` is the scope set for THIS table's `scope` column — the doc
+   * lane set for `docs`, the fact scope set for `facts`. Same column name, two
+   * different axes; the predicate is identical either way. */
   private async lexicalLane(
     table: string,
     query: string,
     filter: SessionFilter | undefined,
     limit: number,
-    docScopes?: string[],
+    laneScopes?: string[],
     mode: LexicalMode = "strict",
   ): Promise<LaneHit[]> {
     if (!query.trim()) return [];
@@ -1063,13 +1067,14 @@ export class PostgresStore implements Store {
       mode === "strict"
         ? `websearch_to_tsquery('english', $1)`
         : `replace(websearch_to_tsquery('english', $1)::text, '&', '|')::tsquery`;
-    // doc lane: push the scope predicate INTO the candidate query. Filtering
-    // after a top-N fetch was the real "declared a lane, got zero docs" bug —
-    // the N best candidates are dominated by the default lane, so the declared
-    // lane never reaches the fusion step at all.
+    // docs AND facts: push the scope predicate INTO the candidate query.
+    // Filtering after a top-N fetch was the real "declared a lane, got zero
+    // docs" bug — the N best candidates are dominated by the default lane, so
+    // the declared lane never reaches the fusion step at all. The fact lane
+    // gets the same treatment for the same reason (`idx_facts_scope` exists).
     let scopeSql = "";
-    if (table === "docs" && docScopes && docScopes.length > 0) {
-      params.push(docScopes);
+    if ((table === "docs" || table === "facts") && laneScopes && laneScopes.length > 0) {
+      params.push(laneScopes);
       scopeSql = ` and scope = any($${params.length}::text[])`;
     }
     // project/workspace are session-only dimensions — facts and docs carry
@@ -1098,15 +1103,16 @@ export class PostgresStore implements Store {
     queryVec: number[] | null,
     filter: SessionFilter | undefined,
     limit: number,
-    docScopes?: string[],
+    laneScopes?: string[],
   ): Promise<LaneHit[]> {
     if (!queryVec || !this.vectorActive()) return [];
     const params: unknown[] = [pgvector.toSql(queryVec)];
     let projSql = "where embedding is not null";
-    // same pushdown as the lexical lane — an out-of-lane row must never consume
-    // one of the `limit` nearest-neighbour slots.
-    if (table === "docs" && docScopes && docScopes.length > 0) {
-      params.push(docScopes);
+    // same pushdown as the lexical lane, docs and facts alike — an out-of-scope
+    // row must never consume one of the `limit` nearest-neighbour slots. Exact
+    // in SQL here; sqlite has to over-fetch and post-filter.
+    if ((table === "docs" || table === "facts") && laneScopes && laneScopes.length > 0) {
+      params.push(laneScopes);
       projSql += ` and scope = any($${params.length}::text[])`;
     }
     if (table === "sessions" && filter?.project) {
@@ -1128,6 +1134,7 @@ export class PostgresStore implements Store {
     sourceType: SourceType,
     ids: number[],
     docScopes?: string[],
+    factScopes?: string[] | null,
   ): Promise<Map<number, CandidateMeta>> {
     const map = new Map<number, CandidateMeta>();
     if (ids.length === 0) return map;
@@ -1135,9 +1142,18 @@ export class PostgresStore implements Store {
       // active only: an archived fact is a retracted rule and must not
       // survive recall — filtering here (not just demoting) means a lane
       // hit with no meta entry can be dropped by the caller. See recall().
+      // ...and scope-filtered when the caller narrowed the fact lane, exactly
+      // as the doc arm below has always been. No new drop logic is needed:
+      // recall() already re-ranks facts on `meta.has`.
+      const params: unknown[] = [ids];
+      let scopeSql = "";
+      if (factScopes && factScopes.length > 0) {
+        params.push(factScopes);
+        scopeSql = ` and scope = any($${params.length}::text[])`;
+      }
       const res = await this.pool.query(
-        `select id, pinned, importance, status, scope from ${this.q("facts")} where id = any($1) and status = 'active'`,
-        [ids],
+        `select id, pinned, importance, status, scope from ${this.q("facts")} where id = any($1) and status = 'active'${scopeSql}`,
+        params,
       );
       for (const r of res.rows as Row[]) {
         map.set(Number(r.id), {
@@ -1165,8 +1181,11 @@ export class PostgresStore implements Store {
       // survive recall — filtering here (not just demoting) means a lane hit with
       // no meta entry can be dropped by the caller. Mirrors the facts active-only filter.
       const scopes = docScopes && docScopes.length > 0 ? docScopes : ["global"];
+      // `path` + `source` are the document-rollup key — one extra column each,
+      // read here so `fuseLane` can collapse a file's chunks without a second
+      // round trip. This meta type is engine-internal, not the frozen contract.
       const res = await this.pool.query(
-        `select id, status from ${this.q("docs")} where id = any($1) and scope = any($2::text[])`,
+        `select id, status, path, source from ${this.q("docs")} where id = any($1) and scope = any($2::text[])`,
         [ids, scopes],
       );
       for (const r of res.rows as Row[]) {
@@ -1174,6 +1193,8 @@ export class PostgresStore implements Store {
           sourceType: "doc",
           id: Number(r.id),
           active: String(r.status) === "active",
+          path: (r.path as string | null) ?? null,
+          source: (r.source as string | null) ?? null,
         });
       }
     }
@@ -1191,13 +1212,24 @@ export class PostgresStore implements Store {
     // sourceCaps is a per-lane RANKING cap, never a bound on the total answer:
     // widen it to at least `limit` so one lane can supply the whole flat
     // top-`limit`. Full rationale on effectiveSourceCaps.
-    const recallCfg = withEffectiveSourceCaps(this.cfg, limit);
+    // ...then bounded by `recall.laneShare` so one lane cannot occupy the whole
+    // multi-source answer. `sources` is threaded in on purpose: a single-source
+    // recall is share-exempt.
+    const recallCfg = withEffectiveSourceCaps(this.cfg, limit, sources);
     // default doc-lane read-set is ['global'] when the caller declares nothing —
     // the leak fix that keeps e.g. an "administration" lane out of the default
     // engineering recall pool. Hoisted here because it now feeds the candidate
     // queries themselves, not just the post-fetch meta filter.
     const scopesDeclared = !!(opts?.scopes && opts.scopes.length > 0);
     const docScopes = scopesDeclared ? opts!.scopes! : ["global"];
+    // FACT-lane scope set — a different axis on a same-named column. `null`
+    // when the caller declared neither `factScopes` nor `project`, which is
+    // today's unnarrowed behaviour and keeps `agent:`/`machine:` facts
+    // reachable from a plain recall.
+    const factScopes = recallFactScopes({
+      factScopes: opts?.factScopes,
+      project: opts?.project,
+    });
     const ctx: RecallContext = { query, project: opts?.project };
     // lexical accounting for meta.lexical — raw hits, pre-filter, pre-fusion.
     let lexCandidates = 0;
@@ -1228,7 +1260,8 @@ export class PostgresStore implements Store {
         st === "session"
           ? { project: opts?.project, workspace: opts?.workspace }
           : undefined;
-      const laneScopes = st === "doc" ? docScopes : undefined;
+      const laneScopes =
+        st === "doc" ? docScopes : st === "fact" ? (factScopes ?? undefined) : undefined;
       const rawVec = await this.vectorLane(table, queryVec, proj, laneN, laneScopes);
       const lexRes = await this.lexicalLaneWithFallback(table, query, proj, laneN, laneScopes);
       const rawLex = lexRes.hits;
@@ -1239,7 +1272,7 @@ export class PostgresStore implements Store {
       const ids = new Set<number>();
       for (const h of vec) ids.add(h.id);
       for (const h of lex) ids.add(h.id);
-      const meta = await this.metaFor(st, [...ids], docScopes);
+      const meta = await this.metaFor(st, [...ids], docScopes, factScopes);
       // `meta.size` is the honest per-source `available`: ids that had a lexical
       // or vector hit AND passed scope/status filtering, computed before the
       // sourceCaps fusion cap and the global limit below. It is a FLOOR, not an
@@ -1283,7 +1316,7 @@ export class PostgresStore implements Store {
     // the lane query and the hydrate, so slicing first would silently under-fill
     // the answer. Walk the full ranking, skip nulls, stop at `limit`.
     const ordered = applyLaneFloor(
-      rankFlat(fused, orderMeta),
+      rankFlat(fused, orderMeta, this.cfg.recall.tieBreakOrder),
       "doc",
       scopesDeclared && sources.includes("doc") ? DOC_LANE_FLOOR : 0,
       limit,
@@ -1320,7 +1353,7 @@ export class PostgresStore implements Store {
         limit,
         bySource,
         lexical: lexicalMeta(lexCandidates, relaxedSources, queryVec !== null),
-        scopeFilter: scopeFilterMeta(sources, docScopes, scopesDeclared),
+        scopeFilter: scopeFilterMeta(sources, docScopes, scopesDeclared, factScopes),
       },
     };
   }
@@ -1486,6 +1519,9 @@ export class PostgresStore implements Store {
       source: d.source,
       citation: `doc:${d.source}/${d.path}#chunk${d.chunkIdx}`,
       snippet: truncate(d.body, 200),
+      // one result per DOCUMENT: `id`/`citation` name the best-scoring chunk,
+      // `chunks` says how many of this file's chunks matched. See fuseLane.
+      ...(f.chunks !== undefined ? { chunks: f.chunks } : {}),
     };
   }
 

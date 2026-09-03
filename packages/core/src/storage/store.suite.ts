@@ -530,14 +530,36 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       });
       // the lane that DID match the filter keeps a slot no matter how the facts rank
       expect(res.data.some((r) => r.sourceType === "doc")).toBe(true);
-      expect(res.data.length).toBe(3);
-      // ...and the exemption is stated, not silent
+      // 2, not 3: `recall.laneShare.fact` (0.25) bounds the fact lane to
+      // ceil(3 * 0.25) = 1 row on a multi-source recall, and this fixture has
+      // exactly one in-lane doc. An answer can under-fill `limit` when the
+      // lanes that could have filled it are starved — that is the share doing
+      // its job, not a truncation bug.
+      expect(res.data.length).toBe(2);
+      expect(res.data.filter((r) => r.sourceType === "fact")).toHaveLength(1);
+      // ...and the exemption is stated, not silent. `appliedTo: ["doc"]` holds
+      // here BECAUSE THIS CALL PASSES NO `project` — with nothing declared the
+      // fact lane has no scope filter at all (`recallFactScopes` → null).
       expect(res.meta.scopeFilter).toEqual({
         declared: ["zzqfloorlane"],
         defaulted: false,
         appliedTo: ["doc"],
         exempt: ["fact", "session"],
       });
+
+      // ...and the sibling that proves it: declare a project and the fact lane
+      // IS filtered, so "fact" moves out of `exempt` into `appliedTo`.
+      const narrowed = await store.recall("zzqlanefloortoken", {
+        scopes: ["zzqfloorlane"],
+        project: "zzqfloorproj",
+        limit: 3,
+      });
+      expect(narrowed.meta.scopeFilter?.appliedTo).toEqual(["fact", "doc"]);
+      expect(narrowed.meta.scopeFilter?.exempt).toEqual(["session"]);
+      expect(narrowed.meta.scopeFilter?.factScopes).toEqual([
+        "global",
+        "project:zzqfloorproj",
+      ]);
 
       // control: at the DEFAULT read-set the lane stays invisible and the floor
       // never fires — flat ranking is untouched when the caller declared nothing.
@@ -620,13 +642,27 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
         scope: "project:zzqaffproj",
       });
 
+      // NEUTRAL context buys the scoped fact NOTHING any more. The old
+      // `scopeSpecificity` tier promoted it here on no query evidence at all;
+      // that doctrine is retired (DEFAULT_SCOPE_SPECIFICITY = 1). The better
+      // lexical match wins, and the scoped row is still present — demoted,
+      // never dropped, because nothing was declared.
       const neutral = (await store.recall("zzqaffinitytoken", {
         sources: ["fact"],
         limit: 5,
       })).data;
-      expect(neutral[0]!.id).toBe(scopedFact.id);
+      expect(neutral[0]!.id).toBe(globalFact.id);
+      expect(neutral.some((r) => r.id === scopedFact.id)).toBe(true);
 
-      // declaring the project is a stronger match still
+      // MECHANISM 1 — the query NAMES the scope. Still flips the order even
+      // from the worse lexical rank.
+      const named = (await store.recall("zzqaffinitytoken zzqaffproj", {
+        sources: ["fact"],
+        limit: 5,
+      })).data;
+      expect(named[0]!.id).toBe(scopedFact.id);
+
+      // MECHANISM 2 — declaring the project is a stronger match still
       const matched = (await store.recall("zzqaffinitytoken", {
         sources: ["fact"],
         project: "zzqaffproj",
@@ -634,15 +670,31 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       })).data;
       expect(matched[0]!.id).toBe(scopedFact.id);
 
-      // ...and a DIFFERENT declared project demotes it below the global fact,
-      // without dropping it — a mismatch is a demotion, never a filter.
+      // ...and a DIFFERENT declared project now DROPS it. This assertion used
+      // to read "demoted, never dropped" (the `scopeMismatch` multiplier).
+      // `project` is a HARD fact-scope filter as of the facts-tighten pass:
+      // declaring a project means `global` + that project, and a foreign
+      // project's fact is not a weaker answer, it is the wrong answer.
+      // `scopeAffinity`'s `mismatch` tier is unchanged and still reachable
+      // through an explicit `factScopes` that includes the foreign scope.
       const mismatched = (await store.recall("zzqaffinitytoken", {
         sources: ["fact"],
         project: "zzqotherproj",
         limit: 5,
       })).data;
       expect(mismatched[0]!.id).toBe(globalFact.id);
-      expect(mismatched.some((r) => r.id === scopedFact.id)).toBe(true);
+      expect(mismatched.some((r) => r.id === scopedFact.id)).toBe(false);
+
+      // explicit factScopes override the set `project` would imply — and the
+      // mismatch DEMOTION (not a drop) is what happens once the row is let in.
+      const explicit = (await store.recall("zzqaffinitytoken", {
+        sources: ["fact"],
+        project: "zzqotherproj",
+        factScopes: ["global", "project:zzqaffproj"],
+        limit: 5,
+      })).data;
+      expect(explicit[0]!.id).toBe(globalFact.id);
+      expect(explicit.some((r) => r.id === scopedFact.id)).toBe(true);
 
       await store.factsDelete(globalFact.id);
       await store.factsDelete(scopedFact.id);
@@ -1175,6 +1227,166 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       expect(onOther.text).not.toContain("arch1-only fact");
     });
 
+    it("recall: a machine-scoped fact is absent once a project narrows the fact lane, and present when nothing is declared", async () => {
+      // D1's teeth on the RECALL side (the sibling above is brief-side), and
+      // sqlite's only coverage of the vec_facts over-fetch + post-filter path.
+      const f = await store.factsAdd({
+        fact: "zzqmachinescopetoken gpuserv1-only rule about the geometry lane",
+        scope: "machine:gpuserv1",
+      });
+      try {
+        const narrowed = (await store.recall("zzqmachinescopetoken", {
+          sources: ["fact"],
+          project: "alpha",
+          limit: 10,
+        })).data;
+        expect(narrowed.some((r) => r.id === f.id)).toBe(false);
+
+        // ...and NOTHING declared is not a filter: a plain recall and the
+        // SessionStart brief must still reach machine:/agent: scopes.
+        const open = (await store.recall("zzqmachinescopetoken", {
+          sources: ["fact"],
+          limit: 10,
+        })).data;
+        expect(open.some((r) => r.id === f.id)).toBe(true);
+      } finally {
+        await store.factsDelete(f.id);
+      }
+    });
+
+    it("recall: the fact-scope filter drops foreign scopes and always passes global", async () => {
+      const token = "zzqhardfiltertoken";
+      const seeded = [
+        await store.factsAdd({ fact: `${token} a global guardrail`, scope: "global" }),
+        await store.factsAdd({ fact: `${token} an alpha rule`, scope: "project:alpha" }),
+        await store.factsAdd({ fact: `${token} a beta rule`, scope: "project:beta" }),
+        await store.factsAdd({ fact: `${token} a machine rule`, scope: "machine:other" }),
+      ];
+      const [globalF, alphaF, betaF, machineF] = seeded;
+      try {
+        const res = await store.recall(token, {
+          sources: ["fact"],
+          project: "alpha",
+          limit: 10,
+        });
+        const ids = res.data.map((r) => r.id);
+        expect(ids).toContain(globalF!.id);
+        expect(ids).toContain(alphaF!.id);
+        expect(ids).not.toContain(betaF!.id);
+        expect(ids).not.toContain(machineF!.id);
+        // ...and the response SAYS the fact lane was filtered, and with what.
+        expect(res.meta.scopeFilter?.appliedTo).toContain("fact");
+        expect(res.meta.scopeFilter?.exempt).not.toContain("fact");
+        expect(res.meta.scopeFilter?.factScopes).toEqual(["global", "project:alpha"]);
+        // `declared` stays the DOC-lane set — a different axis, not folded in.
+        expect(res.meta.scopeFilter?.declared).toEqual(["global"]);
+
+        // no project declared: no fact filter, and the meta says so.
+        const open = await store.recall(token, { sources: ["fact"], limit: 10 });
+        const openIds = open.data.map((r) => r.id);
+        for (const f of seeded) expect(openIds).toContain(f!.id);
+        expect(open.meta.scopeFilter?.appliedTo).not.toContain("fact");
+        expect(open.meta.scopeFilter?.factScopes).toBeUndefined();
+      } finally {
+        for (const f of seeded) await store.factsDelete(f!.id);
+      }
+    });
+
+    it("recall: doc chunks of one file collapse into one row carrying `chunks`, promoting a distinct file", async () => {
+      // Measured: a docs-only "sentient charts" returned 10 chunks from 5
+      // files (CLAUDE.md ×3, TECH-SPECS ×3, STATE ×2) with the answer chunk at
+      // rank 8. One file must not eat many slots while its best chunk sinks.
+      const token = "zzqrolluptoken";
+      const dir = mkdtempSync(join(tmpdir(), "grounded-rollup-test-"));
+      // a long file so the ingester chunks it several times, every chunk
+      // carrying the token
+      const para = `${token} the guidance paragraph. `.repeat(40);
+      writeFileSync(join(dir, "big.md"), `# Big Doc\n\n${para}\n${para}\n${para}\n`, "utf8");
+      writeFileSync(
+        join(dir, "small.md"),
+        `# Small Doc\n\n${token} a single short mention.\n`,
+        "utf8",
+      );
+      await store.docsIngest([dir], { source: "rollup-test" });
+
+      try {
+        const res = await store.recall(token, { sources: ["doc"], limit: 10 });
+        const paths = res.data.map((r) => r.path);
+        // no two results share a path — one row per DOCUMENT
+        expect(new Set(paths).size).toBe(paths.length);
+        // both distinct files are reachable: the second one was previously
+        // pushed out by the first file's other chunks.
+        expect(paths.some((p) => p?.endsWith("big.md"))).toBe(true);
+        expect(paths.some((p) => p?.endsWith("small.md"))).toBe(true);
+        // ...and the collapsed row SAYS how many chunks it stands for.
+        const big = res.data.find((r) => r.path?.endsWith("big.md"))!;
+        expect(big.chunks).toBeGreaterThan(1);
+        const small = res.data.find((r) => r.path?.endsWith("small.md"))!;
+        expect(small.chunks).toBe(1);
+        // the counts are honest against the underlying rows
+        const rows = (await store.docsList({ source: "rollup-test" })).data;
+        const bigRows = rows.filter((d) => d.path.endsWith("big.md")).length;
+        expect(big.chunks).toBeLessThanOrEqual(bigRows);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        await store.docsPrune({ remove: true });
+      }
+    });
+
+    it("recall: a doc outranks EVERY pinned high-importance fact on a shared rare token", async () => {
+      // THE regression test for the measured bug: `{"query":"sentient charts",
+      // "limit":20}` returned 15 facts / 5 docs, the top 3 all pinned global
+      // facts, and the answer document at rank 11. Nothing else in this repo
+      // prevents that coming back.
+      const token = "zzqdoctrinetoken";
+      const dir = mkdtempSync(join(tmpdir(), "grounded-doctrine-test-"));
+      writeFileSync(
+        join(dir, "doctrine-doc.md"),
+        `# Doctrine Doc\n\n${token} the project guidance that should pilot this work.\n`,
+        "utf8",
+      );
+      await store.docsIngest([dir], { source: "doctrine-test" });
+
+      const facts: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        const f = await store.factsAdd({
+          fact: `${token} unrelated global guardrail number ${i}`,
+          scope: "global",
+          pinned: true,
+          importance: 0.95,
+        });
+        facts.push(f.id);
+      }
+
+      try {
+        const res = await store.recall(token, { limit: 10 });
+        // BASELINE this replaces: 5 pinned importance-0.95 facts took ranks
+        // 1-5 (and, before the lane bound, 15 of 20 slots), burying the doc.
+        const firstDoc = res.data.findIndex((r) => r.sourceType === "doc");
+        expect(firstDoc).toBeGreaterThanOrEqual(0);
+        // the fact lane can no longer OCCUPY the answer: laneShare.fact 0.25.
+        const factCount = res.data.filter((r) => r.sourceType === "fact").length;
+        expect(factCount).toBeLessThanOrEqual(3);
+        // ...so the doc is reachable, not buried behind all five.
+        expect(firstDoc).toBeLessThanOrEqual(factCount);
+        // HONEST LIMIT of the boost rebalance, asserted rather than glossed:
+        // this suite runs embeddings=none, so the doc matches in ONE lane at
+        // rank 0 (1/60 × activeStatus 1.25 = 0.0208) and a pinned
+        // importance-0.95 fact also matches one lane at rank 0
+        // (1/60 × pinned 1.0 × (1 + 0.5·0.95) = 0.0246). The fact still wins
+        // that head-to-head by construction. What flipped the LIVE ranking is
+        // that a real doc chunk matches BOTH lanes (2/60 × 1.25 = 0.0417) —
+        // guarded exactly in recall.test.ts, which can express both lanes.
+        const topFact = res.data.find((r) => r.sourceType === "fact");
+        const topDoc = res.data[firstDoc]!;
+        if (topFact) expect(topFact.score).toBeGreaterThan(topDoc.score);
+      } finally {
+        for (const id of facts) await store.factsDelete(id);
+        rmSync(dir, { recursive: true, force: true });
+        await store.docsPrune({ remove: true });
+      }
+    });
+
     it("docsPrune marks missing nothing when files present", async () => {
       const res = await store.docsPrune();
       expect(res.missing).toBe(0);
@@ -1323,6 +1535,17 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       expect(factMeta!.available).toBe(15);
       expect(factMeta!.returned).toBeLessThanOrEqual(10);
       expect(factMeta!.truncated).toBe(true);
+
+      // SINGLE-SOURCE IS SHARE-EXEMPT — the regression this design most risks.
+      // `recall.laneShare.fact` is 0.25, but a caller that asked for the fact
+      // lane and nothing else asked for facts: it gets its full limit, not 3.
+      // (The PreToolUse trigger-retrieval hook depends on exactly this.)
+      const only = await store.recall(uniqueToken, { sources: ["fact"], limit: 12 });
+      expect(only.data).toHaveLength(12);
+      expect(only.data.every((r) => r.sourceType === "fact")).toBe(true);
+      // ...and the same query across every lane IS bounded by the share.
+      const across = await store.recall(uniqueToken, { limit: 12 });
+      expect(across.data.filter((r) => r.sourceType === "fact")).toHaveLength(3);
 
       for (const id of ids) await store.factsDelete(id);
     });

@@ -956,11 +956,15 @@ export const openApiDocument = {
                     description:
                       "Total number of results across all sources (default 10). Not a per-source quota — results are ranked flat by fused score and cut once. Must be an integer in 1..200; a fractional, zero, negative, or over-cap value is a 400, never a silent clamp. Page bulk reads on /facts, /sessions, /docs with offset.",
                   },
-                  project: { type: "string" },
+                  project: {
+                    type: "string",
+                    description:
+                      "Project narrowing. A HARD filter on BOTH the session lane and the fact lane, where it means the fact scope set [\"global\", \"project:<name>\"] — global guardrails always pass, another project's facts are dropped, not demoted. Docs are narrowed by `scopes` instead.",
+                  },
                   workspace: {
                     type: "string",
                     description:
-                      "Session-lane filter. Facts and docs have no workspace dimension and are returned unfiltered, exactly as `project` behaves.",
+                      "Session-lane filter. Facts and docs have no workspace dimension and are returned unfiltered.",
                   },
                   sources: {
                     type: "array",
@@ -972,6 +976,12 @@ export const openApiDocument = {
                     items: { type: "string" },
                     description:
                       'Doc-lane filter (OR match). Defaults to ["global"] when omitted, so callers that declare nothing never see non-global lanes (e.g. "administration"). Routing, not enforcement — self-declared by the caller.',
+                  },
+                  factScopes: {
+                    type: "array",
+                    items: { type: "string" },
+                    description:
+                      'FACT-lane filter (OR match) — a DIFFERENT axis from `scopes`, which is the doc lane. Overrides the set `project` would imply. Omitted AND no `project` = no fact-scope filter at all, so a plain recall still reaches agent:/machine: facts.',
                   },
                 },
               },
