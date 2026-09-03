@@ -85,8 +85,8 @@ export function RecordDrawer(props: { typedId: TypedId; onClose: () => void }) {
   const del = async () => {
     if (!data || data.sourceType !== "fact") return;
     try {
-      await api.facts.delete(data.record.id);
-      afterMutation("Deleted");
+      const { deleted } = await api.facts.delete(data.record.id);
+      afterMutation(deleted ? "Deleted" : "Already deleted");
     } catch (e) {
       toast(errMessage(e));
     }
