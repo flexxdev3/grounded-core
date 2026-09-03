@@ -51,6 +51,7 @@ import {
   type LaneHit,
   type LexicalMode,
   type SessionFilter,
+  embedQueryText,
 } from "../engine/recall.js";
 
 /** doc vector-lane over-fetch factor when a scope filter is in play — see
@@ -1414,7 +1415,7 @@ export class SqliteStore implements Store {
 
     const wantVector =
       !opts?.lexicalOnly && this.vectorActive() && query.trim().length > 0;
-    const queryVec = wantVector ? await this.embedOne(query) : null;
+    const queryVec = wantVector ? await this.embedOne(embedQueryText(query)) : null;
 
     const fused: FusedItem[] = [];
     const orderMeta = new Map<string, CandidateMeta>();

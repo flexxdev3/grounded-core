@@ -20,6 +20,7 @@ import {
   DEFAULT_TIE_BREAK_ORDER,
   effectiveSourceCaps,
   withEffectiveSourceCaps,
+  embedQueryText,
   type CandidateMeta,
   type FusedItem,
 } from "./recall.js";
@@ -578,5 +579,13 @@ describe("lexicalMeta", () => {
     expect(lexicalMeta(0, [], true).vectorOnly).toBe(true);
     // no vector lane either — the answer is empty, not vector-only.
     expect(lexicalMeta(0, [], false).vectorOnly).toBe(false);
+  });
+});
+
+describe("embedQueryText (query case-folding for the vector lane)", () => {
+  it("folds case and trims so 'Sentient Charts' embeds as 'sentient charts'", () => {
+    expect(embedQueryText("Sentient Charts")).toBe("sentient charts");
+    expect(embedQueryText("  SENTIENT CHARTS ")).toBe("sentient charts");
+    expect(embedQueryText("sentient charts")).toBe("sentient charts");
   });
 });

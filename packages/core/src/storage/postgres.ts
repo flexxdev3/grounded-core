@@ -48,6 +48,7 @@ import {
   type LaneHit,
   type LexicalMode,
   type SessionFilter,
+  embedQueryText,
 } from "../engine/recall.js";
 import {
   assembleBrief,
@@ -1236,7 +1237,7 @@ export class PostgresStore implements Store {
     const relaxedSources: SourceType[] = [];
     const wantVector =
       !opts?.lexicalOnly && this.vectorActive() && query.trim().length > 0;
-    const queryVec = wantVector ? await this.embedOne(query) : null;
+    const queryVec = wantVector ? await this.embedOne(embedQueryText(query)) : null;
 
     const tableFor: Record<SourceType, string> = {
       fact: "facts",

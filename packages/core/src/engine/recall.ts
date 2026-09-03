@@ -57,6 +57,20 @@ export interface FusedItem {
   chunks?: number;
 }
 
+/**
+ * The text handed to the embedder for a recall query. Case-folded on purpose:
+ * `nomic-embed-text` is case-sensitive, and measured live (2026-09-03, :5433)
+ * "Sentient Charts" landed far from the sentient corpus while "sentient charts"
+ * hit it at rank 1 with `matchedBy: both` — same words, top score 0.0208 vs
+ * 0.0365, and the vector-only fact lane took ranks 1-4 by default. The lexical
+ * lane was already case-insensitive (tsquery / FTS5), so only the vector lane
+ * moved. Stored content is embedded as written; folding the query alone
+ * measured better than folding neither, so this touches nothing on disk.
+ */
+export function embedQueryText(query: string): string {
+  return query.trim().toLowerCase();
+}
+
 /** RRF contribution for a single rank. */
 export function rrf(rrfK: number, rank: number): number {
   return 1 / (rrfK + rank);

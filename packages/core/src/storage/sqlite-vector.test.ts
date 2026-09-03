@@ -49,6 +49,16 @@ describe("sqlite vector lane (fake embedder)", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
+  it("the vector lane embeds the query case-folded — 'Sentient Charts' ranks like 'sentient charts'", async () => {
+    await store.factsAdd({ fact: "sentient charts render the signal stack in the dashboard", category: "sentient" });
+    const lower = (await store.recall("sentient charts")).data;
+    const mixed = (await store.recall("Sentient Charts")).data;
+    const upper = (await store.recall("SENTIENT CHARTS")).data;
+    expect(mixed.map((r) => [r.typedId, r.score])).toEqual(lower.map((r) => [r.typedId, r.score]));
+    expect(upper.map((r) => [r.typedId, r.score])).toEqual(lower.map((r) => [r.typedId, r.score]));
+    expect(lower[0]?.matchedBy).toBe("both");
+  });
+
   it("vector path retrieves a fact with matchedBy reflecting both lanes", async () => {
     const h = await store.health();
     // vec0 should have loaded; storage detail mentions sqlite-vec
