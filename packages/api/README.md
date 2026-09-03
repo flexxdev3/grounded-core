@@ -80,7 +80,11 @@ const app = createApp(store, { token: "secret" }); // a Hono app; use app.fetch
 | GET | `/get/:typedId` (e.g. `fact:2`, `session:274`, `doc:1091`) |
 
 Auth is a single static bearer token via `GROUNDED_API_TOKEN` / `opts.token`, checked on every route
-except `/health`. Off by default for localhost — set it before binding to any other interface.
+except `/health` and `/llms.txt` (`PUBLIC_PATHS`, `app.ts:48`). Off by default for localhost — set it
+before binding to any other interface.
+
+`DELETE /facts/:id`, `/sessions/:id` and `/vision/:id` are idempotent: always 200 `{deleted, id}`,
+where `deleted:false` means the row was already absent. `GET` on a missing row is still a 404.
 
 ## Links
 
