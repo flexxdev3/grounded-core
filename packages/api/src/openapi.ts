@@ -645,13 +645,24 @@ export const openApiDocument = {
         },
       },
       delete: {
-        summary: "Delete a fact",
+        summary: "Delete a fact (idempotent)",
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
         responses: {
-          "200": { description: "Deletion result" },
-          "404": {
-            description: "Not found",
-            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          "200": {
+            description:
+              "Deletion result. Idempotent: `deleted` is true when this call removed the row and false when there was nothing to remove — an already-absent id is a 200, never a 404, so a retried DELETE cannot report a failure for a delete that succeeded.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["deleted", "id"],
+                  properties: {
+                    deleted: { type: "boolean" },
+                    id: { type: "integer" },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -705,13 +716,24 @@ export const openApiDocument = {
     },
     "/vision/{id}": {
       delete: {
-        summary: "Delete a vision record",
+        summary: "Delete a vision record (idempotent)",
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
         responses: {
-          "200": { description: "Deletion result" },
-          "404": {
-            description: "Not found",
-            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          "200": {
+            description:
+              "Deletion result. Idempotent: `deleted` is true when this call removed the row and false when there was nothing to remove — an already-absent id is a 200, never a 404, so a retried DELETE cannot report a failure for a delete that succeeded.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["deleted", "id"],
+                  properties: {
+                    deleted: { type: "boolean" },
+                    id: { type: "integer" },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -809,15 +831,26 @@ export const openApiDocument = {
         },
       },
       delete: {
-        summary: "Delete a session",
+        summary: "Delete a session (idempotent)",
         description:
           "Hard delete of one session row plus its index entries. Not reversible \u2014 use to clean up mistaken or duplicate work-log rows.",
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
         responses: {
-          "200": { description: "Deletion result" },
-          "404": {
-            description: "Not found",
-            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          "200": {
+            description:
+              "Deletion result. Idempotent: `deleted` is true when this call removed the row and false when there was nothing to remove — an already-absent id is a 200, never a 404, so a retried DELETE cannot report a failure for a delete that succeeded.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["deleted", "id"],
+                  properties: {
+                    deleted: { type: "boolean" },
+                    id: { type: "integer" },
+                  },
+                },
+              },
+            },
           },
         },
       },

@@ -151,7 +151,10 @@ exists without reading content you were not scoped to.
   \`details\` is the body recall searches. Both capped — see "The budget contract".
 - \`PATCH /sessions/:id\` — correct a work-log entry in place (partial; omitted fields keep
   their value). Use it instead of logging a second, contradicting row. \`DELETE /sessions/:id\`
-  removes one outright.
+  removes one outright. Every DELETE (\`/facts/:id\`, \`/sessions/:id\`, \`/vision/:id\`) is
+  idempotent: 200 \`{deleted: true|false, id}\` — \`false\` means there was nothing to remove.
+  An already-absent id is never a 404, so a retry cannot report a failure for a delete that
+  succeeded.
 - \`POST /docs/ingest\` — walks absolute paths, chunks, embeds, and delete-before-inserts
   changed files. Idempotent: unchanged files skip. A path that does not exist or cannot be
   read is a 400 (\`INGEST_PATH_UNREADABLE\`), never a 200 with \`scanned: 0\`.

@@ -745,11 +745,29 @@ export function createApp(
     return c.json(await factWithDelivery(fact), 201);
   });
 
+  /**
+   * Idempotent by contract (operator decision, 2026-09-02): a DELETE that
+   * removes nothing is a 200 `{deleted: false}`, not a 404.
+   *
+   * `factsDelete` answers "did THIS call remove the row", not "does the row
+   * exist". Mapping a 0 rowcount to 404 conflated the two, so a duplicate
+   * delivery of an idempotent DELETE — a client retry on a dropped keep-alive
+   * socket, a restart mid-batch — reported failure for a delete that had in
+   * fact succeeded. Observed live: a 19-fact cleanup where DELETE /facts/141
+   * 404'd on a row it had just removed. `deleted: false` keeps the signal
+   * honest (the caller still learns nothing was removed, machine-readably)
+   * without letting the transport manufacture a failure.
+   *
+   * This is the shape `ground_facts_delete` (packages/mcp/src/server.ts) and
+   * the client's published `{deleted: boolean; id: number}` return type
+   * already promised; before this the `false` branch was unreachable over
+   * HTTP. /sessions/:id and /vision/:id match, deliberately — a lone 404 here
+   * would only relocate the inconsistency.
+   */
   app.delete("/facts/:id", async (c) => {
     const id = parseId(c.req.param("id"));
     const deleted = await store.factsDelete(id);
-    if (!deleted) throw new NotFoundError(`fact ${id} not found`);
-    return c.json({ deleted: true, id });
+    return c.json({ deleted, id });
   });
 
   app.patch("/facts/:id", async (c) => {
@@ -774,11 +792,11 @@ export function createApp(
     return c.json(await store.visionSet(input), 201);
   });
 
+  // Idempotent, same contract as DELETE /facts/:id above.
   app.delete("/vision/:id", async (c) => {
     const id = parseId(c.req.param("id"));
     const deleted = await store.visionDelete(id);
-    if (!deleted) throw new NotFoundError(`vision ${id} not found`);
-    return c.json({ deleted: true, id });
+    return c.json({ deleted, id });
   });
 
   // ---- sessions ----
@@ -812,11 +830,11 @@ export function createApp(
     return c.json(budgetSignal ? { ...session, budget: budgetSignal } : session);
   });
 
+  // Idempotent, same contract as DELETE /facts/:id above.
   app.delete("/sessions/:id", async (c) => {
     const id = parseId(c.req.param("id"));
     const deleted = await store.sessionsDelete(id);
-    if (!deleted) throw new NotFoundError(`session ${id} not found`);
-    return c.json({ deleted: true, id });
+    return c.json({ deleted, id });
   });
 
   // ---- docs ----

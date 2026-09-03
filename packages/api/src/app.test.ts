@@ -379,6 +379,10 @@ describe("@grounded/api delivery envelope", () => {
     return app.fetch(new Request(`http://local.test${path}`));
   }
 
+  async function del(path: string): Promise<Response> {
+    return app.fetch(new Request(`http://local.test${path}`, { method: "DELETE" }));
+  }
+
   it("GET /facts reports honest meta.available under a limit", async () => {
     // A `data.length` fake would report 5 here, not 12.
     for (let i = 0; i < 12; i++) {
@@ -442,18 +446,73 @@ describe("@grounded/api delivery envelope", () => {
     expect(body.paths).toEqual(["/nonexistent/grounded/root"]);
   });
 
-  it("DELETE /sessions/:id removes the row, then 404s", async () => {
+  it("DELETE /sessions/:id removes the row, then reports deleted:false — idempotent, never a 404", async () => {
     const created = await (await post("/sessions", { summary: "throwaway row", project: "del" })).json();
     const del = await app.fetch(
       new Request(`http://local.test/sessions/${created.id}`, { method: "DELETE" }),
     );
     expect(del.status).toBe(200);
     expect(await del.json()).toEqual({ deleted: true, id: created.id });
+    // GET is unchanged: a missing row is still a 404 there. Only DELETE is idempotent.
     expect((await get(`/sessions/${created.id}`)).status).toBe(404);
     const again = await app.fetch(
       new Request(`http://local.test/sessions/${created.id}`, { method: "DELETE" }),
     );
-    expect(again.status).toBe(404);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ deleted: false, id: created.id });
+  });
+
+  /**
+   * Reported live 2026-09-02: a bulk cleanup deleted 19 facts through
+   * DELETE /facts/:id; 18 returned `{deleted:true}` and `DELETE /facts/141`
+   * returned 404 NOT_FOUND — yet the row was genuinely gone afterwards
+   * (`GET /facts?status=all` and `GET /get/fact:141` both agreed). The store
+   * was never at fault: `factsDelete` returns the true rowcount on both
+   * adapters. The 404 came from the route reading that rowcount ("did THIS
+   * call remove the row") as existence ("does the row exist"), so a duplicate
+   * delivery of an idempotent DELETE reported failure for a delete that had
+   * succeeded.
+   *
+   * Resolved by making DELETE idempotent (operator decision, 2026-09-02):
+   * 200 `{deleted: false, id}` for an already-absent id. These tests are the
+   * regression guard. See the note on the route in app.ts.
+   */
+  it("DELETE /facts/:id is idempotent: an already-absent id reports 200 {deleted:false}, never a 404", async () => {
+    const created = await (await post("/facts", { fact: "a fact deleted twice in a row" })).json();
+    const first = await del(`/facts/${created.id}`);
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ deleted: true, id: created.id });
+
+    const second = await del(`/facts/${created.id}`);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ deleted: false, id: created.id });
+  });
+
+  it("DELETE /facts/:id: two concurrent deletes both report 200, the row is removed exactly once", async () => {
+    const created = await (await post("/facts", { fact: "a fact deleted concurrently" })).json();
+    const [a, b] = await Promise.all([
+      del(`/facts/${created.id}`),
+      del(`/facts/${created.id}`),
+    ]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    // exactly one call did the removing; neither reports a false failure
+    const flags = [(await a.json()).deleted, (await b.json()).deleted].sort();
+    expect(flags).toEqual([false, true]);
+    const all = await (await get(`/facts?status=all&limit=5000`)).json();
+    expect(all.data.some((f: { id: number }) => f.id === created.id)).toBe(false);
+  });
+
+  it("DELETE /vision/:id is idempotent too — the three delete surfaces agree", async () => {
+    const created = await (
+      await post("/vision", { scope: "project:delete-idempotence", details: "throwaway direction" })
+    ).json();
+    const first = await del(`/vision/${created.id}`);
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ deleted: true, id: created.id });
+
+    const again = await del(`/vision/${created.id}`);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ deleted: false, id: created.id });
   });
 
   it("GET /sessions reports honest meta.available under a limit", async () => {
