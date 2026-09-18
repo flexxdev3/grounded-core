@@ -5,9 +5,31 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { loadConfig, openStore } from "@grounded/core";
 import { createServer } from "./server.js";
 
+// Postgres and this process both come up at boot. If the database is still
+// initialising, openStore throws ("the database system is starting up") and a
+// bare exit leaves the MCP client with a dead server for the whole session.
+// Retry inside the client's connect timeout instead.
+const OPEN_STORE_BUDGET_MS = 20_000;
+const OPEN_STORE_DELAY_MS = 500;
+
+async function openStoreWithRetry(
+  config: Parameters<typeof openStore>[0],
+): Promise<Awaited<ReturnType<typeof openStore>>> {
+  const deadline = Date.now() + OPEN_STORE_BUDGET_MS;
+  for (;;) {
+    try {
+      return await openStore(config);
+    } catch (err: unknown) {
+      if (Date.now() + OPEN_STORE_DELAY_MS >= deadline) throw err;
+      process.stderr.write(`grounded-mcp: store not ready (${String(err)}); retrying\n`);
+      await new Promise((resolve) => setTimeout(resolve, OPEN_STORE_DELAY_MS));
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
-  const store = await openStore(config);
+  const store = await openStoreWithRetry(config);
   const server = createServer(store, {
     typicalFactLimit: config.delivery.typicalFactLimit,
     factsReserveTok: config.brief.reserve.facts,
