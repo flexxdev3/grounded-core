@@ -3,15 +3,21 @@
 The Grounded engine: storage + embedding adapters, hybrid recall, ingest, and config — the library
 every other Grounded surface is built on.
 
-[Grounded](https://github.com/grounded/grounded) is a self-hosted, source-cited memory layer for AI
+[Grounded](https://github.com/flexxdev3/grounded-core) is a self-hosted, source-cited memory layer for AI
 agents: a shared vision, explicit facts, a session work-log, indexed docs, hybrid recall
 (vector + lexical + RRF), and startup briefs. Apache-2.0, no telemetry, useful without an LLM.
 
 ## Install
 
+Not published to any registry. `@grounded/core` is a workspace library — consume it from a checkout:
+
 ```sh
-npm install @grounded/core
+git clone https://github.com/flexxdev3/grounded-core
+cd grounded-core && pnpm install && pnpm build
 ```
+
+Then depend on it from a package in this workspace (`"@grounded/core": "workspace:*"`), or from an
+outside project via a file/link dependency pointing at `packages/core`.
 
 Node >= 20, ESM only.
 
@@ -77,10 +83,9 @@ Two plug points live here, both selected by config, never by fork:
 - **Embeddings** — `ollama` (default, `nomic-embed-text`) · `openai` · `none` (lexical-only).
   Dimensionality is recorded per store; changing models is an explicit re-embed, never silent.
 
-Normative behavior is specified in
-[`CONTRACT.md`](https://github.com/grounded/grounded/blob/main/packages/core/CONTRACT.md).
+Normative behavior is specified in [`CONTRACT.md`](./CONTRACT.md).
 
 ## Links
 
-- Repo README: <https://github.com/grounded/grounded#readme>
+- Repo README: <https://github.com/flexxdev3/grounded-core#readme>
 - License: Apache-2.0

@@ -30,12 +30,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/grounded/grounded.git",
+    "url": "git+https://github.com/flexxdev3/grounded-core.git",
     "directory": "packages/cli"
   },
-  "homepage": "https://github.com/grounded/grounded#readme",
+  "homepage": "https://github.com/flexxdev3/grounded-core#readme",
   "bugs": {
-    "url": "https://github.com/grounded/grounded/issues"
+    "url": "https://github.com/flexxdev3/grounded-core/issues"
   },
   "keywords": [
     "grounded",

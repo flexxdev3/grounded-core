@@ -3,14 +3,19 @@
 The Grounded MCP server — gives any MCP-capable agent cited recall, facts, sessions, docs, and
 startup briefs, with progressive disclosure.
 
-[Grounded](https://github.com/grounded/grounded) is a self-hosted, source-cited memory layer for AI
+[Grounded](https://github.com/flexxdev3/grounded-core) is a self-hosted, source-cited memory layer for AI
 agents. Apache-2.0, no telemetry.
 
 ## Install
 
+Not published to any registry. The `grounded-mcp` bin ships inside the shell installer's tarball
+alongside `grounded`:
+
 ```sh
-npm install -g @grounded/mcp    # provides the `grounded-mcp` bin
+curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
 ```
+
+From a checkout instead: `pnpm install && pnpm build`, then run `packages/mcp/dist/bin.js`.
 
 ## Usage
 
@@ -82,5 +87,5 @@ and call `ground_get` or `ground_timeline` for detail.
 
 ## Links
 
-- Repo README: <https://github.com/grounded/grounded#readme>
+- Repo README: <https://github.com/flexxdev3/grounded-core#readme>
 - License: Apache-2.0

@@ -1,125 +1,99 @@
 # Grounded
 
-**Self-hosted continuity for multi-agent workspaces.**
+**Your agents forget. Grounded doesn't.**
 
-Grounded gives coding agents and operators a shared, source-cited memory layer: a shared **vision**,
-explicit **facts**, recent **sessions**, indexed **docs**, hybrid **recall**, and startup **briefs**. It runs locally on
-SQLite (zero services) or Postgres + pgvector as a **persistent service** you talk to over MCP, HTTP,
-or the web console — and stays useful without any LLM.
+Self-hosted continuity for coding agents. Your agent starts every session knowing nothing — you
+re-explain the stack, the conventions, the thing you decided last week, the reason you *didn't* take
+the obvious approach. Grounded gives it explicit **facts**, a real work **history**, indexed **docs**,
+a shared **vision**, and a startup **brief** — so any agent, in any repo, on any machine, starts
+already knowing what happened, why, and where it's going.
 
-> Not a brain. Not a chat app. Not a vector-DB wrapper. Not an agent framework. Not cloud-first memory magic.
+Runs entirely on your machine. Every result is cited. No cloud, no account, no telemetry, no "AI brain".
 
-## Why
+> Not a chat app. Not a vector-DB wrapper. Not an agent framework.
 
-Most memory systems try to infer too much. Grounded separates memory by responsibility and keeps the
-operator in control — the system retrieves, ranks, cites, and injects:
-
-| Lane | Purpose |
-|---|---|
-| **vision** | Where it's all going (Global Vision + one Project Vision per project; always in the brief) |
-| **facts** | Durable hard rules / operator truths (explicit) |
-| **sessions** | What happened recently (chronological work log) |
-| **docs** | What you've written down (indexed files/notes) |
-| **recall** | Find relevant prior context (hybrid vector + lexical) |
-| **brief** | Load the right context before work starts |
-
-## Quick start
-
-Grounded runs as a persistent service. One command stands it up — it detects what your host can do
-(Docker or systemd), lets you choose, creates `~/.grounded`, and refuses to double-install if one is
-already running:
+## Install
 
 ```sh
-grounded install        # detect → pick Docker or systemd → cabinet + service on http://127.0.0.1:7437
-grounded status         # is it running, how, and healthy?
-grounded mcp install claude-code   # print a ready-to-paste MCP server config
+curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
+grounded install
 ```
 
-Then use it three ways — no local data CLI needed:
+`grounded install` detects what your host supports, lets you pick **Docker** or **systemd**, creates
+the cabinet at `~/.grounded`, and brings the service up on `http://127.0.0.1:7437`. It refuses to
+double-install if one is already running.
 
-- **Console** — open `http://127.0.0.1:7437/` to browse/add vision, facts, sessions, docs, recall, and briefs.
-- **Agents** — over MCP (`ground_recall`, `ground_session_add`, `ground_brief`, …).
-- **Scripts** — plain HTTP:
+Then manage it with `grounded status | start | stop | restart | logs | uninstall`.
+
+**Requirements:** Linux or macOS (x64 or arm64), and either Docker or systemd. Node >= 20 for the
+systemd path. Nothing else — it works offline, with no model running.
+
+## Use it three ways
+
+- **Console** — `http://127.0.0.1:7437/` to browse and edit vision, facts, sessions, docs, recall, briefs.
+- **Agents** — over MCP: `ground_recall`, `ground_brief`, `ground_session_add`, `ground_facts_add`,
+  `ground_get`, `ground_timeline`, `ground_impact`, `ground_vision_set`, and more.
+- **Scripts** — plain HTTP, no SDK required:
 
   ```sh
-  curl -s localhost:7437/facts -d '{"fact":"Never push without explicit instruction"}'
+  curl -s localhost:7437/facts  -d '{"fact":"Never push without explicit instruction"}'
   curl -s localhost:7437/recall -d '{"query":"what did we decide about memory"}'
   curl -s localhost:7437/brief  -d '{"agent":"codex","cwd":"'"$PWD"'"}'
   ```
 
-Manage the service with `grounded start | stop | restart | logs | uninstall`. Works fully offline with
-`embeddings = "none"` (lexical recall); add Ollama or OpenAI for semantic recall. Env knobs (no config
-edit needed): `GROUNDED_HOME`, `GROUNDED_API_PORT`, `GROUNDED_API_TOKEN`, `GROUNDED_EMBED_PROVIDER`,
+## Wire it into your agent
+
+```sh
+grounded mcp install claude-code     # or: codex · cursor · generic
+grounded hooks print claude-code     # SessionStart brief wiring (same four targets)
+```
+
+Paste the printed snippet into the file it names, restart the agent, and the brief loads at startup
+with the `ground_*` tools available. Ready-made configs: [`examples/configs/`](examples/configs).
+
+## What it works with
+
+Everything below is a config switch, never a fork.
+
+| | Supported |
+|---|---|
+| **Agents** | Claude Code · Codex · Cursor · any MCP client (stdio or streamable HTTP) |
+| **Storage** | **SQLite** + sqlite-vec + FTS5 (default — one file, zero services) · **Postgres** + pgvector + tsvector |
+| **Embeddings** | **Ollama** (default, `nomic-embed-text`) · OpenAI · **none** — lexical recall, fully offline |
+| **Interfaces** | MCP server · web console · HTTP API (OpenAPI at `/openapi.json`) · shell hooks · typed TS client |
+| **Platforms** | Linux and macOS, x64 and arm64 |
+
+Grounded is **useful without an LLM**. With `embeddings = "none"` recall falls back to lexical search
+and everything else — facts, sessions, docs, briefs — works unchanged. Semantic recall is an
+enhancement, never a requirement.
+
+## How recall works
+
+One query hits every lane at once: vector similarity ∪ lexical match → reciprocal rank fusion → boosts
+for pinned, important and recent items → per-lane caps → a single score-ranked list. Every hit carries
+its source and id, so you can always chase a claim back to where it came from.
+
+| Lane | Holds |
+|---|---|
+| **vision** | Where it's all going — injected into every brief, never guessed at |
+| **facts** | Durable rules and operator truths (explicit, never auto-written) |
+| **sessions** | What happened recently |
+| **docs** | What you've written down, indexed from your own files |
+
+## Configuration
+
+Config lives at `~/.grounded/config.toml`. The common knobs also work as environment variables, no
+file edit needed: `GROUNDED_HOME`, `GROUNDED_API_PORT`, `GROUNDED_API_TOKEN`, `GROUNDED_EMBED_PROVIDER`,
 `GROUNDED_EMBED_BASEURL`, `GROUNDED_EMBED_MODEL`.
 
-## Install methods
+## Documentation
 
-`grounded install` offers only what your host supports:
+Full docs — quickstart, concepts, recall ranking, MCP, hooks, API reference, self-hosting:
+**[grounded.stunt3d.com](https://grounded.stunt3d.com)**
 
-| Method | What it does | When |
-|---|---|---|
-| **Docker** | builds the image (first run) and runs a labelled, `restart=unless-stopped` container mounting `~/.grounded` | Docker daemon reachable — the default |
-| **systemd (user)** | `npm i -g @grounded/api`, writes `~/.config/systemd/user/grounded.service`, `enable --now` | no root; runs as you (`loginctl enable-linger` to survive logout) |
-| **systemd (system)** | same, at `/etc/systemd/system` via sudo | always-on; needs root/sudo |
-
-Once published the installer runs via `npx @grounded/cli install` (the unscoped `grounded` name is taken
-on npm; the on-PATH command after a global install is still `grounded`). From this repo today, build
-first (`pnpm install && pnpm build`) so the installer can build the Docker image or link the
-`@grounded/api` bin, then run `node packages/cli/dist/bin.js install`. Point the Docker path at a
-published image with `--image <ref>` or `GROUNDED_IMAGE`; otherwise it builds from source. On a fresh
-machine `better-sqlite3` builds a native module; if it can't, recall degrades to lexical-only rather than
-failing. Full release steps: [`RELEASING.md`](RELEASING.md).
-
-## Wire into an agent (MCP + briefs)
-
-1. `grounded mcp install <claude-code|codex|cursor|generic>` → paste the snippet into the printed file.
-2. `grounded hooks print <claude-code|generic>` → paste the SessionStart hook + wiring (Claude Code
-   needs `jq`; the generic wrapper prints the brief to stdout).
-3. Restart the agent — the brief loads at startup and the `ground_*` MCP tools are available.
-
-Ready-made copies of all four configs live in [`examples/configs/`](examples/configs).
-
-## Architecture
-
-Three plug points, all swappable by config — never by fork:
-
-- **Embeddings** — `ollama` (default) · `openai` · `none` (lexical-only)
-- **Storage / index** — `sqlite` (default; sqlite-vec + FTS5, single file) · `postgres` (pgvector + tsvector)
-- **Agent integration** — MCP (stdio + HTTP) · web console · HTTP API · hooks · client lib
-
-The homelab stack (Ollama + Postgres) is just one adapter set — the default, never hardcoded into core.
-
-## Packages
-
-| Package | What |
-|---|---|
-| [`@grounded/core`](packages/core) | types/contract, storage + embedding adapters, hybrid recall engine, ingest |
-| [`@grounded/cli`](packages/cli) | the `grounded` installer — stand up & manage the service |
-| [`@grounded/api`](packages/api) | Hono REST server |
-| [`@grounded/mcp`](packages/mcp) | MCP server (progressive disclosure) |
-| [`@grounded/client`](packages/client) | thin typed `fetch` wrapper over the API |
-| [`@grounded/ui`](packages/ui) | the web console (Preact); its built assets are served by `@grounded/api` |
-
-## Development
-
-```sh
-pnpm install
-pnpm build
-pnpm test
-```
-
-`packages/core` runs the storage lifecycle suite against both adapters (`store.suite.ts`). The Postgres
-leg only runs when `GROUNDED_TEST_PG_URL` is set — otherwise it reports skipped, not failed:
-
-```sh
-GROUNDED_TEST_PG_URL='postgres://user:pass@host:5432/db' pnpm --filter @grounded/core test
-```
-
-Point it at a **scratch database**, never a live one — the suite drops and recreates a hardcoded
-`grounded_test` schema at the start of every run (no teardown, so it's inspectable after a failed run).
-
-Contributing guide: [`CONTRIBUTING.md`](CONTRIBUTING.md). Architecture and engine reference:
-normative behavior + implementation notes: [`packages/core/CONTRACT.md`](packages/core/CONTRACT.md).
+In this repo: [`CONTRIBUTING.md`](CONTRIBUTING.md) to build from source ·
+[`packages/core/CONTRACT.md`](packages/core/CONTRACT.md) for normative engine behavior ·
+[`RELEASING.md`](RELEASING.md) for the release procedure.
 
 ## License
 

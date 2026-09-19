@@ -3,18 +3,22 @@
 The Grounded REST API — a small Hono server over the engine, which also serves the web console from
 the same origin.
 
-[Grounded](https://github.com/grounded/grounded) is a self-hosted, source-cited memory layer for AI
+[Grounded](https://github.com/flexxdev3/grounded-core) is a self-hosted, source-cited memory layer for AI
 agents: a shared vision, explicit facts, a session work-log, indexed docs, hybrid recall, and startup
 briefs. Apache-2.0, no telemetry.
 
 ## Install
 
+Not published to any registry. The `grounded-api` bin ships inside the shell installer's tarball
+alongside `grounded` — install that, then `grounded install` stands the service up via Docker or
+systemd:
+
 ```sh
-npm install -g @grounded/api    # provides the `grounded-api` bin
+curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
+grounded install
 ```
 
-Most people never install this directly — `grounded install` (from `@grounded/cli`) stands the
-service up via Docker or systemd.
+From a checkout instead: `pnpm install && pnpm build`, then run `packages/api/dist/bin.js`.
 
 ## Usage
 
@@ -88,6 +92,6 @@ where `deleted:false` means the row was already absent. `GET` on a missing row i
 
 ## Links
 
-- Repo README: <https://github.com/grounded/grounded#readme>
-- Typed client: [`@grounded/client`](https://www.npmjs.com/package/@grounded/client)
+- Repo README: <https://github.com/flexxdev3/grounded-core#readme>
+- Typed client: [`@grounded/client`](../client/README.md)
 - License: Apache-2.0

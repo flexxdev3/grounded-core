@@ -1,39 +1,61 @@
 # Releasing Grounded
 
-Grounded ships as a **service** plus a thin **installer**. Publishing means putting the npm packages
-on the registry and (optionally) a Docker image on a container registry. Nothing here auto-publishes —
-run the steps deliberately.
+Grounded ships as a **service** plus a thin **installer**. A release is a set of per-platform tarballs
+attached to a GitHub Release, plus (optionally) a Docker image on a container registry.
+Nothing here auto-publishes — run the steps deliberately.
 
-## What publishes where
+## Distribution: shell installer, not a package registry
 
-| Package | Role | Consumed by |
-|---|---|---|
-| `@grounded/core` | engine (storage, embeddings, recall, install kit) | every other package |
-| `@grounded/client` | typed HTTP client | embedders/tools |
-| `@grounded/ui` | built console assets | `@grounded/api` serves them |
-| `@grounded/api` | REST API + console (`grounded-api` bin) | **systemd path** (`npm i -g @grounded/api`) |
-| `@grounded/mcp` | MCP server (`grounded-mcp` bin) | MCP agents |
-| `@grounded/cli` | the `grounded` installer bin | operators (`npx @grounded/cli`) |
-
-> `@grounded/api` depends on `@grounded/ui` at runtime (it `require.resolve`s the built console). Publish
-> **both** or the systemd install serves headless (no console).
-
-## Naming: `npx grounded` is taken
-
-The unscoped `grounded` name is already owned on npm. Use the scope:
+**Grounded is not published to npm.** The unscoped `grounded` name on npm belongs to an unrelated
+package (`micimize`, `0.0.1-alpha`, untouched since 2022-05-04), and the `@grounded/*` scope is
+deliberately left unclaimed. Users install with:
 
 ```sh
-npx @grounded/cli install          # the installer entry point
+curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
 ```
 
-Once installed globally the on-PATH command is still `grounded`. If you want the bare `npx grounded`,
-claim a free unscoped launcher name (e.g. publish a tiny wrapper package) — otherwise document
-`@grounded/cli`. **Decision pending — see the repo README.**
+`install.sh` resolves `os-arch`, downloads the matching tarball, verifies it against `SHA256SUMS`,
+unpacks to `~/.grounded/lib/<version>/`, flips the `current` symlink, and symlinks `grounded` into
+`~/.local/bin`. Upgrade and rollback are a symlink flip; `grounded uninstall` removes both.
 
-## Pre-publish checklist
+> The repo must be **public** for `curl | sh` to fetch anonymously — release assets and the raw
+> `install.sh` URL on a private repo require an auth header.
 
-1. Set the real repository URLs — every `package.json` currently uses the placeholder
-   `https://github.com/grounded/grounded`. Update `repository` / `homepage` / `bugs`.
+## What ships in a tarball
+
+The workspace packages are build inputs, not release artifacts. Each is bundled into one file:
+
+| Package | Role | Ships as |
+|---|---|---|
+| `@grounded/core` | engine (storage, embeddings, recall, install kit) | linked into every bundle |
+| `@grounded/client` | typed HTTP client | linked into `ui` |
+| `@grounded/ui` | built console assets | linked into `api.mjs` |
+| `@grounded/api` | REST API + console (`grounded-api` bin) | `lib/api.mjs` |
+| `@grounded/mcp` | MCP server (`grounded-mcp` bin) | `lib/mcp.mjs` |
+| `@grounded/cli` | the `grounded` installer bin | `lib/cli.mjs` + `bin/grounded` shim |
+
+```
+grounded-<version>-<os>-<arch>.tar.gz
+├── bin/grounded                    # shim: exec "$NODE" "$DIR/lib/cli.mjs" "$@"
+├── lib/{cli,api,mcp}.mjs
+└── lib/native/
+    ├── better_sqlite3.node         # 2.1 MB, keyed to platform + arch + Node ABI
+    └── vec0.so                     # 160 KB, platform + arch only
+```
+
+Target ~2–3 MB compressed per tarball. Matrix: `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`.
+
+> **`better_sqlite3.node` is ABI-keyed** — a tarball built against Node 20 fails on Node 24. Either ship
+> one `.node` per supported ABI and select at runtime from `process.versions.modules`, or state the
+> supported Node range in the release notes and have `install.sh` enforce it.
+>
+> The natives are optional payload: `packages/core/src/store.ts` imports the adapter with `await import`,
+> so a Postgres-only install never loads `better-sqlite3`.
+
+## Pre-release checklist
+
+1. Confirm `repository` / `homepage` / `bugs` in every `package.json` point at
+   `https://github.com/flexxdev3/grounded-core`.
 2. Bump versions in lockstep (all packages share `0.1.0` today):
    ```sh
    pnpm -r exec npm version <new-version> --no-git-tag-version
@@ -46,19 +68,20 @@ claim a free unscoped launcher name (e.g. publish a tiny wrapper package) — ot
    migrations — without it, `packages/core`'s Postgres storage-lifecycle suite silently skips and the
    gate isn't actually gating the Postgres adapter.
 
-## Publish the npm packages
-
-`pnpm publish -r` topologically orders the workspace and **rewrites `workspace:*` to real versions** at
-pack time (plain `npm publish` does not — never use it here).
+## Cut the release
 
 ```sh
-pnpm publish -r --access public          # dry run first:  pnpm publish -r --dry-run
+# per platform in the matrix:
+#   bundle each bin, vendor lib/native/, tar, then:
+sha256sum grounded-<version>-*.tar.gz > SHA256SUMS
+
+git tag v<version> && git push origin v<version>
+gh release create v<version> grounded-<version>-*.tar.gz SHA256SUMS \
+  --title "v<version>" --notes-file NOTES.md
 ```
 
-Scoped packages already carry `publishConfig.access = "public"`, so they publish public.
-
-> Native `better-sqlite3` builds on the consumer's machine at install time. If it can't compile, recall
-> degrades to lexical-only rather than failing — no action needed at publish time.
+Paste the contents of `SHA256SUMS` into the release body as well. The script and the checksums must not
+share a single point of compromise — `curl | sh` is a supply-chain surface and the sums are the floor.
 
 ## Publish the Docker image (optional but recommended)
 
@@ -66,7 +89,6 @@ The installer resolves the image as **local → pull → build-from-source**. Pu
 Docker path is a fast pull instead of a multi-minute build.
 
 ```sh
-# build + tag for your registry
 docker build -t ghcr.io/<org>/grounded:<version> -t ghcr.io/<org>/grounded:latest .
 docker push ghcr.io/<org>/grounded:<version>
 docker push ghcr.io/<org>/grounded:latest
@@ -84,9 +106,15 @@ A bare local tag (`grounded:latest`, no registry/namespace) is treated as build-
 `/` is treated as pullable. To bake a published default into the installer, set the `IMAGE` default in
 `packages/cli/src/util/service.ts` (or ship `GROUNDED_IMAGE` in the environment).
 
-## After publish — smoke the published artifacts
+## After release — smoke the published artifacts
+
+On a machine that has never built this repo:
 
 ```sh
-npx @grounded/cli@<version> install --method docker --yes   # or systemd-user
+curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
+grounded install --method docker --yes    # or systemd-user
 grounded status
 ```
+
+Verify the checksum path actually fails closed: corrupt a byte of a downloaded tarball and confirm
+`install.sh` aborts non-zero and leaves nothing in `~/.grounded/lib`.

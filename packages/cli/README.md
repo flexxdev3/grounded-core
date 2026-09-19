@@ -3,7 +3,7 @@
 The `grounded` command — stands up and manages the Grounded service (Docker or systemd) and wires it
 into your agents.
 
-[Grounded](https://github.com/grounded/grounded) is a self-hosted, source-cited memory layer for AI
+[Grounded](https://github.com/flexxdev3/grounded-core) is a self-hosted, source-cited memory layer for AI
 agents: a shared vision, explicit facts, a session work-log, indexed docs, hybrid recall, and startup
 briefs. Apache-2.0, no telemetry.
 
@@ -12,13 +12,18 @@ briefs. Apache-2.0, no telemetry.
 
 ## Install
 
+Not published to any registry. The `grounded` command is delivered by the shell installer, which
+downloads a per-platform tarball from GitHub Releases, unpacks it to `~/.grounded/lib/<version>/`,
+and symlinks `grounded` into `~/.local/bin`:
+
 ```sh
-npx @grounded/cli install
-# or
-npm install -g @grounded/cli    # then the on-PATH command is `grounded`
+curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
+# pinned:
+curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh -s -- --version 0.1.0 --prefix ~/.local
 ```
 
-Node >= 20.
+Node >= 20 on the host. From a checkout instead: `pnpm install && pnpm build`, then run
+`packages/cli/dist/bin.js`.
 
 ## Usage
 
@@ -61,7 +66,7 @@ Notable per-command options:
 | Method | What it does | When |
 |---|---|---|
 | Docker | builds or pulls the image and runs a labelled `restart=unless-stopped` container mounting `~/.grounded` | Docker daemon reachable — the default |
-| systemd (user) | installs `@grounded/api`, writes `~/.config/systemd/user/grounded.service`, `enable --now` | no root; runs as you |
+| systemd (user) | resolves the `grounded-api` entry point the installer delivered, writes `~/.config/systemd/user/grounded.service`, `enable --now` | no root; runs as you |
 | systemd (system) | the same, at `/etc/systemd/system` via sudo | always-on; needs root/sudo |
 
 Env knobs, no config edit needed: `GROUNDED_HOME`, `GROUNDED_API_PORT`, `GROUNDED_API_TOKEN`,
@@ -69,5 +74,5 @@ Env knobs, no config edit needed: `GROUNDED_HOME`, `GROUNDED_API_PORT`, `GROUNDE
 
 ## Links
 
-- Repo README: <https://github.com/grounded/grounded#readme>
+- Repo README: <https://github.com/flexxdev3/grounded-core#readme>
 - License: Apache-2.0

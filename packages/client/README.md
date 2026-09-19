@@ -2,7 +2,7 @@
 
 A thin, typed `fetch` wrapper over the Grounded REST API.
 
-[Grounded](https://github.com/grounded/grounded) is a self-hosted, source-cited memory layer for AI
+[Grounded](https://github.com/flexxdev3/grounded-core) is a self-hosted, source-cited memory layer for AI
 agents: a shared vision, explicit facts, a session work-log, indexed docs, hybrid recall, and startup
 briefs. Apache-2.0, no telemetry.
 
@@ -11,9 +11,16 @@ nothing from core loads at runtime.
 
 ## Install
 
+Not published to any registry. `@grounded/client` is a workspace library — consume it from a
+checkout:
+
 ```sh
-npm install @grounded/client
+git clone https://github.com/flexxdev3/grounded-core
+cd grounded-core && pnpm install && pnpm build
 ```
+
+Then depend on it from a package in this workspace (`"@grounded/client": "workspace:*"`), or from an
+outside project via a file/link dependency pointing at `packages/client`.
 
 Node >= 20, ESM only. Requires a running `grounded-api`.
 
@@ -82,6 +89,6 @@ Notes worth knowing:
 
 ## Links
 
-- Repo README: <https://github.com/grounded/grounded#readme>
-- API server: [`@grounded/api`](https://www.npmjs.com/package/@grounded/api)
+- Repo README: <https://github.com/flexxdev3/grounded-core#readme>
+- API server: [`@grounded/api`](../api/README.md)
 - License: Apache-2.0
