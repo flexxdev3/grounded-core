@@ -84,16 +84,7 @@ describe("probeSystemd", () => {
   });
 });
 
-describe("probeNpm / probeSudo", () => {
-  it("probeNpm returns the version string when npm answers", async () => {
-    execImpl = () => okOut("10.9.2");
-    expect(await preflight.probeNpm()).toEqual({ present: true, version: "10.9.2" });
-  });
-
-  it("probeNpm reports absent with an empty version", async () => {
-    expect(await preflight.probeNpm()).toEqual({ present: false, version: "" });
-  });
-
+describe("probeSudo", () => {
   it("probeSudo uses the non-interactive form so it can never block on a password", async () => {
     execImpl = () => okOut("");
     expect(await preflight.probeSudo()).toBe(true);
@@ -132,7 +123,6 @@ describe("detectCapabilities", () => {
       if (cmd === "docker") return nope();
       if (cmd === "systemctl") return a[0] === "--version" ? okOut("systemd 257") : okOut("running");
       if (cmd === "sudo") return okOut("");
-      if (cmd === "npm") return okOut("10.9.2");
       return nope();
     };
     const caps = await preflight.detectCapabilities();
@@ -154,7 +144,6 @@ describe("detectCapabilities", () => {
     const caps = await preflight.detectCapabilities();
     expect(caps.docker.present).toBe(false);
     expect(caps.systemd.present).toBe(false);
-    expect(caps.npm.present).toBe(false);
     expect(caps.sudo).toBe(false);
   });
 });

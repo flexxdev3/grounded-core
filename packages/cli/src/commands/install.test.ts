@@ -61,7 +61,6 @@ function caps(over: Partial<Capabilities> = {}): Capabilities {
   return {
     docker: { present: true, daemon: true, detail: "daemon 27.0" },
     systemd: { present: true, user: true, system: true, detail: "systemd 257" },
-    npm: { present: true, version: "10" },
     node: { version: process.version },
     root: false,
     sudo: true,
@@ -263,7 +262,7 @@ describe("cabinet and options", () => {
 
   // FIXED: --image used to be accepted for every method but only reached
   // materializeDocker, so a systemd install silently ignored it. It is a
-  // Docker-only concept (systemd runs the npm-published grounded-api directly),
+  // Docker-only concept (systemd runs the locally-resolved grounded-api directly),
   // so it is now rejected rather than dropped.
   it("rejects --image on the systemd path instead of silently dropping it", async () => {
     await expect(

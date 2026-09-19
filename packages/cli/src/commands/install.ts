@@ -112,8 +112,8 @@ export function installCommand(global: () => GlobalOpts): Command {
         method = await select("How should Grounded run?", choices, defaultIdx);
       }
 
-      // 4. --image is a Docker-only concept. systemd installs the npm-published
-      // grounded-api and runs it directly — there is no container and no image
+      // 4. --image is a Docker-only concept. systemd runs a locally-resolved
+      // grounded-api directly — there is no container and no image
       // ref to honour, so threading the flag through would be meaningless. An
       // accepted-and-ignored flag is the same silent lie as a bare image tag
       // that can never be pulled: reject it and name the two ways forward.
@@ -121,8 +121,8 @@ export function installCommand(global: () => GlobalOpts): Command {
         return fail(
           `--image applies only to --method docker; ${METHOD_LABEL[method]} does not run a ` +
             `container image.\n` +
-            `  ${METHOD_LABEL[method]} installs the published @grounded/api package and runs it\n` +
-            `  directly, so there is nothing for "${opts.image}" to apply to.\n\n` +
+            `  ${METHOD_LABEL[method]} runs the locally-installed grounded-api directly,\n` +
+            `  so there is nothing for "${opts.image}" to apply to.\n\n` +
             `  do one of:\n` +
             `    1. install the image in a container:  grounded install --method docker --image ${opts.image}\n` +
             `    2. keep this method and drop the flag: grounded install --method ${method}`,

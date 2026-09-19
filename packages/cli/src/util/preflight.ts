@@ -19,7 +19,6 @@ function run(cmd: string, args: string[], timeoutMs = 5000): Promise<{ ok: boole
 export interface Capabilities {
   docker: { present: boolean; daemon: boolean; detail: string };
   systemd: { present: boolean; user: boolean; system: boolean; detail: string };
-  npm: { present: boolean; version: string };
   node: { version: string };
   root: boolean;
   sudo: boolean;
@@ -54,11 +53,6 @@ export async function probeSystemd(root: boolean): Promise<Capabilities["systemd
   };
 }
 
-export async function probeNpm(): Promise<Capabilities["npm"]> {
-  const v = await run("npm", ["--version"]);
-  return { present: v.ok, version: v.ok ? v.out : "" };
-}
-
 /** Passwordless sudo available? (`sudo -n true`) — best-effort, never blocks. */
 export async function probeSudo(): Promise<boolean> {
   const v = await run("sudo", ["-n", "true"], 3000);
@@ -83,12 +77,11 @@ export function portInUse(port: number, host = "127.0.0.1", timeoutMs = 1000): P
 /** Gather all host capabilities in parallel. */
 export async function detectCapabilities(): Promise<Capabilities> {
   const root = typeof process.getuid === "function" ? process.getuid() === 0 : false;
-  const [docker, systemdRaw, npm, sudo] = await Promise.all([
+  const [docker, systemdRaw, sudo] = await Promise.all([
     probeDocker(),
     probeSystemd(root),
-    probeNpm(),
     probeSudo(),
   ]);
   const systemd = { ...systemdRaw, system: systemdRaw.present && (root || sudo) };
-  return { docker, systemd, npm, node: { version: process.version }, root, sudo };
+  return { docker, systemd, node: { version: process.version }, root, sudo };
 }

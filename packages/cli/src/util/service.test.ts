@@ -1,6 +1,6 @@
 /**
  * service.ts is the shell-out layer of the installer. Nothing here may actually
- * run docker/systemctl/npm, so `node:child_process` is stubbed at the boundary
+ * run docker/systemctl/which, so `node:child_process` is stubbed at the boundary
  * and the tests assert on the exact argv that would have been executed — that
  * argv IS the installer's contract with the host.
  */
@@ -78,7 +78,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 /** When set, service.ts sees this as its own module path — used to simulate the
- *  shape of an npm install (the CLI living under node_modules/). */
+ *  shape of a vendored install (the CLI living under node_modules/). */
 let moduleFileOverride: string | null = null;
 
 vi.mock("node:url", async (importOriginal) => {
@@ -122,13 +122,22 @@ beforeEach(() => {
   execOut = () => "";
   delete process.env.GROUNDED_IMAGE;
   delete process.env.GROUNDED_BUILD_CONTEXT;
+  delete process.env.GROUNDED_API_BIN;
+  delete process.env.GROUNDED_HOME;
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.GROUNDED_IMAGE;
   delete process.env.GROUNDED_BUILD_CONTEXT;
+  delete process.env.GROUNDED_API_BIN;
+  delete process.env.GROUNDED_HOME;
 });
+
+/** The shell-installer layout: ~/.grounded/lib/current/lib/api.mjs, with
+ *  GROUNDED_HOME pointed at a fake cabinet so no real filesystem is consulted. */
+const CAB = "/cab";
+const SHIPPED_API = join(CAB, "lib", "current", "lib", "api.mjs");
 
 // ---- process helpers ---------------------------------------------------------
 
@@ -147,10 +156,10 @@ describe("stream / capture", () => {
 
   it("capture trims stdout and returns null on failure", async () => {
     const { capture } = await loadService();
-    execOut = () => "  /usr/local  \n";
-    await expect(capture("npm", ["prefix", "-g"])).resolves.toBe("/usr/local");
+    execOut = () => "  /usr/local/bin/grounded-api  \n";
+    await expect(capture("which", ["grounded-api"])).resolves.toBe("/usr/local/bin/grounded-api");
     execOut = () => null;
-    await expect(capture("npm", ["prefix", "-g"])).resolves.toBeNull();
+    await expect(capture("which", ["grounded-api"])).resolves.toBeNull();
   });
 });
 
@@ -173,9 +182,9 @@ describe("dockerBuildContext", () => {
     expect(dockerBuildContext()).toBeNull();
   });
 
-  // The npm-install shape: installed from the registry, the same four-levels-up
-  // walk lands inside node_modules/, where an unrelated Dockerfile would have
-  // been built as if it were ours. It must say null, not guess.
+  // The vendored shape: dropped into someone else's node_modules/, the same
+  // four-levels-up walk lands inside that tree, where an unrelated Dockerfile
+  // would have been built as if it were ours. It must say null, not guess.
   it("refuses a guess under node_modules even when every marker is present", async () => {
     moduleFileOverride = "/home/u/proj/node_modules/@grounded/cli/dist/util/service.js";
     const { dockerBuildContext } = await loadService();
@@ -196,8 +205,8 @@ describe("dockerBuildContext", () => {
     expect(dockerBuildContext()).toBe(root);
   });
 
-  // The four-levels-up guess is only meaningful in a repo checkout. Installed
-  // from npm the same walk lands inside node_modules/, where an unrelated
+  // The four-levels-up guess is only meaningful in a repo checkout. Vendored
+  // into a node_modules/ tree the same walk lands inside it, where an unrelated
   // Dockerfile would otherwise be built as if it were ours — so the guess is
   // identity-checked, not merely Dockerfile-checked.
   it("accepts the four-levels-up guess only when it looks like the grounded-core repo root", async () => {
@@ -237,7 +246,7 @@ describe("image resolution", () => {
   // KNOWN DEFECT (shipped, now documented in-source): the default image ref is
   // the bare local tag "grounded:latest" (service.ts:29). A bare tag has no "/",
   // so isRemoteRef() says it is not registry-pullable and `docker pull` is never
-  // attempted. Combined with an npm install having no build context, the DEFAULT
+  // attempted. Combined with a non-checkout install having no build context, the DEFAULT
   // `grounded install --method docker` cannot succeed at all — it can only fail
   // with guidance. It stays a defect until a registry image is published; this
   // test pins the failure so the day the image ships, it goes red.
@@ -372,20 +381,28 @@ describe("materializeDocker", () => {
 // ---- systemd -----------------------------------------------------------------
 
 describe("materializeSystemd", () => {
-  it("aborts before touching systemd when the global npm install fails", async () => {
-    const { materializeSystemd } = await loadService();
-    spawnExit = (cmd) => (cmd === "npm" ? 1 : 0);
-    await expect(materializeSystemd("user", { port: 7437 })).rejects.toThrow(
-      /npm i -g @grounded\/api failed \(exit 1\)/,
-    );
-    expect(spawnCalls.map((c) => c.cmd)).toEqual(["npm"]);
+  it("never shells out to npm — there is no registry package to install", async () => {
+    const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
+    existing.add(SHIPPED_API);
+    await materializeSystemd("user", { port: 7437 });
+    expect(spawnCalls.some((c) => c.cmd === "npm")).toBe(false);
   });
 
-  it("user scope: installs the api, writes the unit, reloads and enables --now", async () => {
-    const { materializeSystemd } = await loadService();
-    execOut = () => null; // `npm prefix -g` unavailable → PATH fallback
+  it("aborts before writing a unit or touching systemd when no api entry point resolves", async () => {
+    const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
+    const fsp = await import("node:fs/promises");
+    execOut = () => null; // `which grounded-api` finds nothing
+    await expect(materializeSystemd("user", { port: 7437 })).rejects.toThrow(
+      /cannot locate a grounded-api entry point/,
+    );
+    expect(spawnCalls).toHaveLength(0);
+    expect(fsp.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("user scope: writes the unit, reloads and enables --now", async () => {
+    const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
+    existing.add(SHIPPED_API);
     await materializeSystemd("user", { port: 7437 });
-    expect(spawnCalls[0]).toEqual({ cmd: "npm", args: ["install", "-g", "@grounded/api"] });
     expect(argvOf("systemctl")).toEqual([
       ["--user", "daemon-reload"],
       ["--user", "enable", "--now", "grounded.service"],
@@ -393,11 +410,11 @@ describe("materializeSystemd", () => {
   });
 
   it("system scope without root writes the unit through `sudo tee` and drives sudo systemctl", async () => {
-    const { materializeSystemd } = await loadService();
+    const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
     vi.spyOn(process, "getuid").mockReturnValue(1000);
-    execOut = () => null;
+    existing.add(SHIPPED_API);
     await materializeSystemd("system", { port: 7437, token: "tok" });
-    expect(spawnCalls[1]).toEqual({ cmd: "sudo", args: ["tee", "/etc/systemd/system/grounded.service"] });
+    expect(spawnCalls[0]).toEqual({ cmd: "sudo", args: ["tee", "/etc/systemd/system/grounded.service"] });
     expect(teeWrites).toHaveLength(1);
     expect(teeWrites[0]).toContain("Environment=GROUNDED_API_PORT=7437");
     expect(teeWrites[0]).toContain("Environment=GROUNDED_API_TOKEN=tok");
@@ -408,17 +425,35 @@ describe("materializeSystemd", () => {
     ]);
   });
 
+  // A bundled .mjs has no shebang and no +x, and systemd execs ExecStart
+  // directly — the unit must name the interpreter or it dies 203/EXEC.
+  it("renders ExecStart as `<node> <path>` for a bundled .mjs entry point", async () => {
+    const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
+    vi.spyOn(process, "getuid").mockReturnValue(1000);
+    existing.add(SHIPPED_API);
+    await materializeSystemd("system", { port: 7437 });
+    expect(teeWrites[0]).toContain(`ExecStart=${process.execPath} ${SHIPPED_API}`);
+  });
+
+  it("renders ExecStart bare for a real executable, with no interpreter prefix", async () => {
+    const { materializeSystemd } = await loadService({ GROUNDED_API_BIN: "/usr/local/bin/grounded-api" });
+    vi.spyOn(process, "getuid").mockReturnValue(1000);
+    existing.add("/usr/local/bin/grounded-api");
+    await materializeSystemd("system", { port: 7437 });
+    expect(teeWrites[0]).toContain("ExecStart=/usr/local/bin/grounded-api\n");
+  });
+
   it("system scope as root drives systemctl directly, no sudo", async () => {
-    const { materializeSystemd } = await loadService();
+    const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
     vi.spyOn(process, "getuid").mockReturnValue(0);
-    execOut = () => null;
+    existing.add(SHIPPED_API);
     await materializeSystemd("system", { port: 7437 });
     expect(argvOf("systemctl")).toEqual([["daemon-reload"], ["enable", "--now", "grounded.service"]]);
   });
 
   it("throws when daemon-reload fails, before attempting enable", async () => {
-    const { materializeSystemd } = await loadService();
-    execOut = () => null;
+    const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
+    existing.add(SHIPPED_API);
     spawnExit = (cmd, args) => (cmd === "systemctl" && args.includes("daemon-reload") ? 4 : 0);
     await expect(materializeSystemd("user", {})).rejects.toThrow(/daemon-reload failed \(exit 4\)/);
     expect(ranAny("systemctl", "--user")).toBe(true);
@@ -426,27 +461,97 @@ describe("materializeSystemd", () => {
   });
 });
 
+// resolveApiBin is the whole systemd story now that @grounded/api is never
+// published: every tier must end in a file that exists on THIS machine, and the
+// no-resolution case must be a loud error, not a bare "grounded-api" that only
+// fails later inside systemd.
 describe("resolveApiBin", () => {
-  it("prefers the npm global bin shim", async () => {
-    const { resolveApiBin } = await loadService();
-    execOut = () => "/usr/local";
+  it("honours GROUNDED_API_BIN above every other tier", async () => {
+    const { resolveApiBin } = await loadService({
+      GROUNDED_API_BIN: "/opt/custom/api.mjs",
+      GROUNDED_HOME: CAB,
+    });
+    existing.add("/opt/custom/api.mjs");
+    existing.add(SHIPPED_API);
+    await expect(resolveApiBin()).resolves.toBe("/opt/custom/api.mjs");
+  });
+
+  it("errors on a GROUNDED_API_BIN that does not exist rather than trusting it blindly", async () => {
+    const { resolveApiBin } = await loadService({ GROUNDED_API_BIN: "/opt/gone/api.mjs" });
+    await expect(resolveApiBin()).rejects.toThrow(
+      /GROUNDED_API_BIN is set to \/opt\/gone\/api\.mjs, but no file exists there/,
+    );
+  });
+
+  it("finds the shell-installer layout under GROUNDED_HOME", async () => {
+    const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
+    existing.add(SHIPPED_API);
+    await expect(resolveApiBin()).resolves.toBe(SHIPPED_API);
+  });
+
+  it("falls back to a grounded-api resolved through `which`, never a bare name", async () => {
+    const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
+    execOut = (cmd, args) =>
+      cmd === "which" && args[0] === "grounded-api" ? "/usr/local/bin/grounded-api\n" : null;
     existing.add("/usr/local/bin/grounded-api");
     await expect(resolveApiBin()).resolves.toBe("/usr/local/bin/grounded-api");
   });
 
-  it("falls back to the package's dist/bin.js under the global prefix", async () => {
-    const { resolveApiBin } = await loadService();
-    execOut = () => "/usr/local";
-    existing.add("/usr/local/lib/node_modules/@grounded/api/dist/bin.js");
-    await expect(resolveApiBin()).resolves.toBe(
-      "/usr/local/lib/node_modules/@grounded/api/dist/bin.js",
-    );
+  it("ignores a `which` hit whose path does not exist (stale shim / hashed shell)", async () => {
+    const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
+    execOut = () => "/usr/local/bin/grounded-api";
+    await expect(resolveApiBin()).rejects.toThrow(/cannot locate a grounded-api entry point/);
   });
 
-  it("falls back to a bare PATH lookup when npm cannot be queried", async () => {
-    const { resolveApiBin } = await loadService();
+  it("falls back to the workspace build when running out of a repo checkout", async () => {
+    moduleFileOverride = "/home/u/grounded-core/packages/cli/dist/util/service.js";
+    const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
     execOut = () => null;
-    await expect(resolveApiBin()).resolves.toBe("grounded-api");
+    const root = "/home/u/grounded-core";
+    existing = new Set([
+      ...["Dockerfile", "packages", "pnpm-workspace.yaml"].map((m) => join(root, m)),
+      join(root, "packages", "api", "dist", "bin.js"),
+    ]);
+    await expect(resolveApiBin()).resolves.toBe(join(root, "packages", "api", "dist", "bin.js"));
+  });
+
+  // Same identity check as dockerBuildContext(): a CLI vendored into someone
+  // else's node_modules must not claim their tree's packages/api as ours.
+  it("refuses the checkout fallback under node_modules even with every marker present", async () => {
+    moduleFileOverride = "/home/u/proj/node_modules/@grounded/cli/dist/util/service.js";
+    const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
+    execOut = () => null;
+    const guess = "/home/u/proj/node_modules";
+    existing = new Set([
+      ...["Dockerfile", "packages", "pnpm-workspace.yaml"].map((m) => join(guess, m)),
+      join(guess, "packages", "api", "dist", "bin.js"),
+    ]);
+    await expect(resolveApiBin()).rejects.toThrow(/cannot locate a grounded-api entry point/);
+  });
+
+  it("the failure names every location tried and the ways out — never `npm i -g`", async () => {
+    const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
+    execOut = () => null;
+    const err = await resolveApiBin().catch((e: Error) => e);
+    const msg = (err as Error).message;
+    expect(msg).toContain("~/.grounded/lib/current/lib/api.mjs");
+    expect(msg).toContain("grounded-api on PATH");
+    expect(msg).toContain("packages/api/dist/bin.js");
+    expect(msg).toContain("install.sh");
+    expect(msg).toContain("GROUNDED_API_BIN=/path/to/api.mjs");
+    expect(msg).toContain("--method docker");
+    // \b keeps the legitimate `pnpm -r build` remedy from tripping this: npm as a
+    // *package manager for @grounded/api* must never appear, because it cannot work.
+    expect(msg).not.toMatch(/\bnpm\b/);
+  });
+});
+
+describe("systemdExecStart", () => {
+  it("prefixes JS entry points with this node and leaves executables alone", async () => {
+    const { systemdExecStart } = await loadService();
+    expect(systemdExecStart("/x/api.mjs")).toBe(`${process.execPath} /x/api.mjs`);
+    expect(systemdExecStart("/x/bin.js")).toBe(`${process.execPath} /x/bin.js`);
+    expect(systemdExecStart("/usr/local/bin/grounded-api")).toBe("/usr/local/bin/grounded-api");
   });
 });
 
