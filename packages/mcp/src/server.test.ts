@@ -26,7 +26,7 @@ function card(over: Record<string, unknown> = {}) {
   return {
     typedId: "doc:12",
     title: "network.md",
-    snippet: "arch1 is 192.168.1.65",
+    snippet: "the gateway is 10.0.0.1",
     score: 0.87321,
     matchedBy: "both",
     citation: "docs/network.md",
@@ -447,7 +447,7 @@ describe("ground_impact lane withholding", () => {
     const cards = body.slice(0, body.indexOf("--- raw JSON"));
     expect(cards).not.toContain("null");
     // the in-lane card is rendered in full
-    expect(body).toContain("arch1 is 192.168.1.65");
+    expect(body).toContain("the gateway is 10.0.0.1");
   });
 
   it("phrases an empty impact result as 'no dependents', not 'no results'", async () => {

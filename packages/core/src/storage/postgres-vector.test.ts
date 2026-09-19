@@ -5,7 +5,10 @@ import { openStore } from "../store.js";
 import type { GroundedConfig, Store } from "../contract.js";
 
 const PG_URL = process.env.GROUNDED_TEST_PG_URL;
-const OLLAMA_BASE_URL = "http://192.168.1.217:11434";
+// Env-driven so the suite carries no host's address. Unreachable = skip, never
+// a hard failure (see ollamaReachable below), so the localhost default is safe
+// on a machine that runs ollama elsewhere or not at all.
+const OLLAMA_BASE_URL = process.env.GROUNDED_TEST_OLLAMA_URL ?? "http://localhost:11434";
 
 // Hardcoded, never sourced from env or config — the only thing standing between
 // the DROP below and the live `grounded` schema in the same database. Distinct
