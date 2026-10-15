@@ -18,6 +18,12 @@ describe("local provider", () => {
     expect(p.enabled).toBe(true);
   });
 
+  it("maps the default config's ollama model name to the nomic repo", () => {
+    const fromDefaults = defaultConfig(home);
+    fromDefaults.embeddings.provider = "local";
+    expect(createEmbeddingProvider(fromDefaults).id).toBe("local:nomic-ai/nomic-embed-text-v1.5");
+  });
+
   it("keeps models under the cabinet", () => {
     expect(localModelDir(cfg, "nomic-ai/nomic-embed-text-v1.5")).toBe(
       join(home, "models", "nomic-ai--nomic-embed-text-v1.5"),

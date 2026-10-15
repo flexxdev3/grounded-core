@@ -66,8 +66,12 @@ export async function ensureLocalModel(dir: string, model: string, modelFile: st
   }
 }
 
+/** ollama's name for the same model; the shared default config carries it. */
+const OLLAMA_NOMIC = "nomic-embed-text";
+
 export function createLocalProvider(cfg: GroundedConfig): EmbeddingProvider {
-  const model = cfg.embeddings.model ?? DEFAULT_MODEL;
+  const configured = cfg.embeddings.model;
+  const model = !configured || configured === OLLAMA_NOMIC ? DEFAULT_MODEL : configured;
   const dims = cfg.embeddings.dims ?? 768;
   const dir = cfg.embeddings.modelPath ?? localModelDir(cfg, model);
   const modelFile = cfg.embeddings.modelFile ?? DEFAULT_MODEL_FILE;
