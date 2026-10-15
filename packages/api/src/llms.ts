@@ -310,6 +310,7 @@ it, so the fix lands everywhere instead of leaving the next agent a dangling ref
 | Method | Path | |
 |---|---|---|
 | GET | \`/health\` | liveness + counts + the resolved budget table and per-lane over-cap counts; auth-exempt |
+| GET/POST | \`/addons/embeddings\` | the Embeddings add-on: GET = plan (download size, GPU backend) + job progress; POST \`{device?}\` starts it (downloads the model, turns vectors on, embeds existing rows). Operator action: never start it unasked |
 | GET | \`/llms.txt\` | this document; auth-exempt |
 | GET | \`/openapi.json\` | full schema for every route below |
 | GET · POST · PATCH · DELETE | \`/facts\` \`/facts/:id\` | durable rules |

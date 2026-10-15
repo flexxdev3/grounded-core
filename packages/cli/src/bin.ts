@@ -12,6 +12,7 @@ import {
 import { initCommand } from "./commands/init.js";
 import { mcpCommand } from "./commands/mcp.js";
 import { hooksCommand } from "./commands/hooks.js";
+import { addonCommand } from "./commands/addon.js";
 import type { GlobalOpts } from "./util/global.js";
 
 // Exit quietly when a downstream pipe closes early (e.g. `grounded ... | head`).
@@ -53,6 +54,7 @@ program.addCommand(initCommand(global));
 // Agent wiring — data access itself is console / MCP / HTTP now.
 program.addCommand(mcpCommand(global));
 program.addCommand(hooksCommand(global));
+program.addCommand(addonCommand(global));
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);

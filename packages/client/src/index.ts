@@ -51,8 +51,37 @@ export class GroundedHttpError extends Error {
   }
 }
 
+/** GET /addons/embeddings — the plan plus the setup job's progress. */
+export interface EmbeddingsAddonStatus {
+  provider: string;
+  enabled: boolean;
+  runtimeInstalled: boolean;
+  model: string;
+  modelPresent: boolean;
+  downloadBytes: number;
+  gpuBackend: "directml" | null;
+  job: {
+    state: "idle" | "running" | "done" | "error";
+    phase?: "download" | "probe" | "config" | "reload" | "backfill";
+    download?: { file: string; bytes: number; totalBytes: number };
+    backfill?: { lane: "facts" | "sessions" | "docs"; done: number; total: number };
+    device?: "gpu" | "cpu";
+    embedded?: { facts: number; sessions: number; docs: number };
+    error?: string;
+    startedAt?: string;
+    finishedAt?: string;
+  };
+}
+
 export interface GroundedClient {
   health(): Promise<HealthReport>;
+  /** the Embeddings add-on: inspect it, and start it (an operator action). */
+  addons: {
+    embeddings: {
+      status(): Promise<EmbeddingsAddonStatus>;
+      start(opts?: { device?: "auto" | "cpu" | "gpu" }): Promise<EmbeddingsAddonStatus>;
+    };
+  };
   /**
    * `opts.scopes` filters the doc lane (match any, OR); defaults to
    * `['global']` when omitted so callers that declare nothing never see
@@ -203,6 +232,13 @@ export function createClient(options: ClientOptions): GroundedClient {
 
   return {
     health: () => request<HealthReport>("GET", "/health"),
+    addons: {
+      embeddings: {
+        status: async () => (await request<{ data: EmbeddingsAddonStatus }>("GET", "/addons/embeddings")).data,
+        start: async (opts = {}) =>
+          (await request<{ data: EmbeddingsAddonStatus }>("POST", "/addons/embeddings", opts)).data,
+      },
+    },
     recall: (query, opts = {}) => request<ListResult<RecallResult>>("POST", "/recall", { query, ...opts }),
     impact: (subject, opts = {}) =>
       request<ListResult<ImpactResult>>("POST", "/impact", { subject, ...opts }),

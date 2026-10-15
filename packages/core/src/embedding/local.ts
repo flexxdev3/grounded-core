@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { ConfigError, EmbedError } from "../contract.js";
@@ -14,13 +14,16 @@ import type { EmbeddingProvider, GroundedConfig } from "../contract.js";
  * switching provider on an existing cabinet is a re-embed.
  */
 
-const DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5";
+export const DEFAULT_LOCAL_MODEL = "nomic-ai/nomic-embed-text-v1.5";
+const DEFAULT_MODEL = DEFAULT_LOCAL_MODEL;
 /**
  * fp16 weights: cosine 1.0 to the fp32 file at the same CPU speed, half the
  * download (273 MB). int8 is ~2x faster but drifts (min cosine 0.947).
  * Measured on vivobook i9-13980HX, 2026-10-15.
  */
-const DEFAULT_MODEL_FILE = "onnx/model_fp16.onnx";
+export const DEFAULT_MODEL_FILE = "onnx/model_fp16.onnx";
+/** what the default model costs to download, for the setup screen (fp16 + tokenizer). */
+export const DEFAULT_LOCAL_DOWNLOAD_BYTES = 274_000_000;
 const TOKENIZER_FILES = ["tokenizer.json", "tokenizer_config.json"];
 /** tokens per input; nomic allows 8192 but CPU cost grows with length. */
 const MAX_TOKENS = 2048;
@@ -37,44 +40,89 @@ interface Loaded {
   needsTokenTypes: boolean;
 }
 
+/** ollama's name for the same model; the shared default config carries it. */
+const OLLAMA_NOMIC = "nomic-embed-text";
+
 /** a directory under the cabinet: `<home>/models/<org>--<name>`. */
 export function localModelDir(cfg: GroundedConfig, model: string): string {
   return join(cfg.home, "models", model.replace(/\//g, "--"));
 }
 
-async function fetchTo(url: string, dest: string): Promise<void> {
+export interface DownloadProgress {
+  file: string;
+  bytes: number;
+  /** 0 when the server sent no length. */
+  totalBytes: number;
+}
+
+/** Stream one file to `<dest>.part`, then rename: a cut download never looks complete. */
+async function fetchTo(url: string, dest: string, onProgress?: (p: DownloadProgress) => void): Promise<void> {
   let res: Response;
   try {
     res = await fetch(url);
   } catch (err) {
     throw new EmbedError(`local model download failed (${url}): ${(err as Error).message}`);
   }
-  if (!res.ok) throw new EmbedError(`local model download returned ${res.status} for ${url}`);
+  if (!res.ok || !res.body) throw new EmbedError(`local model download returned ${res.status} for ${url}`);
+  const totalBytes = Number(res.headers.get("content-length") ?? 0);
   const tmp = `${dest}.part`;
-  writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
+  const out = createWriteStream(tmp);
+  let bytes = 0;
+  let lastReport = 0;
+  try {
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      if (!out.write(chunk)) await new Promise<void>((r) => out.once("drain", () => r()));
+      bytes += chunk.byteLength;
+      if (onProgress && bytes - lastReport >= 1_000_000) {
+        lastReport = bytes;
+        onProgress({ file: dest, bytes, totalBytes });
+      }
+    }
+    await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())));
+  } catch (err) {
+    out.destroy();
+    rmSync(tmp, { force: true });
+    throw new EmbedError(`local model download interrupted (${url}): ${(err as Error).message}`);
+  }
   renameSync(tmp, dest);
+  onProgress?.({ file: dest, bytes, totalBytes });
 }
 
 /** fetch the model files once into the cabinet; later starts are offline. */
-export async function ensureLocalModel(dir: string, model: string, modelFile: string): Promise<void> {
+export async function ensureLocalModel(
+  dir: string,
+  model: string,
+  modelFile: string,
+  onProgress?: (p: DownloadProgress) => void,
+): Promise<void> {
   const base = `https://huggingface.co/${model}/resolve/main`;
   for (const f of [...TOKENIZER_FILES, modelFile]) {
     const dest = join(dir, f);
     if (existsSync(dest)) continue;
     mkdirSync(join(dest, ".."), { recursive: true });
-    await fetchTo(`${base}/${f}`, dest);
+    await fetchTo(`${base}/${f}`, dest, onProgress);
   }
 }
 
-/** ollama's name for the same model; the shared default config carries it. */
-const OLLAMA_NOMIC = "nomic-embed-text";
+/** true when every file the model needs is already in `dir`. */
+export function localModelPresent(dir: string, modelFile: string): boolean {
+  return [...TOKENIZER_FILES, modelFile].every((f) => existsSync(join(dir, f)));
+}
 
-export function createLocalProvider(cfg: GroundedConfig): EmbeddingProvider {
+/** The model the "local" provider will load for this config, and where. */
+export function resolveLocalModel(cfg: GroundedConfig): { model: string; modelFile: string; dir: string } {
   const configured = cfg.embeddings.model;
   const model = !configured || configured === OLLAMA_NOMIC ? DEFAULT_MODEL : configured;
+  return {
+    model,
+    modelFile: cfg.embeddings.modelFile ?? DEFAULT_MODEL_FILE,
+    dir: cfg.embeddings.modelPath ?? localModelDir(cfg, model),
+  };
+}
+
+export function createLocalProvider(cfg: GroundedConfig): EmbeddingProvider {
+  const { model, modelFile, dir } = resolveLocalModel(cfg);
   const dims = cfg.embeddings.dims ?? 768;
-  const dir = cfg.embeddings.modelPath ?? localModelDir(cfg, model);
-  const modelFile = cfg.embeddings.modelFile ?? DEFAULT_MODEL_FILE;
   // half the cores by default: embedding is bursty and should never pin the box.
   const threads = cfg.embeddings.threads ?? Math.max(1, Math.floor(availableParallelism() / 2));
   const device = cfg.embeddings.device ?? "auto";

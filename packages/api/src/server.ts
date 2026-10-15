@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import type { Store } from "@grounded/core/contract";
 import type { ResolvedBudget } from "@grounded/core/delivery";
 import { createApp } from "./app.js";
+import type { EmbeddingsAddon } from "./addons.js";
 import { resolveUiDist, serveUi } from "./static.js";
 
 export interface StartServerOptions {
@@ -36,6 +37,7 @@ export interface StartServerOptions {
    *  vision against, so the write limit tracks the read budget. Threaded from
    *  the resolved config by the bin, same pattern as `factsReserveTok`. */
   visionReserveTok?: number;
+  embeddingsAddon?: EmbeddingsAddon;
 }
 
 export interface RunningServer {
@@ -57,6 +59,7 @@ export function startServer(opts: StartServerOptions): Promise<RunningServer> {
     ...(opts.factsReserveTok !== undefined
       ? { factsReserveTok: opts.factsReserveTok }
       : {}),
+    ...(opts.embeddingsAddon ? { embeddingsAddon: opts.embeddingsAddon } : {}),
     ...(opts.visionReserveTok !== undefined
       ? { visionReserveTok: opts.visionReserveTok }
       : {}),

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { EmbeddingsAddon } from "./addons.js";
 import {
   ConfigError,
   EmbedError,
@@ -542,6 +543,8 @@ export function createApp(
     typicalFactLimit?: number;
     factsReserveTok?: number;
     visionReserveTok?: number;
+    /** the Embeddings add-on; absent when the host cannot reload its store. */
+    embeddingsAddon?: EmbeddingsAddon;
   } = {},
 ): Hono {
   const app = new Hono();
@@ -981,6 +984,25 @@ export function createApp(
     const record = await store.get(typedId);
     if (!record) throw new NotFoundError(`${typedId} not found`);
     return c.json(record);
+  });
+
+  // ---- add-ons ----
+  app.get("/addons/embeddings", async (c) => {
+    if (!opts.embeddingsAddon) throw new NotFoundError("the embeddings add-on is not available in this deployment");
+    return c.json({ data: await opts.embeddingsAddon.status() });
+  });
+
+  app.post("/addons/embeddings", async (c) => {
+    if (!opts.embeddingsAddon) throw new NotFoundError("the embeddings add-on is not available in this deployment");
+    const body = await readJsonOptional(c);
+    if (!isRecord(body)) throw new ValidationError("body must be an object");
+    const device = body.device;
+    if (device !== undefined && device !== "auto" && device !== "cpu" && device !== "gpu") {
+      throw new ValidationError('"device" must be one of auto, cpu, gpu');
+    }
+    const started = opts.embeddingsAddon.start(device === undefined ? {} : { device });
+    const status = await opts.embeddingsAddon.status();
+    return c.json({ data: status }, started ? 202 : 409);
   });
 
   app.notFound((c) => c.json({ error: "not found", code: "NOT_FOUND" }, 404));

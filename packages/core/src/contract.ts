@@ -923,6 +923,15 @@ export interface Store {
 
   // ops
   health(): Promise<HealthReport>;
+  /**
+   * Embed every fact, session and doc chunk that has no vector yet — rows
+   * written while embeddings were off. Idempotent; a no-op when the embedder
+   * is disabled. Progress is reported per batch.
+   */
+  backfillVectors(opts?: {
+    batch?: number;
+    onProgress?: (p: { lane: "facts" | "sessions" | "docs"; done: number; total: number }) => void;
+  }): Promise<{ facts: number; sessions: number; docs: number }>;
   close(): Promise<void>;
 }
 

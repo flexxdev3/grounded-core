@@ -533,6 +533,24 @@ export const openApiDocument = {
   },
   security: [{ bearerAuth: [] }],
   paths: {
+    "/addons/embeddings": {
+      get: {
+        summary: "Embeddings add-on: plan (model, download size, GPU backend) and job progress",
+        responses: { "200": { description: "{ data: plan + job }" }, "404": { description: "not available in this deployment" } },
+      },
+      post: {
+        summary: "Start the Embeddings add-on: download the model, turn vectors on, embed existing rows",
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: { type: "object", properties: { device: { type: "string", enum: ["auto", "cpu", "gpu"] } } },
+            },
+          },
+        },
+        responses: { "202": { description: "started" }, "409": { description: "already running" } },
+      },
+    },
     "/health": {
       get: {
         summary:

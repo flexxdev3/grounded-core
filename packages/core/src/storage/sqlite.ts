@@ -4,6 +4,7 @@ import { readFileSync, existsSync } from "node:fs";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { IngestPathError, StoreError } from "../contract.js";
+import { BACKFILL_BATCH, docEmbedText, factEmbedText, sessionEmbedText } from "./embed-text.js";
 import type {
   BriefOptions,
   BriefResult,
@@ -356,7 +357,7 @@ export class SqliteStore implements Store {
     // Embed BEFORE any write: a failing embedder must leave no row behind (the
     // postgres adapter already orders it this way). Otherwise the caller gets an
     // error for a write that landed, and a retry duplicates it.
-    const vec = await this.embedOne(`${input.fact}\n${input.detail ?? ""}`.trim());
+    const vec = await this.embedOne(factEmbedText(input.fact, input.detail));
     const ts = nowIso();
     const info = this.db
       .prepare(
@@ -462,7 +463,7 @@ export class SqliteStore implements Store {
     };
     const textChanged = next.fact !== existing.fact || (next.detail ?? "") !== (existing.detail ?? "");
     // Embed before touching the row or its FTS entry (see factsAdd).
-    const vec = textChanged ? await this.embedOne(`${next.fact}\n${next.detail ?? ""}`.trim()) : null;
+    const vec = textChanged ? await this.embedOne(factEmbedText(next.fact, next.detail)) : null;
     if (textChanged) {
       // External-content FTS5: retire the old index entry using the OLD values
       // (the 'delete' command) BEFORE the base row changes, then insert the new one.
@@ -656,7 +657,7 @@ export class SqliteStore implements Store {
 
   async sessionsAdd(input: SessionInput): Promise<Session> {
     // Embed before the insert (see factsAdd).
-    const vec = await this.embedOne(`${input.summary}\n${input.details ?? ""}`.trim());
+    const vec = await this.embedOne(sessionEmbedText(input.summary, input.details));
     const ts = nowIso();
     const info = this.db
       .prepare(
@@ -740,7 +741,7 @@ export class SqliteStore implements Store {
       next.summary !== existing.summary ||
       (next.details ?? "") !== (existing.details ?? "");
     // Embed before touching the row or its FTS entry (see factsAdd).
-    const vec = textChanged ? await this.embedOne(`${next.summary}\n${next.details ?? ""}`.trim()) : null;
+    const vec = textChanged ? await this.embedOne(sessionEmbedText(next.summary, next.details)) : null;
     if (textChanged) {
       // External-content FTS5: retire the old entry with the OLD values before
       // the base row changes (same discipline as factsUpdate/sessionsDelete).
@@ -977,7 +978,7 @@ export class SqliteStore implements Store {
           const ingestedAt = nowIso();
           if (prev) {
             const id = Number(prev.id);
-            const vec = await this.embedOne(chunk.body); // before the write (see factsAdd)
+            const vec = await this.embedOne(docEmbedText(chunk.body)); // before the write (see factsAdd)
             this.db
               .prepare(
                 `update docs set source=?, title=?, body=?, total_chunks=?, body_hash=?, mtime=?, status='active', kind=?, machine=?, scope=?, project=?, ingested_at=? where id=?`,
@@ -1003,7 +1004,7 @@ export class SqliteStore implements Store {
             if (vec) this.upsertVector("vec_docs", id, vec);
             report.updated++;
           } else {
-            const vec = await this.embedOne(chunk.body); // before the write (see factsAdd)
+            const vec = await this.embedOne(docEmbedText(chunk.body)); // before the write (see factsAdd)
             const info = this.db
               .prepare(
                 `insert into docs(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, scope, project, ingested_at)
@@ -1860,6 +1861,82 @@ export class SqliteStore implements Store {
       o,
       this.cfg,
     );
+  }
+
+  async backfillVectors(opts?: {
+    batch?: number;
+    onProgress?: (p: { lane: "facts" | "sessions" | "docs"; done: number; total: number }) => void;
+  }): Promise<{ facts: number; sessions: number; docs: number }> {
+    const counts = { facts: 0, sessions: 0, docs: 0 };
+    if (!this.vectorActive()) return counts;
+    const batch = Math.max(1, Math.floor(opts?.batch ?? BACKFILL_BATCH));
+    // Every row is a candidate regardless of status (archived facts, missing
+    // docs): the write path embeds them all, so the backfill does too.
+    const lanes = [
+      {
+        lane: "facts" as const,
+        table: "facts",
+        vecTable: "vec_facts",
+        cols: "fact, detail",
+        text: (r: Row) => factEmbedText(String(r.fact), r.detail as string | null),
+      },
+      {
+        lane: "sessions" as const,
+        table: "sessions",
+        vecTable: "vec_sessions",
+        cols: "summary, details",
+        text: (r: Row) => sessionEmbedText(String(r.summary), r.details as string | null),
+      },
+      {
+        lane: "docs" as const,
+        table: "docs",
+        vecTable: "vec_docs",
+        cols: "body",
+        text: (r: Row) => docEmbedText(String(r.body)),
+      },
+    ];
+    for (const l of lanes) {
+      const ids = (
+        this.db
+          .prepare(
+            `select id from ${l.table} where id not in (select rowid from ${l.vecTable}) order by id`,
+          )
+          .all() as Row[]
+      ).map((r) => Number(r.id));
+      const total = ids.length;
+      let done = 0;
+      for (let i = 0; i < ids.length; i += batch) {
+        const slice = ids.slice(i, i + batch);
+        // Re-read per batch: a row edited or deleted mid-backfill is embedded
+        // from its current text, or skipped.
+        const rows = this.db
+          .prepare(
+            `select id, ${l.cols} from ${l.table} where id in (${slice.map(() => "?").join(",")}) order by id`,
+          )
+          .all(...slice) as Row[];
+        if (rows.length === 0) continue;
+        const vecs = await this.embedder.embed(rows.map(l.text));
+        if (vecs.length !== rows.length) {
+          throw new StoreError(
+            `embedder returned ${vecs.length} vectors for ${rows.length} ${l.lane} rows`,
+          );
+        }
+        const write = this.db.transaction(() => {
+          let n = 0;
+          rows.forEach((r, j) => {
+            const v = vecs[j];
+            if (!v || v.length === 0) return;
+            this.upsertVector(l.vecTable, Number(r.id), v);
+            n++;
+          });
+          return n;
+        });
+        done += write();
+        opts?.onProgress?.({ lane: l.lane, done, total });
+      }
+      counts[l.lane] = done;
+    }
+    return counts;
   }
 
   async health(): Promise<HealthReport> {

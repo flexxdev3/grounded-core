@@ -1,6 +1,7 @@
 import pg from "pg";
 import pgvector from "pgvector/pg";
 import { IngestPathError, StoreError } from "../contract.js";
+import { BACKFILL_BATCH, docEmbedText, factEmbedText, sessionEmbedText } from "./embed-text.js";
 import type {
   BriefOptions,
   BriefResult,
@@ -174,7 +175,7 @@ export class PostgresStore implements Store {
    * with nothing — or with an already-archived duplicate).
    */
   private async factsInsert(input: FactInput): Promise<Fact> {
-    const emb = await this.embedOne(`${input.fact}\n${input.detail ?? ""}`.trim());
+    const emb = await this.embedOne(factEmbedText(input.fact, input.detail));
     const res = await this.pool.query(
       `insert into ${this.q("facts")}(scope, category, fact, detail, topic_key, pinned, importance, status, created_by, source, origin, embedding)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,
@@ -233,7 +234,7 @@ export class PostgresStore implements Store {
         // concurrent upsert attempt on this key; the unique index remains
         // the final guarantee against a true race (a losing racer sees a
         // duplicate-key error rather than a silent second row).
-        const emb = await this.embedOne(`${input.fact}\n${input.detail ?? ""}`.trim());
+        const emb = await this.embedOne(factEmbedText(input.fact, input.detail));
         const res = await client.query(
           `insert into ${this.q("facts")}(scope, category, fact, detail, topic_key, pinned, importance, status, created_by, source, origin, embedding)
            values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,
@@ -278,7 +279,7 @@ export class PostgresStore implements Store {
       const nextOrigin = input.origin ?? prior.origin;
       const textChanged = input.fact !== prior.fact || (nextDetail ?? "") !== (prior.detail ?? "");
       const emb = textChanged
-        ? await this.embedOne(`${input.fact}\n${nextDetail ?? ""}`.trim())
+        ? await this.embedOne(factEmbedText(input.fact, nextDetail))
         : null;
       const res = await client.query(
         `update ${this.q("facts")} set category=$1, fact=$2, detail=$3, pinned=$4, importance=$5,
@@ -402,7 +403,7 @@ export class PostgresStore implements Store {
     };
     const textChanged = next.fact !== existing.fact || (next.detail ?? "") !== (existing.detail ?? "");
     const emb = textChanged
-      ? await this.embedOne(`${next.fact}\n${next.detail ?? ""}`.trim())
+      ? await this.embedOne(factEmbedText(next.fact, next.detail))
       : null;
     try {
       const res = await this.pool.query(
@@ -590,7 +591,7 @@ export class PostgresStore implements Store {
   }
 
   async sessionsAdd(input: SessionInput): Promise<Session> {
-    const emb = await this.embedOne(`${input.summary}\n${input.details ?? ""}`.trim());
+    const emb = await this.embedOne(sessionEmbedText(input.summary, input.details));
     const res = await this.pool.query(
       `insert into ${this.q("sessions")}(machine, project, workspace, agent, summary, details, tags, source, embedding)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
@@ -674,7 +675,7 @@ export class PostgresStore implements Store {
       next.summary !== existing.summary ||
       (next.details ?? "") !== (existing.details ?? "");
     const embedding = textChanged
-      ? await this.embedOne(`${next.summary}\n${next.details ?? ""}`.trim())
+      ? await this.embedOne(sessionEmbedText(next.summary, next.details))
       : null;
     const sets = [
       "summary = $2",
@@ -902,7 +903,7 @@ export class PostgresStore implements Store {
             existingByIdx.delete(chunk.idx);
             continue;
           }
-          const emb = await this.embedOne(chunk.body);
+          const emb = await this.embedOne(docEmbedText(chunk.body));
           const embSql = emb ? pgvector.toSql(emb) : null;
           if (prev) {
             await this.pool.query(
@@ -1614,6 +1615,84 @@ export class PostgresStore implements Store {
       o,
       this.cfg,
     );
+  }
+
+  async backfillVectors(opts?: {
+    batch?: number;
+    onProgress?: (p: { lane: "facts" | "sessions" | "docs"; done: number; total: number }) => void;
+  }): Promise<{ facts: number; sessions: number; docs: number }> {
+    const counts = { facts: 0, sessions: 0, docs: 0 };
+    if (!this.vectorActive()) return counts;
+    const batch = Math.max(1, Math.floor(opts?.batch ?? BACKFILL_BATCH));
+    // Every row is a candidate regardless of status (archived facts, missing
+    // docs): the write path embeds them all, so the backfill does too.
+    const lanes = [
+      {
+        lane: "facts" as const,
+        table: "facts",
+        cols: "fact, detail",
+        text: (r: Row) => factEmbedText(String(r.fact), r.detail as string | null),
+      },
+      {
+        lane: "sessions" as const,
+        table: "sessions",
+        cols: "summary, details",
+        text: (r: Row) => sessionEmbedText(String(r.summary), r.details as string | null),
+      },
+      {
+        lane: "docs" as const,
+        table: "docs",
+        cols: "body",
+        text: (r: Row) => docEmbedText(String(r.body)),
+      },
+    ];
+    for (const l of lanes) {
+      const idRes = await this.pool.query(
+        `select id from ${this.q(l.table)} where embedding is null order by id`,
+      );
+      const ids = (idRes.rows as Row[]).map((r) => Number(r.id));
+      const total = ids.length;
+      let done = 0;
+      for (let i = 0; i < ids.length; i += batch) {
+        const slice = ids.slice(i, i + batch);
+        // Re-read per batch, still null-only: a row edited (and so embedded by
+        // its own write) or deleted mid-backfill is skipped.
+        const rowRes = await this.pool.query(
+          `select id, ${l.cols} from ${this.q(l.table)} where id = any($1::bigint[]) and embedding is null order by id`,
+          [slice],
+        );
+        const rows = rowRes.rows as Row[];
+        if (rows.length === 0) continue;
+        const vecs = await this.embedder.embed(rows.map(l.text));
+        if (vecs.length !== rows.length) {
+          throw new StoreError(
+            `embedder returned ${vecs.length} vectors for ${rows.length} ${l.lane} rows`,
+          );
+        }
+        const outIds: number[] = [];
+        const outVecs: string[] = [];
+        rows.forEach((r, j) => {
+          const v = vecs[j];
+          if (!v || v.length === 0) return;
+          outIds.push(Number(r.id));
+          outVecs.push(pgvector.toSql(v) as string);
+        });
+        if (outIds.length > 0) {
+          // `embedding is null` again: never clobber a vector a concurrent
+          // write landed between the read and this update.
+          const upd = await this.pool.query(
+            `update ${this.q(l.table)} t set embedding = v.e::vector
+               from unnest($1::bigint[], $2::text[]) as v(id, e)
+              where t.id = v.id and t.embedding is null`,
+            [outIds, outVecs],
+          );
+          done += upd.rowCount ?? 0;
+        }
+        opts?.onProgress?.({ lane: l.lane, done, total });
+      }
+      counts[l.lane] = done;
+    }
+    return counts;
   }
 
   async health(): Promise<HealthReport> {

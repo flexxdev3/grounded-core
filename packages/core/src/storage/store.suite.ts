@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openStore } from "../store.js";
 import { assembleBrief } from "../engine/brief.js";
-import type { GroundedConfig, Store, StorageAdapter } from "../contract.js";
+import type { EmbeddingProvider, GroundedConfig, Store, StorageAdapter } from "../contract.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const EXAMPLES = resolve(__dirname, "../../../../examples/docs");
@@ -2272,5 +2272,92 @@ export function runStoreSuite(kase: StoreSuiteCase): void {
       const punctuationOnly = await store.impact("---");
       expect(Array.isArray(punctuationOnly.data)).toBe(true);
     });
+
+    // Runs last: reopens the SAME database with an enabled embedder, so every
+    // earlier row (all written with embeddings=none) is a backfill candidate.
+    describe("backfillVectors (reopen with an enabled embedder)", () => {
+      let vstore: Store;
+      const token = "zzqbackfillvectortoken";
+
+      beforeAll(async () => {
+        await store.factsAdd({ fact: `${token} fact written with embeddings off`, status: "archived" });
+        await store.factsAdd({ fact: `${token} fact written with embeddings off`, detail: "active twin" });
+        await store.sessionsAdd({ summary: `${token} session written with embeddings off` });
+        const dir = mkdtempSync(join(tmpdir(), "grounded-backfill-"));
+        writeFileSync(join(dir, "note.md"), `# Backfill\n\n${token} doc body written with embeddings off.\n`);
+        await store.docsIngest([dir], { source: "backfill-src" });
+        rmSync(dir, { recursive: true, force: true });
+
+        // the off-store must refuse: no embedder, nothing touched
+        expect(await store.backfillVectors()).toEqual({ facts: 0, sessions: 0, docs: 0 });
+
+        const cfg = kase.makeConfig();
+        const embedder = fakeEmbedder(cfg.embeddings.dims && cfg.embeddings.dims > 0 ? cfg.embeddings.dims : 8);
+        if (kase.expected.adapter === "sqlite") {
+          const { openSqliteStore } = await import("./sqlite.js");
+          vstore = await openSqliteStore(cfg, embedder);
+        } else {
+          const { openPostgresStore } = await import("./postgres.js");
+          vstore = await openPostgresStore(cfg, embedder);
+        }
+      });
+
+      afterAll(async () => {
+        if (vstore) await vstore.close();
+      });
+
+      it("embeds every row missing a vector, reports per-batch progress, then is a no-op", async () => {
+        const progress: { lane: string; done: number; total: number }[] = [];
+        const counts = await vstore.backfillVectors({ batch: 2, onProgress: (p) => progress.push(p) });
+        expect(counts.facts).toBeGreaterThanOrEqual(2);
+        expect(counts.sessions).toBeGreaterThanOrEqual(1);
+        expect(counts.docs).toBeGreaterThanOrEqual(1);
+
+        for (const lane of ["facts", "sessions", "docs"] as const) {
+          const ps = progress.filter((p) => p.lane === lane);
+          expect(ps.length).toBeGreaterThan(0);
+          const last = ps[ps.length - 1]!;
+          expect(last.done).toBe(counts[lane]);
+          expect(last.total).toBe(counts[lane]);
+          // monotonic, batch-sized steps
+          for (let i = 1; i < ps.length; i++) {
+            expect(ps[i]!.done - ps[i - 1]!.done).toBeLessThanOrEqual(2);
+            expect(ps[i]!.done).toBeGreaterThan(ps[i - 1]!.done);
+          }
+        }
+
+        expect(await vstore.backfillVectors()).toEqual({ facts: 0, sessions: 0, docs: 0 });
+      });
+
+      it("backfilled rows are reachable through the vector lane", async () => {
+        const res = (await vstore.recall(`${token} written with embeddings off`, { limit: 50 })).data;
+        for (const src of ["fact", "session", "doc"]) {
+          const hit = res.find((r) => r.sourceType === src);
+          expect(hit, `no ${src} hit`).toBeDefined();
+          expect(["vector", "both"]).toContain(hit!.matchedBy);
+        }
+      });
+    });
   });
+}
+
+/** Deterministic hash-based embedder: exercises the vector lane offline. */
+function fakeEmbedder(dims: number): EmbeddingProvider {
+  function vec(text: string): number[] {
+    const out = new Array<number>(dims).fill(0);
+    for (let i = 0; i < text.length; i++) out[i % dims]! += text.charCodeAt(i) % 13;
+    const norm = Math.sqrt(out.reduce((a, b) => a + b * b, 0)) || 1;
+    return out.map((x) => x / norm);
+  }
+  return {
+    id: "fake:backfill",
+    dims,
+    enabled: true,
+    async embed(texts) {
+      return texts.map(vec);
+    },
+    async health() {
+      return { ok: true, detail: "fake" };
+    },
+  };
 }

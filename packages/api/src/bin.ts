@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { bootstrap, loadConfig, openStore } from "@grounded/core";
 import { resolveBudget } from "@grounded/core/delivery";
+import type { Store } from "@grounded/core/contract";
 import { startServer } from "./server.js";
+import { createEmbeddingsAddon } from "./addons.js";
 
 async function main(): Promise<void> {
   // Self-bootstrap: ensure the cabinet, config, and migrations exist before we
@@ -19,7 +21,26 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfig();
-  const store = await openStore(config);
+  // Routes hold a stable handle; the add-on swaps the store behind it when it
+  // turns vectors on, so the service never restarts to apply a new embedder.
+  let current = await openStore(config);
+  const store = new Proxy({} as Store, {
+    get(_t, key) {
+      const v = (current as unknown as Record<PropertyKey, unknown>)[key];
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(current) : v;
+    },
+  });
+  const embeddingsAddon = createEmbeddingsAddon({
+    loadConfig,
+    reload: async () => {
+      const next = await openStore(loadConfig());
+      const prev = current;
+      current = next;
+      // let in-flight requests on the old handle finish before closing it.
+      setTimeout(() => void prev.close().catch(() => {}), 10_000).unref();
+      return next;
+    },
+  });
 
   const token = process.env.GROUNDED_API_TOKEN;
   const port = Number(process.env.GROUNDED_API_PORT ?? 7437);
@@ -36,6 +57,7 @@ async function main(): Promise<void> {
     // brief's read reserves and /health's published contract now all come from
     // the same object, so a config.toml edit moves them together.
     budget: resolveBudget(config),
+    embeddingsAddon,
   });
   console.log(`grounded-api listening on ${server.url}`);
   console.log(server.ui ? `console: ${server.url}/` : "console: not built (headless)");

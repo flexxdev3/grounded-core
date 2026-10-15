@@ -15,6 +15,13 @@ export * from "./contract.js";
 export { loadConfig, defaultConfig, defaultHome, cabinetDir, visibleRoot, CORE_DIRNAME, CONFIG_FILENAME } from "./config.js";
 export { openStore } from "./store.js";
 export { createEmbeddingProvider } from "./embedding/index.js";
+export {
+  embeddingsAddonPlan,
+  installLocalEmbeddings,
+  writeEmbeddingsConfig,
+  type EmbeddingsAddonPlan,
+  type AddonProgress,
+} from "./embedding/addon.js";
 
 // Delivery accounting — turns Store.factsDeliveryRank's raw position into the
 // wire-shaped signal. Public because every write surface (API, MCP) must render
