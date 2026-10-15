@@ -328,6 +328,11 @@ export interface GroundedConfig {
     model?: string;
     dims?: number;
     apiKey?: string;
+    /**
+     * ollama only. "cpu" sends `options.num_gpu = 0` on every request so the
+     * model never takes GPU memory; "auto" (default) lets ollama place it.
+     */
+    device?: "auto" | "cpu";
   };
   recall: {
     /** Reciprocal Rank Fusion constant. Default 60. */

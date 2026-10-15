@@ -70,7 +70,7 @@ Notable per-command options:
 | systemd (system) | the same, at `/etc/systemd/system` via sudo | always-on; needs root/sudo |
 
 Env knobs, no config edit needed: `GROUNDED_HOME`, `GROUNDED_API_PORT`, `GROUNDED_API_TOKEN`,
-`GROUNDED_EMBED_PROVIDER`, `GROUNDED_EMBED_BASEURL`, `GROUNDED_EMBED_MODEL`, `GROUNDED_IMAGE`.
+`GROUNDED_EMBED_PROVIDER`, `GROUNDED_EMBED_BASEURL`, `GROUNDED_EMBED_MODEL`, `GROUNDED_EMBED_DEVICE`, `GROUNDED_IMAGE`.
 
 ## Links
 

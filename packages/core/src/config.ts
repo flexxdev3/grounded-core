@@ -333,6 +333,9 @@ function envLayer(): DeepPartial<GroundedConfig> {
   }
   if (env.GROUNDED_EMBED_BASEURL) embeddings.baseUrl = env.GROUNDED_EMBED_BASEURL;
   if (env.GROUNDED_EMBED_MODEL) embeddings.model = env.GROUNDED_EMBED_MODEL;
+  if (env.GROUNDED_EMBED_DEVICE) {
+    embeddings.device = env.GROUNDED_EMBED_DEVICE as GroundedConfig["embeddings"]["device"];
+  }
   if (env.GROUNDED_OPENAI_API_KEY) embeddings.apiKey = env.GROUNDED_OPENAI_API_KEY;
 
   if (Object.keys(storage).length) layer.storage = storage;
