@@ -76,3 +76,40 @@ export const IconClose = ({ size = "1rem" }: P) => (
     <path d="M6 6l12 12M18 6 6 18" />
   </svg>
 );
+
+export const IconHome = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M3.5 10.5 12 3.5l8.5 7V20a1 1 0 0 1-1 1h-5v-6h-5v6h-5a1 1 0 0 1-1-1z" />
+  </svg>
+);
+
+export const IconReview = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M4.5 5h15l1.5 7.5V19h-18v-6.5z" />
+    <path d="M3 12.5h5l1.5 2.8h5l1.5-2.8h5" />
+  </svg>
+);
+
+export const IconAgents = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M9 3.5v4M15 3.5v4" />
+    <path d="M6 7.5h12v3.5a6 6 0 0 1-12 0z" />
+    <path d="M12 17v3.5" />
+  </svg>
+);
+
+export const IconMachines = ({ size }: P) => (
+  <svg {...base(size)}>
+    <rect x="3.5" y="4" width="17" height="6.5" rx="1.3" />
+    <rect x="3.5" y="13.5" width="17" height="6.5" rx="1.3" />
+    <path d="M7 7.25h.01M7 16.75h.01" />
+  </svg>
+);
+
+export const IconDatabox = ({ size }: P) => (
+  <svg {...base(size)}>
+    <ellipse cx="12" cy="5.5" rx="8" ry="2.5" />
+    <path d="M4 5.5v13c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-13" />
+    <path d="M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5" />
+  </svg>
+);

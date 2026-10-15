@@ -124,7 +124,7 @@ const PHASE_LABEL: Record<string, string> = {
   reload: "Switching search by meaning on…",
 };
 
-function EmbeddingsSetup({ onClose }: { onClose: () => void }) {
+export function EmbeddingsSetup({ onClose }: { onClose: () => void }) {
   const [status, setStatus] = useState<EmbeddingsAddonStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 

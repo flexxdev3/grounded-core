@@ -137,13 +137,13 @@ importers:
       '@grounded/client':
         specifier: workspace:*
         version: link:../client
+      '@grounded/core':
+        specifier: workspace:*
+        version: link:../core
       preact:
         specifier: ^10.25.0
         version: 10.29.3
     devDependencies:
-      '@grounded/core':
-        specifier: workspace:*
-        version: link:../core
       '@preact/preset-vite':
         specifier: ^2.9.0
         version: 2.10.5(@babel/core@7.29.7)(preact@10.29.3)(rollup@4.62.2)(vite@6.4.3(@types/node@22.20.0))

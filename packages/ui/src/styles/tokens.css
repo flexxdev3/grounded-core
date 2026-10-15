@@ -1,38 +1,115 @@
-/* tokens.css — Grounded console design tokens (Cinematic Terminal, dark surface).
-   Derived from grounded-site/src/styles/tokens.css + Console.dc.html :root. Kept
-   self-contained here: grounded-site is a separate repo, so we don't reach into it. */
+/* Grounded console — design tokens.
+   "Cloud" theme: warm paper ground, serif display, frosted cards, sage accent.
+   Light is the default; dark reuses the same roles over the deep-green ground.
+   Theme resolution: [data-theme] wins; otherwise the OS preference applies. */
+
 :root {
-  /* palette */
-  --night: #080d0b;
-  --night-2: #0a0f0c;
-  --night-3: #101813;
-  --panel: rgba(22, 28, 22, 0.9);
-  --panel-2: rgba(12, 16, 13, 0.95);
-  --paper: #f1ece0;
-  --paper-soft: rgba(236, 230, 216, 0.62);
-  --paper-faint: rgba(236, 230, 216, 0.52);
+  /* ground */
+  --paper: #f5f1e8;
+  --paper-deep: #ece7da;
+  --ink: #1e241f;
+  --ink-soft: rgba(30, 36, 31, 0.72);
+  --ink-faint: rgba(30, 36, 31, 0.5);
 
-  --verdigris: #9cbf91;
-  --verdigris-bright: #c5deb8;
-  --copper: #c98f5a;
-  --copper-bright: #e7b48a;
-  --moss: #667e55;
+  /* frosted cards */
+  --card: rgba(255, 255, 255, 0.55);
+  --card-solid: #fdfbf5;
+  --frost: blur(14px) saturate(130%);
+  --shadow-soft: 0 1px 2px rgba(30, 36, 31, 0.05), 0 12px 32px rgba(30, 36, 31, 0.08);
 
-  /* lines + accents keyed off the two brand hues */
-  --line: rgba(156, 191, 145, 0.14);
-  --line-2: rgba(156, 191, 145, 0.2);
-  --line-strong: rgba(156, 191, 145, 0.4);
-  --line-copper: rgba(201, 143, 90, 0.32);
-  --sage-wash: rgba(156, 191, 145, 0.06);
-  --sage-wash-2: rgba(156, 191, 145, 0.12);
+  /* brand */
+  --sage: #5f7d52;
+  --sage-deep: #44603c;
+  --sage-wash: rgba(95, 125, 82, 0.08);
+  --sage-wash-2: rgba(95, 125, 82, 0.16);
+  --copper: #b07a46;
+  --copper-wash: rgba(176, 122, 70, 0.1);
+  --on-sage: #fdfbf5;
+  --hero-glow: rgba(255, 255, 255, 0.55);
 
-  --glow: 0 0 20px rgba(156, 191, 145, 0.16);
-  --glow-strong: 0 0 24px rgba(156, 191, 145, 0.34);
-  --shadow: 0 16px 44px rgba(9, 11, 8, 0.24);
-  --scan: repeating-linear-gradient(180deg, transparent 0 2px, rgba(0, 0, 0, 0.25) 2px 3px);
-  --radius: 8px;
+  /* lines + status */
+  --line: rgba(30, 36, 31, 0.1);
+  --line-strong: rgba(30, 36, 31, 0.2);
+  --ok: #5f7d52;
+  --warn: #b07a46;
+  --danger: #a4503f;
 
-  --sans: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  /* terminal island (brief payload) — same in both themes */
+  --term-bg: #0a0f0c;
+  --term-ink: #ece6d8;
+  --term-ink-soft: rgba(236, 230, 216, 0.6);
+  --term-accent: #9cbf91;
+  --term-line: rgba(236, 230, 216, 0.14);
+
+  /* shape + type */
+  --radius: 14px;
+  --radius-sm: 8px;
   --serif: "EB Garamond", Georgia, serif;
-  --mono: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  --sans: "Inter", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --fs-display: clamp(26px, 4vw, 40px);
+  --fs-title: 19px;
+  --fs-body: 14px;
+  --fs-small: 12.5px;
+
+  /* motion */
+  --dur: 160ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  color-scheme: light;
+}
+
+/* dark role overrides — shared by [data-theme="dark"] and the OS preference */
+:root[data-theme="dark"] {
+  --paper: #0c120e;
+  --paper-deep: #080d0b;
+  --ink: #f1ece0;
+  --ink-soft: rgba(241, 236, 224, 0.7);
+  --ink-faint: rgba(241, 236, 224, 0.45);
+  --card: rgba(255, 255, 255, 0.04);
+  --card-solid: #111813;
+  --frost: blur(14px) saturate(115%);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.35);
+  --sage: #9cbf91;
+  --sage-deep: #b7d4ad;
+  --sage-wash: rgba(156, 191, 145, 0.08);
+  --sage-wash-2: rgba(156, 191, 145, 0.16);
+  --copper: #c98f5a;
+  --copper-wash: rgba(201, 143, 90, 0.12);
+  --on-sage: #10140e;
+  --hero-glow: rgba(156, 191, 145, 0.07);
+  --line: rgba(241, 236, 224, 0.1);
+  --line-strong: rgba(241, 236, 224, 0.22);
+  --ok: #9cbf91;
+  --warn: #c98f5a;
+  --danger: #d08070;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0c120e;
+    --paper-deep: #080d0b;
+    --ink: #f1ece0;
+    --ink-soft: rgba(241, 236, 224, 0.7);
+    --ink-faint: rgba(241, 236, 224, 0.45);
+    --card: rgba(255, 255, 255, 0.04);
+    --card-solid: #111813;
+    --frost: blur(14px) saturate(115%);
+    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.35);
+    --sage: #9cbf91;
+    --sage-deep: #b7d4ad;
+    --sage-wash: rgba(156, 191, 145, 0.08);
+    --sage-wash-2: rgba(156, 191, 145, 0.16);
+    --copper: #c98f5a;
+    --copper-wash: rgba(201, 143, 90, 0.12);
+    --on-sage: #10140e;
+    --hero-glow: rgba(156, 191, 145, 0.07);
+    --line: rgba(241, 236, 224, 0.1);
+    --line-strong: rgba(241, 236, 224, 0.22);
+    --ok: #9cbf91;
+    --warn: #c98f5a;
+    --danger: #d08070;
+    color-scheme: dark;
+  }
 }

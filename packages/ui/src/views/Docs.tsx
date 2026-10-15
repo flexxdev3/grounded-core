@@ -8,9 +8,9 @@ import { IconPlus } from "../icons.js";
 import { fmtDate } from "../util.js";
 
 const STATUS_COLOR: Record<Doc["status"], string> = {
-  active: "var(--verdigris)",
-  archived: "rgba(236,230,216,0.4)",
-  missing: "var(--copper-bright)",
+  active: "var(--sage-deep)",
+  archived: "var(--ink-faint)",
+  missing: "var(--copper)",
 };
 
 /**
@@ -87,13 +87,12 @@ export function DocsView() {
   };
 
   return (
-    <div class="view-max">
+    <div>
       <div style={{ display: "flex", alignItems: "center", marginBottom: "1.1rem" }}>
-        <div style={{ flex: 1 }}>
-          <div class="eyebrow">&gt;_ docs · indexed source of record</div>
-          <h1 class="h-serif" style={{ fontSize: "1.7rem", margin: 0 }}>Docs</h1>
-        </div>
-        <button class="btn btn-primary" onClick={() => setIngesting(true)}>
+        <p style={{ flex: 1, margin: 0, color: "var(--ink-soft)", fontSize: "0.88rem", lineHeight: 1.5 }}>
+          Reference files indexed for search. Re-ingest after editing a source.
+        </p>
+        <button class="btn btn-sm" onClick={() => setIngesting(true)}>
           <IconPlus /> Ingest
         </button>
       </div>
@@ -102,13 +101,13 @@ export function DocsView() {
         <input class="input" value={filter} placeholder="filter documents…"
           style={{ flex: 1 }}
           onInput={(e) => setFilter((e.target as HTMLInputElement).value)} />
-        <span class="mono" style={{ fontSize: "0.7rem", color: "rgba(236,230,216,0.4)", whiteSpace: "nowrap" }}>
+        <span class="mono" style={{ fontSize: "0.7rem", color: "var(--ink-faint)", whiteSpace: "nowrap" }}>
           {groups.length} project{groups.length === 1 ? "" : "s"} · {matched.length} docs
         </span>
       </div>
 
       {loading && <div class="empty">Loading docs…</div>}
-      {error && <div class="empty" style={{ color: "var(--copper-bright)" }}>{error}</div>}
+      {error && <div class="empty" style={{ color: "var(--copper)" }}>{error}</div>}
       {!loading && !error && groups.length === 0 && (
         <div class="empty">{docs.length === 0 ? "No docs indexed. Ingest a folder to get started." : "No documents match that filter."}</div>
       )}
@@ -116,7 +115,7 @@ export function DocsView() {
       {groups.map((g) => (
         <div key={g.name} style={{ marginBottom: "0.5rem" }}>
           <button class="doc-group-head" onClick={() => toggle(g.name)}>
-            <span class="mono" style={{ color: "var(--verdigris)", width: "0.9rem", display: "inline-block" }}>
+            <span class="mono" style={{ color: "var(--sage-deep)", width: "0.9rem", display: "inline-block" }}>
               {isOpen(g.name) ? "▾" : "▸"}
             </span>
             <span style={{ fontWeight: 600 }}>{g.name}</span>
@@ -127,7 +126,7 @@ export function DocsView() {
               <span class="type-tag doc">doc</span>
               <div class="row-title" style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
                 <span>{d.title || fileOf(d.path)}</span>
-                <span class="mono" style={{ fontSize: "0.66rem", color: "rgba(236,230,216,0.4)" }}>{fileOf(d.path)}</span>
+                <span class="mono" style={{ fontSize: "0.66rem", color: "var(--ink-faint)" }}>{fileOf(d.path)}</span>
               </div>
               {d.scope !== "global" && (
                 <span class="chip" style={{ cursor: "default" }}>{d.scope}</span>
@@ -192,7 +191,7 @@ function IngestModal({ onClose }: { onClose: () => void }) {
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
           <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun((e.target as HTMLInputElement).checked)} />
-          <span class="mono" style={{ fontSize: "0.7rem", color: "rgba(236,230,216,0.7)" }}>Dry run — report changes, write nothing</span>
+          <span class="mono" style={{ fontSize: "0.7rem", color: "var(--ink-soft)" }}>Dry run — report changes, write nothing</span>
         </label>
 
         {report && (

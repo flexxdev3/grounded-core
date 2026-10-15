@@ -99,7 +99,7 @@ export function RecordDrawer(props: { typedId: TypedId; onClose: () => void }) {
         <div class="drawer-resize" onPointerDown={startResize} title="Drag to resize" />
         <div class="drawer-head">
           <span class={`type-tag ${data?.sourceType ?? ""}`}>{props.typedId.split(":")[0]}</span>
-          <span class="mono" style={{ flex: 1, color: "rgba(236,230,216,0.5)", fontSize: "0.72rem" }}>
+          <span class="mono" style={{ flex: 1, color: "var(--ink-faint)", fontSize: "0.72rem" }}>
             {props.typedId}
           </span>
           <button class="btn btn-ghost btn-sm" style={{ minHeight: 0, padding: "0.35rem" }} onClick={props.onClose}>
@@ -109,7 +109,7 @@ export function RecordDrawer(props: { typedId: TypedId; onClose: () => void }) {
 
         <div class="drawer-body">
           {loading && <div class="empty">Loading…</div>}
-          {error && <div class="empty" style={{ color: "var(--copper-bright)" }}>{error}</div>}
+          {error && <div class="empty" style={{ color: "var(--copper)" }}>{error}</div>}
           {data && <RecordBody rec={data} />}
         </div>
 
@@ -144,7 +144,7 @@ export function RecordDrawer(props: { typedId: TypedId; onClose: () => void }) {
 
       {editing && data?.sourceType === "fact" && (
         <Modal title="Edit fact" onClose={() => setEditing(false)}>
-          <p class="mono" style={{ fontSize: "0.68rem", color: "rgba(236,230,216,0.5)", margin: "0 0 1rem" }}>
+          <p class="mono" style={{ fontSize: "0.68rem", color: "var(--ink-faint)", margin: "0 0 1rem" }}>
             Edits <span class="accent">fact:{data.record.id}</span> in place. Recall re-embeds when the text changes.
           </p>
           <FactForm
@@ -163,7 +163,7 @@ function Row(props: { label: string; children: ComponentChildren }) {
   return (
     <div style={{ marginBottom: "1.1rem" }}>
       <div class="field-label">{props.label}</div>
-      <div style={{ color: "#ece6d8", fontSize: "0.92rem", lineHeight: 1.55 }}>{props.children}</div>
+      <div style={{ color: "var(--ink)", fontSize: "0.92rem", lineHeight: 1.55 }}>{props.children}</div>
     </div>
   );
 }

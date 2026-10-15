@@ -1,7 +1,7 @@
 {
   "name": "@grounded/core",
   "version": "0.1.0",
-  "description": "Grounded core — storage/embedding adapters, hybrid recall engine, ingest, config.",
+  "description": "Grounded core \u2014 storage/embedding adapters, hybrid recall engine, ingest, config.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -18,6 +18,10 @@
     "./delivery": {
       "types": "./dist/engine/delivery.d.ts",
       "import": "./dist/engine/delivery.js"
+    },
+    "./install": {
+      "types": "./dist/install/config.d.ts",
+      "import": "./dist/install/config.js"
     }
   },
   "files": [

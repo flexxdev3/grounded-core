@@ -70,3 +70,17 @@ export function useDataVersion(): number {
   }, []);
   return v;
 }
+
+/** Reactive matchMedia — drives the sidebar ↔ nav-rail split. */
+export function useMedia(query: string): boolean {
+  const [match, setMatch] = useState(() =>
+    typeof matchMedia !== "undefined" ? matchMedia(query).matches : true,
+  );
+  useEffect(() => {
+    const mq = matchMedia(query);
+    const l = () => setMatch(mq.matches);
+    mq.addEventListener("change", l);
+    return () => mq.removeEventListener("change", l);
+  }, [query]);
+  return match;
+}

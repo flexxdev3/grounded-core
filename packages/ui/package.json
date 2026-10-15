@@ -1,7 +1,7 @@
 {
   "name": "@grounded/ui",
   "version": "0.1.0",
-  "description": "Grounded console — a small web UI (not a chat app) over the API.",
+  "description": "Grounded console \u2014 a small web UI (not a chat app) over the API.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
@@ -19,10 +19,10 @@
   },
   "dependencies": {
     "@grounded/client": "workspace:*",
-    "preact": "^10.25.0"
+    "preact": "^10.25.0",
+    "@grounded/core": "workspace:*"
   },
   "devDependencies": {
-    "@grounded/core": "workspace:*",
     "@preact/preset-vite": "^2.9.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",

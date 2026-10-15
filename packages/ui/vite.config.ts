@@ -5,7 +5,7 @@ import preact from "@preact/preset-vite";
 // so it must load from a relative base — never an absolute "/" — to stay portable
 // under any mount path. Dev proxies /api and friends to a locally-run grounded-api.
 const API_TARGET = process.env.GROUNDED_API_URL ?? "http://127.0.0.1:7437";
-const API_PATHS = ["/health", "/facts", "/sessions", "/docs", "/recall", "/brief", "/get", "/openapi.json"];
+const API_PATHS = ["/health", "/facts", "/sessions", "/docs", "/recall", "/brief", "/get", "/vision", "/impact", "/addons", "/openapi.json"];
 
 export default defineConfig({
   base: "./",

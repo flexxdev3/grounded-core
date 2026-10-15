@@ -1,8 +1,9 @@
 import { useState } from "preact/hooks";
 import type { Fact, FactInput } from "@grounded/core/contract";
 
-/** Shared add/edit form. Submitting produces a FactInput that the caller
- *  feeds to add() (new) or update() (edit in place). */
+/** Shared add/edit form. The fact and its scope are the gate; everything
+ * else is a lever, folded behind "More". Submitting produces a FactInput
+ * the caller feeds to add() (new) or update() (edit in place). */
 export function FactForm(props: {
   initial?: Fact;
   submitLabel: string;
@@ -17,6 +18,10 @@ export function FactForm(props: {
   const [topicKey, setTopicKey] = useState(i?.topicKey ?? "");
   const [pinned, setPinned] = useState(i?.pinned ?? false);
   const [importance, setImportance] = useState(i?.importance ?? 0);
+  // Editing a fact that already uses the levers keeps them visible.
+  const [more, setMore] = useState(
+    Boolean(i && (i.category || i.detail || i.topicKey || i.pinned || i.importance)),
+  );
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: Event) => {
@@ -50,41 +55,50 @@ export function FactForm(props: {
           onInput={(e) => setFact((e.target as HTMLTextAreaElement).value)}
         />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem" }}>
-        <div>
-          <label class="field-label">Scope</label>
-          <input class="input" value={scope} placeholder="global | project:x | agent:y"
-            onInput={(e) => setScope((e.target as HTMLInputElement).value)} />
-        </div>
-        <div>
-          <label class="field-label">Category</label>
-          <input class="input" value={category} placeholder="commit-rule, homelab…"
-            onInput={(e) => setCategory((e.target as HTMLInputElement).value)} />
-        </div>
-      </div>
       <div>
-        <label class="field-label">Detail (when to apply)</label>
-        <textarea class="textarea" style={{ minHeight: "4rem" }} value={detail}
-          onInput={(e) => setDetail((e.target as HTMLTextAreaElement).value)} />
+        <label class="field-label">Scope</label>
+        <input class="input" value={scope} placeholder="global | project:x | agent:y"
+          onInput={(e) => setScope((e.target as HTMLInputElement).value)} />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", alignItems: "end" }}>
-        <div>
-          <label class="field-label">Topic key (dedupe)</label>
-          <input class="input" value={topicKey} placeholder="commit-no-ai-trailer"
-            onInput={(e) => setTopicKey((e.target as HTMLInputElement).value)} />
-        </div>
-        <div>
-          <label class="field-label">Importance · {importance.toFixed(2)}</label>
-          <input type="range" min="0" max="1" step="0.05" value={importance} style={{ width: "100%" }}
-            onInput={(e) => setImportance(Number((e.target as HTMLInputElement).value))} />
-        </div>
-      </div>
-      <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
-        <input type="checkbox" checked={pinned} onChange={(e) => setPinned((e.target as HTMLInputElement).checked)} />
-        <span class="mono" style={{ fontSize: "0.7rem", letterSpacing: "0.06em", color: "var(--copper-bright)" }}>
-          ★ Pinned — ranks above session lore
-        </span>
-      </label>
+      {!more && (
+        <button type="button" class="more-toggle" onClick={() => setMore(true)}>
+          More — when to apply, category, pin, importance
+        </button>
+      )}
+      {more && (
+        <>
+          <div>
+            <label class="field-label">Detail (when to apply)</label>
+            <textarea class="textarea" style={{ minHeight: "4rem" }} value={detail}
+              onInput={(e) => setDetail((e.target as HTMLTextAreaElement).value)} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem" }}>
+            <div>
+              <label class="field-label">Category</label>
+              <input class="input" value={category} placeholder="commit-rule, homelab…"
+                onInput={(e) => setCategory((e.target as HTMLInputElement).value)} />
+            </div>
+            <div>
+              <label class="field-label">Topic key (dedupe)</label>
+              <input class="input" value={topicKey} placeholder="commit-no-ai-trailer"
+                onInput={(e) => setTopicKey((e.target as HTMLInputElement).value)} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem", alignItems: "center" }}>
+            <div>
+              <label class="field-label">Importance · {importance.toFixed(2)}</label>
+              <input type="range" min="0" max="1" step="0.05" value={importance} style={{ width: "100%" }}
+                onInput={(e) => setImportance(Number((e.target as HTMLInputElement).value))} />
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+              <input type="checkbox" checked={pinned} onChange={(e) => setPinned((e.target as HTMLInputElement).checked)} />
+              <span class="mono" style={{ fontSize: "0.7rem", letterSpacing: "0.06em", color: "var(--copper)" }}>
+                ★ Pinned — ranks above session lore
+              </span>
+            </label>
+          </div>
+        </>
+      )}
       <div style={{ display: "flex", gap: "0.6rem", justifyContent: "flex-end", marginTop: "0.4rem" }}>
         <button type="button" class="btn btn-ghost btn-sm" onClick={props.onCancel}>Cancel</button>
         <button type="submit" class="btn btn-primary btn-sm" disabled={busy}>

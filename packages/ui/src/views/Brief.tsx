@@ -1,13 +1,15 @@
 import { useState, useEffect } from "preact/hooks";
 import type { ComponentChildren } from "preact";
-import type { BriefResult } from "@grounded/core/contract";
+import type { BriefResult, DeliveryMeta } from "@grounded/core/contract";
 import { api } from "../api.js";
 import { useAsync, toast, useDataVersion } from "../hooks.js";
 import { useApp } from "../app.js";
 import { copyText, fmtDate } from "../util.js";
 
+/** Brief — the exact startup context an agent receives here, plus how full
+ * each lane's budget ran. */
 export function BriefView() {
-  const { openRecord, project: ctxProject } = useApp();
+  const { openRecord, project: ctxProject, projects, health } = useApp();
   const version = useDataVersion();
   const [agent, setAgent] = useState("claude");
   const [project, setProject] = useState(ctxProject ?? "");
@@ -33,40 +35,84 @@ export function BriefView() {
     if (data?.text) toast((await copyText(data.text)) ? "Brief copied" : "Copy failed");
   };
 
+  const projectOptions = project && !projects.includes(project) ? [project, ...projects] : projects;
+
   return (
     <div class="view-max">
-      <div class="eyebrow">&gt;_ brief · the working set</div>
-      <h1 class="h-serif" style={{ fontSize: "1.7rem", margin: "0 0 1.2rem" }}>Startup brief</h1>
+      <h1 class="h-serif display">What your agent sees</h1>
+      <p class="lede">The exact brief an agent gets when a session starts here.</p>
 
-      <form onSubmit={run} style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginBottom: "1.4rem" }}>
-        <input class="input" style={{ flex: "1 1 8rem" }} value={agent} placeholder="agent (claude)"
-          onInput={(e) => setAgent((e.target as HTMLInputElement).value)} />
-        <input class="input" style={{ flex: "1 1 8rem" }} value={project} placeholder="project (optional)"
-          onInput={(e) => setProject((e.target as HTMLInputElement).value)} />
-        <button type="submit" class="btn btn-primary btn-sm">Assemble</button>
+      <form onSubmit={run} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: "0.6rem", alignItems: "end", marginBottom: "1.4rem" }}>
+        <div>
+          <label class="field-label">Project</label>
+          <select class="select" value={project} onChange={(e) => setProject((e.target as HTMLSelectElement).value)}>
+            <option value="">— none —</option>
+            {projectOptions.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Agent</label>
+          <input class="input" value={agent} placeholder="claude"
+            onInput={(e) => setAgent((e.target as HTMLInputElement).value)} />
+        </div>
+        <button type="submit" class="btn btn-primary">Assemble</button>
       </form>
 
-      <div class="terminal" style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1.4rem", whiteSpace: "nowrap" }}>
-        <span class="accent">&gt;_</span> <span class="kw">ground brief</span> --agent {pending.agent || "agent"}{pending.project ? ` --project ${pending.project}` : ""}
-        <button class="btn btn-ghost btn-sm" style={{ marginLeft: "auto" }} onClick={copy} disabled={!data?.text}>Copy</button>
-      </div>
-
       {loading && <div class="empty">Assembling…</div>}
-      {error && <div class="empty" style={{ color: "var(--copper-bright)" }}>{error}</div>}
+      {error && <div class="empty" style={{ color: "var(--danger)" }}>{error}</div>}
 
       {data && (
-        <div class="stack" style={{ gap: "1.6rem" }}>
-          {/* The primary artifact: exactly what an agent receives at startup. */}
-          {data.text && (
-            <div>
-              <div class="field-label" style={{ marginBottom: "0.6rem" }}>
-                What the agent receives
+        <div class="stack" style={{ gap: "1.4rem" }}>
+          <section class="card" aria-label="Budget by lane" style={{ display: "flex", flexDirection: "column", gap: "0.8rem" }}>
+            <div class="field-label" style={{ margin: 0 }}>Budget by lane</div>
+            <Lane label="Vision" meta={data.meta.vision} unit="chars"
+              cap={(health?.budget?.vision?.reserveTok ?? 0) * 4 || undefined} />
+            <Lane label="Facts" meta={data.meta.facts} unit="rows" />
+            <Lane label="Sessions" meta={data.meta.sessions} unit="rows" />
+            {(data.droppedItems.length > 0 || data.indexedItems.length > 0) && (
+              <div class="queue-sub" style={{ lineHeight: 1.6 }}>
+                {data.droppedItems.length > 0 && (
+                  <>
+                    Did not fit:{" "}
+                    {data.droppedItems.slice(0, 8).map((id, i) => (
+                      <span key={id}>
+                        {i > 0 && ", "}
+                        <button class="link-btn mono" onClick={() => openRecord(id)}>{id}</button>
+                      </span>
+                    ))}
+                    {data.droppedItems.length > 8 && ` and ${data.droppedItems.length - 8} more`}
+                    .{" "}
+                  </>
+                )}
+                {data.indexedItems.length > 0 && (
+                  <>
+                    Compressed to one line:{" "}
+                    {data.indexedItems.slice(0, 8).map((id, i) => (
+                      <span key={id}>
+                        {i > 0 && ", "}
+                        <button class="link-btn mono" onClick={() => openRecord(id)}>{id}</button>
+                      </span>
+                    ))}
+                    {data.indexedItems.length > 8 && ` and ${data.indexedItems.length - 8} more`}
+                    .
+                  </>
+                )}
               </div>
-              <pre class="brief-pre">{data.text}</pre>
-            </div>
+            )}
+          </section>
+
+          {data.text && (
+            <section aria-label="Startup payload" class="term-wrap">
+              <div class="term-head">
+                <span class="mono">startup payload · {new Blob([data.text]).size.toLocaleString()} bytes</span>
+                <button class="btn btn-ghost btn-sm term-copy" onClick={copy}>Copy</button>
+              </div>
+              <pre class="term-block">{data.text}</pre>
+            </section>
           )}
 
-          {/* Clickable breakdown, ordered to mirror the brief: sessions → facts → docs. */}
           <Section title={`Most recent work · ${data.recentSessions.length}`}>
             {data.recentSessions.length === 0 && <Muted>No recent sessions.</Muted>}
             {data.recentSessions.map((s) => (
@@ -77,7 +123,7 @@ export function BriefView() {
             ))}
           </Section>
 
-          <Section title={`Dynamic facts · ${data.facts.length}`}>
+          <Section title={`Facts in scope · ${data.facts.length}`}>
             {data.facts.length === 0 && <Muted>No facts in scope.</Muted>}
             {data.facts.map((f) => (
               <div key={f.id} class="row" onClick={() => openRecord(`fact:${f.id}`)}>
@@ -104,6 +150,28 @@ export function BriefView() {
   );
 }
 
+function Lane({ label, meta, unit, cap }: { label: string; meta: DeliveryMeta; unit: "rows" | "chars"; cap?: number }) {
+  const chars = meta.chars;
+  const used = unit === "chars" ? (chars?.returned ?? 0) : meta.returned;
+  const avail = unit === "chars" ? Math.max(chars?.available ?? 0, cap ?? 0) : meta.available;
+  const pct = avail > 0 ? Math.min(100, Math.round((used / avail) * 100)) : 0;
+  const tight = meta.truncated;
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem", marginBottom: "0.3rem" }}>
+        <span>{label}</span>
+        <span class="mono" style={{ fontSize: "0.72rem", color: tight ? "var(--warn)" : "var(--ink-faint)" }}>
+          {used.toLocaleString()} / {avail.toLocaleString()} {unit}
+          {tight ? " · full" : ""}
+        </span>
+      </div>
+      <div class="lane-bar">
+        <span style={{ width: `${pct}%`, background: tight ? "var(--warn)" : "var(--sage)" }} />
+      </div>
+    </div>
+  );
+}
+
 function Section({ title, children }: { title: string; children: ComponentChildren }) {
   return (
     <div>
@@ -113,5 +181,5 @@ function Section({ title, children }: { title: string; children: ComponentChildr
   );
 }
 function Muted({ children }: { children: ComponentChildren }) {
-  return <div class="mono" style={{ fontSize: "0.75rem", color: "rgba(236,230,216,0.4)" }}>{children}</div>;
+  return <div class="mono" style={{ fontSize: "0.75rem", color: "var(--ink-faint)" }}>{children}</div>;
 }

@@ -77,7 +77,7 @@ function VisionCard(props: {
       <div style={{ display: "flex", alignItems: "center", marginBottom: "0.8rem" }}>
         <div style={{ flex: 1 }}>
           <h2 class="h-serif" style={{ margin: 0, fontSize: "1.25rem" }}>{props.title}</h2>
-          <span class="mono" style={{ fontSize: "0.68rem", color: "var(--paper-faint)" }}>
+          <span class="mono" style={{ fontSize: "0.68rem", color: "var(--ink-faint)" }}>
             {props.scope}
             {props.active ? ` · updated ${props.active.updatedAt.slice(0, 10)}` : ""}
           </span>
@@ -94,11 +94,11 @@ function VisionCard(props: {
               Summary · injected at every SessionStart
             </div>
             {props.active.summary ? (
-              <div class="mono" style={{ fontSize: "0.8rem", color: "#ece6d8", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+              <div class="mono" style={{ fontSize: "0.8rem", color: "var(--ink)", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
                 {props.active.summary}
               </div>
             ) : (
-              <div class="mono" style={{ fontSize: "0.72rem", color: "var(--paper-faint)" }}>
+              <div class="mono" style={{ fontSize: "0.72rem", color: "var(--ink-faint)" }}>
                 No summary set — the brief falls back to a truncated slice of the details below.
               </div>
             )}
@@ -130,7 +130,7 @@ function VisionCard(props: {
           <div style={{ marginBottom: "1rem" }}>
             <label class="field-label" style={{ display: "flex", alignItems: "center" }}>
               <span style={{ flex: 1 }}>Summary — terse bullets, injected into every SessionStart</span>
-              <span class="mono" style={{ fontSize: "0.66rem", color: overBudget ? "var(--copper-bright)" : "var(--paper-faint)" }}>
+              <span class="mono" style={{ fontSize: "0.66rem", color: overBudget ? "var(--copper)" : "var(--ink-faint)" }}>
                 {summaryLen} / ~{SUMMARY_RESERVE_CHARS} chars ({SUMMARY_RESERVE_TOK} tok budget)
               </span>
             </label>
@@ -141,14 +141,14 @@ function VisionCard(props: {
               placeholder={"- what this is\n- where it's going\n- what not to do"}
               onInput={(e) => setSummaryDraft((e.target as HTMLTextAreaElement).value)}
             />
-            <p class="mono" style={{ fontSize: "0.66rem", color: "var(--paper-faint)", margin: "0.4rem 0 0" }}>
+            <p class="mono" style={{ fontSize: "0.66rem", color: "var(--ink-faint)", margin: "0.4rem 0 0" }}>
               Optional — blank falls back to a truncated slice of the details. Scarce and budgeted: keep it to bullets, not prose.
             </p>
           </div>
           <div>
             <label class="field-label" style={{ display: "flex", alignItems: "center" }}>
               <span style={{ flex: 1 }}>Details — narrative markdown, never recalled and never injected</span>
-              <span class="mono" style={{ fontSize: "0.66rem", color: detailsOverCap ? "var(--copper-bright)" : "var(--paper-faint)" }}>
+              <span class="mono" style={{ fontSize: "0.66rem", color: detailsOverCap ? "var(--copper)" : "var(--ink-faint)" }}>
                 {detailsLen} / {DETAILS_CAP_CHARS} chars{detailsOverCap ? " — over cap, save will fail" : ""}
               </span>
             </label>
@@ -184,17 +184,13 @@ export function VisionView() {
   const proj = projScope ? byScope(projScope) : null;
 
   return (
-    <div class="view-max">
-      <div style={{ marginBottom: "1.1rem" }}>
-        <div class="eyebrow">&gt;_ vision · the direction</div>
-        <h1 class="h-serif" style={{ fontSize: "1.7rem", margin: 0 }}>Vision</h1>
-        <p style={{ color: "var(--paper-faint)", margin: "0.4rem 0 0", fontSize: "0.85rem" }}>
-          What the work is for. Injected into every brief — one active record per scope, edited in place.
-        </p>
-      </div>
+    <div>
+      <p style={{ color: "var(--ink-soft)", margin: "0 0 1.1rem", fontSize: "0.88rem", lineHeight: 1.5 }}>
+        What the work is for. Injected into every brief — one active record per scope, edited in place.
+      </p>
 
       {loading && <div class="empty">Loading vision…</div>}
-      {error && <div class="empty" style={{ color: "var(--copper-bright)" }}>{error}</div>}
+      {error && <div class="empty" style={{ color: "var(--copper)" }}>{error}</div>}
 
       {!loading && !error && (
         <>
