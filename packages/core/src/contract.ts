@@ -308,7 +308,7 @@ export interface EmbeddingProvider {
 // ---------------------------------------------------------------------------
 
 export type StorageAdapter = "sqlite" | "postgres";
-export type EmbeddingProviderName = "ollama" | "openai" | "none";
+export type EmbeddingProviderName = "ollama" | "openai" | "local" | "none";
 
 export interface GroundedConfig {
   /** cabinet home, e.g. ~/.grounded. */
@@ -333,6 +333,12 @@ export interface GroundedConfig {
      * model never takes GPU memory; "auto" (default) lets ollama place it.
      */
     device?: "auto" | "cpu";
+    /** local only: a directory holding the model files; skips the download. */
+    modelPath?: string;
+    /** local only: the ONNX file inside the model repo. Default `onnx/model_fp16.onnx`. */
+    modelFile?: string;
+    /** local only: CPU threads for inference. Default half the cores. */
+    threads?: number;
   };
   recall: {
     /** Reciprocal Rank Fusion constant. Default 60. */

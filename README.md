@@ -84,7 +84,7 @@ its source and id, so you can always chase a claim back to where it came from.
 
 Config lives at `~/.grounded/config.toml`. The common knobs also work as environment variables, no
 file edit needed: `GROUNDED_HOME`, `GROUNDED_API_PORT`, `GROUNDED_API_TOKEN`, `GROUNDED_EMBED_PROVIDER`,
-`GROUNDED_EMBED_BASEURL`, `GROUNDED_EMBED_MODEL`, `GROUNDED_EMBED_DEVICE` (`cpu` keeps ollama off the GPU).
+`GROUNDED_EMBED_BASEURL`, `GROUNDED_EMBED_MODEL`, `GROUNDED_EMBED_DEVICE` (`cpu` keeps ollama off the GPU). `GROUNDED_EMBED_PROVIDER=local` embeds in-process on the CPU with no ollama (nomic-embed-text-v1.5, downloaded once into the cabinet).
 
 ## Documentation
 
