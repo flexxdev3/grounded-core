@@ -102,7 +102,13 @@ export function createLocalProvider(cfg: GroundedConfig): EmbeddingProvider {
     const read = (f: string) => JSON.parse(readFileSync(join(dir, f), "utf8"));
     const tokenizer = new Tokenizer(read("tokenizer.json"), read("tokenizer_config.json"));
     const path = join(dir, modelFile);
-    const cpuOpts = { intraOpNumThreads: threads, interOpNumThreads: 1, graphOptimizationLevel: "all" } as const;
+    // logSeverityLevel 3 = errors only: ORT warns about routine CPU placement of shape ops.
+    const cpuOpts = {
+      intraOpNumThreads: threads,
+      interOpNumThreads: 1,
+      graphOptimizationLevel: "all",
+      logSeverityLevel: 3,
+    } as const;
     let session: import("onnxruntime-node").InferenceSession | undefined;
     let onGpu = false;
     if (device !== "cpu" && gpuEp) {
