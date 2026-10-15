@@ -660,3 +660,58 @@ describe("healthPoll", () => {
     await expect(healthPoll(1, 10)).resolves.toBe(false);
   }, 20_000);
 });
+
+describe("windows-task", () => {
+  const realPlatform = process.platform;
+  const API = "C:/g/api.mjs";
+  const WHOAMI_CSV = `"vivobook\\vivo","S-1-5-21-9-8-7-1001"`;
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    process.env.GROUNDED_API_BIN = API;
+    existing.add(API);
+    execOut = (cmd) => (cmd.endsWith("whoami.exe") ? WHOAMI_CSV : "");
+  });
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: realPlatform });
+  });
+
+  it("registers an S4U task from the rendered XML, then runs it", async () => {
+    const svc = await loadService();
+    const logon = await svc.materializeWindowsTask({ home: CAB, port: 7437 });
+    expect(logon).toBe("S4U");
+    const xml = join(CAB, "service", "grounded-task.xml");
+    expect(argvOf("schtasks")).toEqual([
+      ["/Create", "/TN", "Grounded", "/XML", xml, "/F"],
+      ["/Run", "/TN", "Grounded"],
+    ]);
+  });
+
+  it("falls back to a logon-session task when S4U registration is refused", async () => {
+    let creates = 0;
+    spawnExit = (cmd, args) => (cmd === "schtasks" && args[0] === "/Create" && creates++ === 0 ? 1 : 0);
+    const svc = await loadService();
+    expect(await svc.materializeWindowsTask({ home: CAB })).toBe("InteractiveToken");
+    expect(argvOf("schtasks").filter((a) => a[0] === "/Create")).toHaveLength(2);
+  });
+
+  it("fails before registering anything when no api entry point exists", async () => {
+    existing.delete(API);
+    const svc = await loadService();
+    await expect(svc.materializeWindowsTask({ home: CAB })).rejects.toThrow(/GROUNDED_API_BIN/);
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it("start / stop / uninstall drive schtasks", async () => {
+    const svc = await loadService();
+    await svc.startService("windows-task", CAB);
+    await svc.stopService("windows-task", CAB);
+    await svc.uninstallService("windows-task", CAB);
+    expect(argvOf("schtasks")).toEqual([
+      ["/Run", "/TN", "Grounded"],
+      ["/End", "/TN", "Grounded"],
+      ["/End", "/TN", "Grounded"],
+      ["/Delete", "/TN", "Grounded", "/F"],
+    ]);
+  });
+});

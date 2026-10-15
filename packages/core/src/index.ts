@@ -12,7 +12,7 @@
 export * from "./contract.js";
 
 // Runtime implementation surface (provided by core internals).
-export { loadConfig, defaultConfig, CONFIG_FILENAME } from "./config.js";
+export { loadConfig, defaultConfig, defaultHome, CONFIG_FILENAME } from "./config.js";
 export { openStore } from "./store.js";
 export { createEmbeddingProvider } from "./embedding/index.js";
 
@@ -53,6 +53,7 @@ export {
   probeHealth,
   detectDocker,
   detectSystemd,
+  detectWindowsTask,
   readManifest,
   writeManifest,
   manifestPath,
@@ -77,3 +78,17 @@ export {
   systemdUnitPath,
 } from "./install/unit.js";
 export type { UnitOptions, ServiceScope } from "./install/unit.js";
+
+// Windows backend — Task Scheduler task + supervisor launcher.
+export {
+  WINDOWS_TASK,
+  windowsServicePaths,
+  renderServiceLauncher,
+  renderTaskXml,
+} from "./install/windows.js";
+export type {
+  WindowsLogonType,
+  WindowsServicePaths,
+  LauncherOptions,
+  TaskXmlOptions,
+} from "./install/windows.js";

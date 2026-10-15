@@ -15,6 +15,7 @@ const writeManifest = vi.fn();
 const detectCapabilities = vi.fn();
 const materializeDocker = vi.fn();
 const materializeSystemd = vi.fn();
+const materializeWindowsTask = vi.fn();
 const healthPoll = vi.fn();
 
 let out: string[] = [];
@@ -34,6 +35,7 @@ vi.mock("../util/preflight.js", () => ({ detectCapabilities: () => detectCapabil
 vi.mock("../util/service.js", () => ({
   materializeDocker: (...a: unknown[]) => materializeDocker(...a),
   materializeSystemd: (...a: unknown[]) => materializeSystemd(...a),
+  materializeWindowsTask: (...a: unknown[]) => materializeWindowsTask(...a),
   healthPoll: (...a: unknown[]) => healthPoll(...a),
 }));
 
@@ -61,6 +63,7 @@ function caps(over: Partial<Capabilities> = {}): Capabilities {
   return {
     docker: { present: true, daemon: true, detail: "daemon 27.0" },
     systemd: { present: true, user: true, system: true, detail: "systemd 257" },
+    windows: { taskScheduler: false, detail: "not Windows" },
     node: { version: process.version },
     root: false,
     sudo: true,
@@ -188,6 +191,26 @@ describe("method selection", () => {
   it("--method systemd-system maps to the system scope", async () => {
     await run(["install", "-y", "--method", "systemd-system"]);
     expect(materializeSystemd).toHaveBeenCalledWith("system", expect.anything());
+  });
+
+  it("defaults to the Windows task on Windows, even with a Docker daemon up", async () => {
+    detectCapabilities.mockResolvedValue(caps({ windows: { taskScheduler: true, detail: "Task Scheduler" } }));
+    materializeWindowsTask.mockResolvedValue("S4U");
+    await run(["install", "-y"]);
+    expect(materializeWindowsTask).toHaveBeenCalledWith(expect.objectContaining({ port: 7437 }));
+    expect(materializeDocker).not.toHaveBeenCalled();
+    expect(printed()).toContain("selected Windows scheduled task (default)");
+  });
+
+  it("says so when Windows only allowed a logon-session task", async () => {
+    detectCapabilities.mockResolvedValue(caps({ windows: { taskScheduler: true, detail: "Task Scheduler" } }));
+    materializeWindowsTask.mockResolvedValue("InteractiveToken");
+    await run(["install", "-y"]);
+    expect(printed()).toContain("runs only while you are signed in");
+  });
+
+  it("rejects --method windows-task off Windows, quoting the reason", async () => {
+    await expect(run(["install", "-y", "--method", "windows-task"])).rejects.toThrow(/not Windows/);
   });
 
   it("rejects an unknown --method", async () => {

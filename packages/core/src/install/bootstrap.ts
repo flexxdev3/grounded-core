@@ -10,7 +10,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
-import { defaultConfig, loadConfig, CONFIG_FILENAME } from "../config.js";
+import { defaultConfig, defaultHome, loadConfig, CONFIG_FILENAME } from "../config.js";
+import { decorateWindowsFolder } from "./windows.js";
 import { openStore } from "../store.js";
 import type { GroundedConfig } from "../contract.js";
 
@@ -18,10 +19,15 @@ import type { GroundedConfig } from "../contract.js";
 export const CABINET_DIRS = ["facts", "sessions", "docs", "briefs", "exports", "backups"] as const;
 
 export interface BootstrapOptions {
-  /** Cabinet root. Falls back to GROUNDED_HOME, then ~/.grounded. */
+  /** Cabinet root. Falls back to GROUNDED_HOME, then defaultHome(). */
   home?: string;
   /** Run migrations after writing config (opens + closes a store). Default true. */
   migrate?: boolean;
+  /**
+   * Is the default embedder reachable? Asked only when a FRESH config is about
+   * to be written. Injectable for tests; defaults to a short HTTP probe.
+   */
+  probeEmbedder?: (baseUrl: string) => Promise<boolean>;
 }
 
 export interface BootstrapResult {
@@ -31,11 +37,31 @@ export interface BootstrapResult {
   wroteConfig: boolean;
   /** true if migrations ran (opened the store). */
   migrated: boolean;
+  /**
+   * Set when this call wrote config.toml: the embeddings provider it chose and
+   * why. `none` means the default ollama did not answer, so the cabinet starts
+   * lexical-only instead of failing every write with EMBED_ERROR.
+   */
+  embeddings?: { provider: string; reason: string };
+}
+
+/** GET <ollama>/api/tags with a short timeout — true when ollama answers. */
+export async function probeOllama(baseUrl: string, timeoutMs = 1500): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/tags`, { signal: controller.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Resolve the cabinet root the same way the rest of the engine does. */
 export function resolveHome(home?: string): string {
-  return home ?? process.env.GROUNDED_HOME ?? join(homedir(), ".grounded");
+  return home ?? process.env.GROUNDED_HOME ?? defaultHome();
 }
 
 /** Serialize a config to the TOML we write on first init. */
@@ -107,11 +133,36 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<BootstrapR
   }
   mkdirSync(join(base.home, "logs"), { recursive: true });
   mkdirSync(join(base.home, "mcp"), { recursive: true });
+  // The default Windows cabinet sits beside Documents and Downloads, so it gets
+  // the Grounded icon like they get theirs. A folder the operator chose
+  // (--home / GROUNDED_HOME) is theirs: never decorated.
+  if (process.platform === "win32" && base.home === defaultHome()) {
+    await decorateWindowsFolder(base.home);
+  }
 
   const configPath = join(base.home, CONFIG_FILENAME);
   let wroteConfig = false;
+  let embeddings: BootstrapResult["embeddings"];
   if (!existsSync(configPath)) {
-    writeFileSync(configPath, renderConfigToml(base), "utf8");
+    // The default embedder is ollama on localhost. A fresh cabinet on a box
+    // without it would fail every write with EMBED_ERROR, which breaks
+    // "useful without an LLM". So ask once, here, and start lexical-only when
+    // nothing answers. Never applied to an existing config.toml.
+    const cfg = base;
+    if (cfg.embeddings.provider === "ollama") {
+      const url = cfg.embeddings.baseUrl ?? "http://localhost:11434";
+      const probe = opts.probeEmbedder ?? probeOllama;
+      if (await probe(url)) {
+        embeddings = { provider: "ollama", reason: `ollama answered at ${url}` };
+      } else {
+        cfg.embeddings = { provider: "none" };
+        embeddings = {
+          provider: "none",
+          reason: `no ollama at ${url}: lexical-only recall. Install ollama and set [embeddings] provider = "ollama" to add vectors.`,
+        };
+      }
+    }
+    writeFileSync(configPath, renderConfigToml(cfg), "utf8");
     wroteConfig = true;
   }
 
@@ -127,5 +178,5 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<BootstrapR
     }
   }
 
-  return { home: base.home, configPath, wroteConfig, migrated };
+  return { home: base.home, configPath, wroteConfig, migrated, embeddings };
 }

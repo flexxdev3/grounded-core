@@ -12,11 +12,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_PORT, DOCKER_NAME, DOCKER_LABEL, SYSTEMD_UNIT } from "./detect.js";
+import { defaultHome } from "../config.js";
 
 export type ServiceScope = "user" | "system";
 
 export interface UnitOptions {
-  /** cabinet root mounted/served; defaults to ~/.grounded. */
+  /** cabinet root mounted/served; defaults to defaultHome(). */
   home?: string;
   /** listen port; defaults to 7437. */
   port?: number;
@@ -31,7 +32,7 @@ export interface UnitOptions {
 }
 
 function homeOf(o: UnitOptions): string {
-  return o.home ?? join(homedir(), ".grounded");
+  return o.home ?? defaultHome();
 }
 
 /** Where the unit file is written for a given scope. User units live under the

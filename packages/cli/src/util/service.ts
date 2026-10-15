@@ -4,7 +4,7 @@
  * detection) lives in commands/install.ts and calls these.
  */
 import { spawn, execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync, createReadStream } from "node:fs";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -13,6 +13,12 @@ import {
   renderSystemdUnit,
   renderDockerRunArgs,
   systemdUnitPath,
+  defaultHome,
+  renderServiceLauncher,
+  renderTaskXml,
+  windowsServicePaths,
+  WINDOWS_TASK,
+  type WindowsLogonType,
   probeHealth,
   DOCKER_NAME,
   DEFAULT_PORT,
@@ -94,11 +100,12 @@ export async function resolveApiBin(): Promise<string> {
     throw noApiBinError(`GROUNDED_API_BIN is set to ${override}, but no file exists there`);
   }
 
-  const home = process.env.GROUNDED_HOME || join(homedir(), ".grounded");
+  const home = process.env.GROUNDED_HOME || defaultHome();
   const shipped = join(home, "lib", "current", "lib", "api.mjs");
   if (existsSync(shipped)) return shipped;
 
-  const onPath = (await capture("which", ["grounded-api"]))?.split("\n")[0]?.trim();
+  const finder = process.platform === "win32" ? "where" : "which";
+  const onPath = (await capture(finder, ["grounded-api"]))?.split(/\r?\n/)[0]?.trim();
   if (onPath && existsSync(onPath)) return onPath;
 
   const root = repoCheckoutRoot();
@@ -317,28 +324,35 @@ function writeViaSudo(path: string, content: string): Promise<void> {
 
 // ---- lifecycle ---------------------------------------------------------------
 
-export async function startService(method: InstallMethod): Promise<number> {
+export async function startService(method: InstallMethod, home?: string): Promise<number> {
   if (method === "docker") return stream("docker", ["start", DOCKER_NAME]);
+  if (method === "windows-task") return stream("schtasks", ["/Run", "/TN", WINDOWS_TASK]);
   const scope: ServiceScope = method === "systemd-user" ? "user" : "system";
   const { cmd, prefix } = systemctl(scope);
   return stream(cmd, [...prefix, "start", SYSTEMD_UNIT]);
 }
 
-export async function stopService(method: InstallMethod): Promise<number> {
+export async function stopService(method: InstallMethod, home?: string): Promise<number> {
   if (method === "docker") return stream("docker", ["stop", DOCKER_NAME]);
+  if (method === "windows-task") return stopWindowsTask(home);
   const scope: ServiceScope = method === "systemd-user" ? "user" : "system";
   const { cmd, prefix } = systemctl(scope);
   return stream(cmd, [...prefix, "stop", SYSTEMD_UNIT]);
 }
 
-export async function restartService(method: InstallMethod): Promise<number> {
+export async function restartService(method: InstallMethod, home?: string): Promise<number> {
   if (method === "docker") return stream("docker", ["restart", DOCKER_NAME]);
+  if (method === "windows-task") {
+    await stopWindowsTask(home);
+    return stream("schtasks", ["/Run", "/TN", WINDOWS_TASK]);
+  }
   const scope: ServiceScope = method === "systemd-user" ? "user" : "system";
   const { cmd, prefix } = systemctl(scope);
   return stream(cmd, [...prefix, "restart", SYSTEMD_UNIT]);
 }
 
-export async function logsService(method: InstallMethod, follow: boolean): Promise<number> {
+export async function logsService(method: InstallMethod, follow: boolean, home?: string): Promise<number> {
+  if (method === "windows-task") return tailFile(windowsServicePaths(homeOr(home)).log, follow);
   const tail = follow ? ["-f"] : ["-n", "200"];
   if (method === "docker") {
     return stream("docker", ["logs", ...(follow ? ["-f"] : ["--tail", "200"]), DOCKER_NAME]);
@@ -351,9 +365,17 @@ export async function logsService(method: InstallMethod, follow: boolean): Promi
 }
 
 /** Tear down the chosen backend. Leaves the cabinet (data) untouched. */
-export async function uninstallService(method: InstallMethod): Promise<void> {
+export async function uninstallService(method: InstallMethod, home?: string): Promise<void> {
   if (method === "docker") {
     await stream("docker", ["rm", "-f", DOCKER_NAME]);
+    return;
+  }
+  if (method === "windows-task") {
+    await stopWindowsTask(home);
+    await stream("schtasks", ["/Delete", "/TN", WINDOWS_TASK, "/F"]);
+    const p = windowsServicePaths(homeOr(home));
+    await rm(p.launcher, { force: true });
+    await rm(p.xml, { force: true });
     return;
   }
   const scope: ServiceScope = method === "systemd-user" ? "user" : "system";
@@ -366,6 +388,112 @@ export async function uninstallService(method: InstallMethod): Promise<void> {
     await stream("sudo", ["rm", "-f", path]);
   }
   await stream(cmd, [...prefix, "daemon-reload"]);
+}
+
+// ---- windows task ------------------------------------------------------------
+
+function homeOr(home?: string): string {
+  return home ?? process.env.GROUNDED_HOME ?? defaultHome();
+}
+
+/** The current user's SID, from the system whoami — never a bare `whoami`,
+ *  which resolves to Git Bash's coreutils build when that is first on PATH. */
+async function currentUserSid(): Promise<string> {
+  const whoami = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "whoami.exe");
+  const out = await capture(whoami, ["/user", "/fo", "csv", "/nh"]);
+  const sid = out?.match(/"(S-1-[0-9-]+)"/)?.[1];
+  if (!sid) throw new Error(`could not read the current user's SID from ${whoami} /user`);
+  return sid;
+}
+
+/** schtasks reads the XML its declaration names: UTF-16LE with a BOM. */
+function utf16le(text: string): Buffer {
+  return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
+}
+
+/**
+ * Windows: write the supervisor + task XML, register the task, start it.
+ *
+ * S4U first: session 0, no window, survives sign-out. If the account may not
+ * register S4U tasks, fall back to a logon-session task (runs only while the
+ * user is signed in). Resolution runs first so a missing runtime fails before
+ * anything is registered — the same order as materializeSystemd().
+ */
+export async function materializeWindowsTask(o: MaterializeOptions): Promise<WindowsLogonType> {
+  const home = homeOr(o.home);
+  const apiBin = await resolveApiBin();
+  const p = windowsServicePaths(home);
+  const sid = await currentUserSid();
+
+  await mkdir(p.dir, { recursive: true });
+  await mkdir(dirname(p.log), { recursive: true });
+  await writeFile(
+    p.launcher,
+    renderServiceLauncher({ home, apiBin, port: o.port, host: o.host, token: o.token }),
+    "utf8",
+  );
+
+  let registered: WindowsLogonType | null = null;
+  for (const logonType of ["S4U", "InteractiveToken"] as const) {
+    const xml = renderTaskXml({ sid, logonType, nodePath: process.execPath, launcherPath: p.launcher, workDir: home });
+    await writeFile(p.xml, utf16le(xml));
+    const code = await stream("schtasks", ["/Create", "/TN", WINDOWS_TASK, "/XML", p.xml, "/F"]);
+    if (code === 0) {
+      registered = logonType;
+      break;
+    }
+  }
+  if (!registered) throw new Error(`schtasks /Create failed for both S4U and logon-session tasks`);
+
+  const run = await stream("schtasks", ["/Run", "/TN", WINDOWS_TASK]);
+  if (run !== 0) throw new Error(`schtasks /Run failed (exit ${run})`);
+  return registered;
+}
+
+/** End the task, then kill the pids the supervisor recorded: under the
+ *  logon-session fallback `/End` kills only the conhost wrapper. */
+async function stopWindowsTask(home?: string): Promise<number> {
+  const code = await stream("schtasks", ["/End", "/TN", WINDOWS_TASK]);
+  const pidFile = windowsServicePaths(homeOr(home)).pid;
+  if (existsSync(pidFile)) {
+    try {
+      const pids = JSON.parse(readFileSync(pidFile, "utf8")) as { supervisor?: number; api?: number };
+      for (const pid of [pids.supervisor, pids.api]) {
+        if (!pid) continue;
+        try {
+          process.kill(pid);
+        } catch {
+          /* already gone */
+        }
+      }
+    } catch {
+      /* unreadable pid file: /End was the best we could do */
+    }
+    await rm(pidFile, { force: true });
+  }
+  return code;
+}
+
+/** `tail -n 200 [-f]` for a plain log file, without depending on a tail binary. */
+async function tailFile(path: string, follow: boolean): Promise<number> {
+  if (!existsSync(path)) {
+    process.stderr.write(`no log yet at ${path}\n`);
+    return 1;
+  }
+  const lines = readFileSync(path, "utf8").split(/\r?\n/);
+  process.stdout.write(lines.slice(-201).join("\n"));
+  if (!follow) return 0;
+  let offset = statSync(path).size;
+  return new Promise<number>(() => {
+    setInterval(() => {
+      const size = statSync(path).size;
+      if (size < offset) offset = 0; // rotated
+      if (size > offset) {
+        createReadStream(path, { start: offset, end: size - 1 }).pipe(process.stdout, { end: false });
+        offset = size;
+      }
+    }, 1000);
+  });
 }
 
 // ---- health poll -------------------------------------------------------------

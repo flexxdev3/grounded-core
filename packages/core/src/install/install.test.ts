@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { bootstrap, CABINET_DIRS } from "./bootstrap.js";
+import { defaultHome } from "../config.js";
 import {
   readManifest,
   writeManifest,
@@ -24,7 +25,7 @@ afterEach(() => {
 
 describe("bootstrap", () => {
   it("creates the cabinet tree and writes config once (idempotent)", async () => {
-    const first = await bootstrap({ home, migrate: false });
+    const first = await bootstrap({ home, migrate: false, probeEmbedder: async () => true });
     expect(first.home).toBe(home);
     expect(first.wroteConfig).toBe(true);
     expect(existsSync(first.configPath)).toBe(true);
@@ -39,15 +40,60 @@ describe("bootstrap", () => {
     expect(toml).not.toContain(join(home, "cabinet", "grounded.db"));
 
     // second run must not clobber the existing config
-    const second = await bootstrap({ home, migrate: false });
+    const second = await bootstrap({ home, migrate: false, probeEmbedder: async () => true });
     expect(second.wroteConfig).toBe(false);
   });
 
   it("runs migrations when migrate is not disabled", async () => {
-    const res = await bootstrap({ home });
+    const res = await bootstrap({ home, probeEmbedder: async () => false });
     expect(res.migrated).toBe(true);
     // the sqlite cabinet db should now exist
     expect(existsSync(join(home, "cabinet", "grounded.db"))).toBe(true);
+  });
+});
+
+describe("bootstrap embeddings default", () => {
+  it("keeps ollama when it answers", async () => {
+    const res = await bootstrap({ home, migrate: false, probeEmbedder: async () => true });
+    expect(res.embeddings?.provider).toBe("ollama");
+    expect(readFileSync(res.configPath, "utf8")).toContain('provider = "ollama"');
+  });
+
+  it("starts lexical-only when no ollama answers, and says why", async () => {
+    const res = await bootstrap({ home, migrate: false, probeEmbedder: async () => false });
+    expect(res.embeddings?.provider).toBe("none");
+    expect(res.embeddings?.reason).toMatch(/no ollama at http:\/\/localhost:11434/);
+    const toml = readFileSync(res.configPath, "utf8");
+    expect(toml).toMatch(/\[embeddings\]\nprovider = "none"\n/);
+    expect(toml).not.toContain("nomic-embed-text");
+  });
+
+  it("never probes or rewrites an existing config", async () => {
+    await bootstrap({ home, migrate: false, probeEmbedder: async () => true });
+    let probed = false;
+    const res = await bootstrap({ home, migrate: false, probeEmbedder: async () => ((probed = true), false) });
+    expect(probed).toBe(false);
+    expect(res.embeddings).toBeUndefined();
+    expect(readFileSync(res.configPath, "utf8")).toContain('provider = "ollama"');
+  });
+});
+
+describe("defaultHome", () => {
+  it("is ~/.grounded off Windows", () => {
+    expect(defaultHome("linux", home)).toBe(join(home, ".grounded"));
+    expect(defaultHome("darwin", home)).toBe(join(home, ".grounded"));
+  });
+
+  it("is ~/Grounded on Windows", () => {
+    expect(defaultHome("win32", home)).toBe(join(home, "Grounded"));
+  });
+
+  it("keeps an existing ~/.grounded cabinet on Windows so an upgrade strands nothing", () => {
+    mkdirSync(join(home, ".grounded"));
+    writeFileSync(join(home, ".grounded", "config.toml"), "[storage]\n");
+    expect(defaultHome("win32", home)).toBe(join(home, ".grounded"));
+    mkdirSync(join(home, "Grounded"));
+    expect(defaultHome("win32", home)).toBe(join(home, "Grounded"));
   });
 });
 

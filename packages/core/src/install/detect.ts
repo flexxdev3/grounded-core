@@ -1,15 +1,16 @@
 /**
  * Instance detection — the anti-double-install guard.
  *
- * A Grounded instance can be stood up three ways (Docker, systemd --user,
- * systemd --system) and even as a bare `grounded-api` process. Before the
+ * A Grounded instance can be stood up four ways (Docker, systemd --user,
+ * systemd --system, a Windows scheduled task) and even as a bare
+ * `grounded-api` process. Before the
  * installer materializes anything it must know whether one is *already*
  * serving — otherwise two writers race on the same sqlite file (corruption)
  * and two listeners fight over the port.
  *
  * Detection is layered and every probe is best-effort (never throws):
  *   1. Health probe on the port  → authoritative that *something* Grounded serves.
- *   2. Docker label / systemctl is-active → *which* method, so we can manage it.
+ *   2. Docker label / systemctl is-active / schtasks → *which* method, so we can manage it.
  *   3. install.json manifest      → the recorded source of truth for re-runs.
  */
 import { homedir } from "node:os";
@@ -25,7 +26,10 @@ export const DOCKER_LABEL = "com.grounded.managed";
 /** systemd unit name for both user and system scope. */
 export const SYSTEMD_UNIT = "grounded.service";
 
-export type InstallMethod = "docker" | "systemd-user" | "systemd-system";
+/** Task Scheduler task name — mirrors WINDOWS_TASK in ./windows.ts (kept here to avoid an import cycle). */
+const WINDOWS_TASK_NAME = "Grounded";
+
+export type InstallMethod = "docker" | "systemd-user" | "systemd-system" | "windows-task";
 
 /** ~/.grounded/install.json — the recorded source of truth for how it was installed. */
 export interface InstallManifest {
@@ -48,7 +52,7 @@ export interface HealthProbe {
 }
 
 export interface Evidence {
-  kind: "health" | "docker" | "systemd-user" | "systemd-system" | "manifest";
+  kind: "health" | "docker" | "systemd-user" | "systemd-system" | "windows-task" | "manifest";
   detail: string;
 }
 
@@ -157,6 +161,7 @@ export async function detectDocker(): Promise<{ id: string; status: string } | n
 
 /** `systemctl [--user] is-active grounded` → active/inactive/failed/unknown. */
 export async function detectSystemd(scope: "user" | "system"): Promise<string | null> {
+  if (process.platform === "win32") return null;
   const args = scope === "user" ? ["--user", "is-active", SYSTEMD_UNIT] : ["is-active", SYSTEMD_UNIT];
   // is-active exits non-zero when inactive, so read stdout regardless of exit code.
   const out = await new Promise<string | null>((resolve) => {
@@ -166,6 +171,15 @@ export async function detectSystemd(scope: "user" | "system"): Promise<string | 
     });
   });
   return out; // "active" when running; "inactive"/"failed"/"unknown"/null otherwise
+}
+
+/** `schtasks /Query` → "Running" / "Ready" / "Disabled", or null when there is no task. */
+export async function detectWindowsTask(): Promise<string | null> {
+  if (process.platform !== "win32") return null;
+  const out = await run("schtasks", ["/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "CSV", "/NH"]);
+  if (!out) return null;
+  const line = out.trim().split(/\r?\n/).find((l) => l.includes(WINDOWS_TASK_NAME));
+  return line?.match(/"([^"]*)"/g)?.[2]?.slice(1, -1) ?? null;
 }
 
 // ---- aggregate ---------------------------------------------------------------
@@ -180,17 +194,19 @@ export async function detect(opts: { home?: string; port?: number } = {}): Promi
   const port = opts.port ?? manifest?.port ?? DEFAULT_PORT;
   const evidence: Evidence[] = [];
 
-  const [health, docker, sysUser, sysSystem] = await Promise.all([
+  const [health, docker, sysUser, sysSystem, winTask] = await Promise.all([
     probeHealth(port),
     detectDocker(),
     detectSystemd("user"),
     detectSystemd("system"),
+    detectWindowsTask(),
   ]);
 
   if (health) evidence.push({ kind: "health", detail: `healthy on :${port} (${health.adapter})` });
   if (docker) evidence.push({ kind: "docker", detail: `container ${docker.id} ${docker.status}` });
   if (sysUser === "active") evidence.push({ kind: "systemd-user", detail: `${SYSTEMD_UNIT} active (--user)` });
   if (sysSystem === "active") evidence.push({ kind: "systemd-system", detail: `${SYSTEMD_UNIT} active (system)` });
+  if (winTask) evidence.push({ kind: "windows-task", detail: `task ${WINDOWS_TASK_NAME} ${winTask}` });
   if (manifest) evidence.push({ kind: "manifest", detail: `install.json: ${manifest.method}` });
 
   let method: DetectResult["method"] = manifest?.method;
@@ -198,6 +214,7 @@ export async function detect(opts: { home?: string; port?: number } = {}): Promi
     if (docker) method = "docker";
     else if (sysUser === "active") method = "systemd-user";
     else if (sysSystem === "active") method = "systemd-system";
+    else if (winTask === "Running") method = "windows-task";
     else if (health) method = "process"; // serving, but not via a backend we recognize
   }
 

@@ -5,7 +5,7 @@ import { c, line, printJson, fail } from "../util/output.js";
 
 export function initCommand(global: () => GlobalOpts): Command {
   return new Command("init")
-    .description("create the cabinet (~/.grounded), write default config, run migrations")
+    .description("create the cabinet (~/.grounded, or ~\\Grounded on Windows), write default config, run migrations")
     .action(async () => {
       const g = global();
       const home = g.home ?? process.env.GROUNDED_HOME;
@@ -26,5 +26,8 @@ export function initCommand(global: () => GlobalOpts): Command {
             : `config exists: ${result.configPath}`,
         ),
       );
+      if (result.embeddings) {
+        line(c.dim(`embeddings: ${result.embeddings.provider} (${result.embeddings.reason})`));
+      }
     });
 }

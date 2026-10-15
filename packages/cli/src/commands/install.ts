@@ -13,7 +13,7 @@ import type { GlobalOpts } from "../util/global.js";
 import { c, line, header, field, fail } from "../util/output.js";
 import { select, confirm, interactive, type Choice } from "../util/prompt.js";
 import { detectCapabilities } from "../util/preflight.js";
-import { materializeDocker, materializeSystemd, healthPoll } from "../util/service.js";
+import { materializeDocker, materializeSystemd, materializeWindowsTask, healthPoll } from "../util/service.js";
 
 interface InstallOpts {
   port?: string;
@@ -28,13 +28,16 @@ const METHOD_LABEL: Record<InstallMethod, string> = {
   docker: "Docker container",
   "systemd-user": "systemd service (user)",
   "systemd-system": "systemd service (system)",
+  "windows-task": "Windows scheduled task",
 };
+
+const METHODS = Object.keys(METHOD_LABEL) as InstallMethod[];
 
 export function installCommand(global: () => GlobalOpts): Command {
   return new Command("install")
-    .description("stand Grounded up as a persistent service (Docker or systemd)")
+    .description("stand Grounded up as a persistent service (Docker, systemd or a Windows task)")
     .option("--port <n>", `listen port (default ${DEFAULT_PORT})`)
-    .option("--method <m>", "skip the menu: docker | systemd-user | systemd-system")
+    .option("--method <m>", `skip the menu: ${METHODS.join(" | ")}`)
     .option("--image <ref>", "docker only: image ref to run (pulled if remote; else built from source)")
     .option("--token <tok>", "require this bearer token for the API")
     .option("-y, --yes", "accept defaults, no prompts")
@@ -80,27 +83,36 @@ export function installCommand(global: () => GlobalOpts): Command {
           hint: "always-on, needs root/sudo",
           disabled: caps.systemd.system ? undefined : "needs root or passwordless sudo",
         },
+        {
+          value: "windows-task",
+          label: METHOD_LABEL["windows-task"],
+          hint: "starts at logon, runs as you, no admin",
+          disabled: caps.windows.taskScheduler ? undefined : caps.windows.detail,
+        },
       ];
       const available = choices.filter((ch) => !ch.disabled);
       if (available.length === 0) {
         return fail(
-          "no install method available: Docker daemon not reachable and systemd not usable. " +
-            "Start Docker, or install on a systemd host.",
+          "no install method available: Docker daemon not reachable, and neither systemd nor " +
+            "Windows Task Scheduler is usable. Start Docker, or install on a systemd or Windows host.",
         );
       }
 
-      // Default: Docker when its daemon is up, else the first available method.
-      const rawDefaultIdx = caps.docker.daemon
-        ? choices.findIndex((ch) => ch.value === "docker")
-        : choices.findIndex((ch) => !ch.disabled);
+      // Default: the native task on Windows (no Docker needed), else Docker when
+      // its daemon is up, else the first available method.
+      const rawDefaultIdx = caps.windows.taskScheduler
+        ? choices.findIndex((ch) => ch.value === "windows-task")
+        : caps.docker.daemon
+          ? choices.findIndex((ch) => ch.value === "docker")
+          : choices.findIndex((ch) => !ch.disabled);
       const defaultIdx = rawDefaultIdx >= 0 ? rawDefaultIdx : choices.indexOf(available[0]!);
       const defaultChoice = choices[defaultIdx] ?? available[0]!;
 
       // 3. Choose method (flag > menu > single-available auto).
       let method: InstallMethod;
       if (opts.method) {
-        if (!["docker", "systemd-user", "systemd-system"].includes(opts.method)) {
-          return fail(`--method must be docker | systemd-user | systemd-system`);
+        if (!(METHODS as string[]).includes(opts.method)) {
+          return fail(`--method must be ${METHODS.join(" | ")}`);
         }
         method = opts.method as InstallMethod;
         const chosen = choices.find((ch) => ch.value === method);
@@ -145,6 +157,7 @@ export function installCommand(global: () => GlobalOpts): Command {
       try {
         const b = await bootstrap({ home });
         line(c.dim(`  ${b.wroteConfig ? "wrote" : "found"} ${b.configPath}`));
+        if (b.embeddings) line(c.dim(`  embeddings: ${b.embeddings.provider} (${b.embeddings.reason})`));
       } catch (err) {
         return fail(`bootstrap failed: ${(err as Error).message}`);
       }
@@ -154,6 +167,11 @@ export function installCommand(global: () => GlobalOpts): Command {
       try {
         if (method === "docker") {
           await materializeDocker({ home, port, token: opts.token, image: opts.image });
+        } else if (method === "windows-task") {
+          const logon = await materializeWindowsTask({ home, port, token: opts.token });
+          if (logon === "InteractiveToken") {
+            line(c.yellow("  registered as a logon-session task: Grounded runs only while you are signed in."));
+          }
         } else {
           const scope = method === "systemd-user" ? "user" : "system";
           await materializeSystemd(scope, { home, port, token: opts.token });

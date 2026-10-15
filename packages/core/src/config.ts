@@ -188,8 +188,27 @@ function reserveFromBudget(budget: Record<BriefLane, LaneBudget>): GroundedConfi
   };
 }
 
+/**
+ * The cabinet root when neither an argument nor GROUNDED_HOME names one.
+ *
+ * - Windows: `%USERPROFILE%\Grounded`, beside Documents and Downloads, where a
+ *   Windows user expects to find their own data. Not under Documents: OneDrive
+ *   backup syncs Documents, and a live SQLite file in a synced folder gets
+ *   locked mid-write and forked into conflict copies. The profile root is never
+ *   synced. A cabinet already at `~\.grounded` keeps being used, so an
+ *   upgrade never strands one.
+ * - Everywhere else: `~/.grounded`, the dotfile convention.
+ */
+export function defaultHome(platform: NodeJS.Platform = process.platform, home: string = homedir()): string {
+  const legacy = join(home, ".grounded");
+  if (platform !== "win32") return legacy;
+  const cabinet = join(home, "Grounded");
+  if (!existsSync(cabinet) && existsSync(join(legacy, CONFIG_FILENAME))) return legacy;
+  return cabinet;
+}
+
 export function defaultConfig(home?: string): GroundedConfig {
-  const resolvedHome = home ?? join(homedir(), ".grounded");
+  const resolvedHome = home ?? defaultHome();
   return {
     home: resolvedHome,
     storage: {
@@ -357,7 +376,7 @@ function reconcileBudget(cfg: GroundedConfig, patch: DeepPartial<GroundedConfig>
 
 export function loadConfig(overrides?: Partial<GroundedConfig>): GroundedConfig {
   const home =
-    overrides?.home ?? process.env.GROUNDED_HOME ?? join(homedir(), ".grounded");
+    overrides?.home ?? process.env.GROUNDED_HOME ?? defaultHome();
 
   const patch = deepMerge<DeepPartial<GroundedConfig>>(
     deepMerge<DeepPartial<GroundedConfig>>(readFileLayer(home), envLayer()),

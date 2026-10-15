@@ -19,7 +19,7 @@ import {
   uninstallService,
 } from "../util/service.js";
 
-const MANAGEABLE: InstallMethod[] = ["docker", "systemd-user", "systemd-system"];
+const MANAGEABLE: InstallMethod[] = ["docker", "systemd-user", "systemd-system", "windows-task"];
 
 function isManageable(m: unknown): m is InstallMethod {
   return typeof m === "string" && (MANAGEABLE as string[]).includes(m);
@@ -87,7 +87,7 @@ export function startCommand(global: () => GlobalOpts): Command {
       const g = global();
       const home = resolveHome(g.home ?? process.env.GROUNDED_HOME);
       const method = await resolveMethod(home, DEFAULT_PORT);
-      const code = await startService(method);
+      const code = await startService(method, home);
       if (code !== 0) return fail(`start failed (exit ${code})`);
       line(c.green(`started (${method})`));
     });
@@ -100,7 +100,7 @@ export function stopCommand(global: () => GlobalOpts): Command {
       const g = global();
       const home = resolveHome(g.home ?? process.env.GROUNDED_HOME);
       const method = await resolveMethod(home, DEFAULT_PORT);
-      const code = await stopService(method);
+      const code = await stopService(method, home);
       if (code !== 0) return fail(`stop failed (exit ${code})`);
       line(c.green(`stopped (${method})`));
     });
@@ -113,7 +113,7 @@ export function restartCommand(global: () => GlobalOpts): Command {
       const g = global();
       const home = resolveHome(g.home ?? process.env.GROUNDED_HOME);
       const method = await resolveMethod(home, DEFAULT_PORT);
-      const code = await restartService(method);
+      const code = await restartService(method, home);
       if (code !== 0) return fail(`restart failed (exit ${code})`);
       line(c.green(`restarted (${method})`));
     });
@@ -129,7 +129,7 @@ export function logsCommand(global: () => GlobalOpts): Command {
       const g = global();
       const home = resolveHome(g.home ?? process.env.GROUNDED_HOME);
       const method = await resolveMethod(home, DEFAULT_PORT);
-      await logsService(method, Boolean(opts.follow));
+      await logsService(method, Boolean(opts.follow), home);
     });
 }
 
@@ -138,7 +138,7 @@ export function logsCommand(global: () => GlobalOpts): Command {
 export function uninstallCommand(global: () => GlobalOpts): Command {
   return new Command("uninstall")
     .description("remove the service (keeps the cabinet/data by default)")
-    .option("--purge", "also delete the cabinet (~/.grounded) — destroys all data")
+    .option("--purge", "also delete the cabinet (~/.grounded, or ~\\Grounded on Windows) — destroys all data")
     .option("-y, --yes", "no confirmation prompt")
     .action(async (opts: { purge?: boolean; yes?: boolean }) => {
       const g = global();
@@ -155,7 +155,7 @@ export function uninstallCommand(global: () => GlobalOpts): Command {
       }
 
       try {
-        await uninstallService(method);
+        await uninstallService(method, home);
       } catch (err) {
         return fail(`uninstall failed: ${(err as Error).message}`);
       }

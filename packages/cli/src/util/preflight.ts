@@ -19,6 +19,7 @@ function run(cmd: string, args: string[], timeoutMs = 5000): Promise<{ ok: boole
 export interface Capabilities {
   docker: { present: boolean; daemon: boolean; detail: string };
   systemd: { present: boolean; user: boolean; system: boolean; detail: string };
+  windows: { taskScheduler: boolean; detail: string };
   node: { version: string };
   root: boolean;
   sudo: boolean;
@@ -53,6 +54,13 @@ export async function probeSystemd(root: boolean): Promise<Capabilities["systemd
   };
 }
 
+/** Task Scheduler usable = Windows with schtasks answering. */
+export async function probeWindows(): Promise<Capabilities["windows"]> {
+  if (process.platform !== "win32") return { taskScheduler: false, detail: "not Windows" };
+  const q = await run("schtasks", ["/Query", "/FO", "CSV", "/NH"], 8000);
+  return { taskScheduler: q.ok, detail: q.ok ? "Task Scheduler" : "schtasks not usable" };
+}
+
 /** Passwordless sudo available? (`sudo -n true`) — best-effort, never blocks. */
 export async function probeSudo(): Promise<boolean> {
   const v = await run("sudo", ["-n", "true"], 3000);
@@ -77,11 +85,14 @@ export function portInUse(port: number, host = "127.0.0.1", timeoutMs = 1000): P
 /** Gather all host capabilities in parallel. */
 export async function detectCapabilities(): Promise<Capabilities> {
   const root = typeof process.getuid === "function" ? process.getuid() === 0 : false;
-  const [docker, systemdRaw, sudo] = await Promise.all([
+  const win = process.platform === "win32";
+  const noSystemd = { present: false, user: false, system: false, detail: "not available on Windows" };
+  const [docker, systemdRaw, sudo, windows] = await Promise.all([
     probeDocker(),
-    probeSystemd(root),
-    probeSudo(),
+    win ? Promise.resolve(noSystemd) : probeSystemd(root),
+    win ? Promise.resolve(false) : probeSudo(),
+    probeWindows(),
   ]);
   const systemd = { ...systemdRaw, system: systemdRaw.present && (root || sudo) };
-  return { docker, systemd, node: { version: process.version }, root, sudo };
+  return { docker, systemd, windows, node: { version: process.version }, root, sudo };
 }
