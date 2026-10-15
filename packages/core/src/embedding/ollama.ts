@@ -6,8 +6,8 @@ export function createOllamaProvider(cfg: GroundedConfig): EmbeddingProvider {
   const model = cfg.embeddings.model ?? "nomic-embed-text";
   const dims = cfg.embeddings.dims ?? 768;
   const device = cfg.embeddings.device ?? "auto";
-  if (device !== "auto" && device !== "cpu") {
-    throw new ConfigError(`embeddings.device must be "auto" or "cpu", got ${JSON.stringify(device)}`);
+  if (device !== "auto" && device !== "cpu" && device !== "gpu") {
+    throw new ConfigError(`embeddings.device must be "auto", "cpu" or "gpu", got ${JSON.stringify(device)}`);
   }
   // num_gpu = layers offloaded to the GPU; 0 keeps the whole model in RAM.
   const options = device === "cpu" ? { num_gpu: 0 } : undefined;
@@ -33,6 +33,20 @@ export function createOllamaProvider(cfg: GroundedConfig): EmbeddingProvider {
     return json.embedding;
   }
 
+  /** where ollama has the model loaded right now; undefined when it is not loaded. */
+  async function loadedOn(): Promise<"gpu" | "cpu" | undefined> {
+    try {
+      const res = await fetch(`${baseUrl}/api/ps`);
+      if (!res.ok) return undefined;
+      const { models = [] } = (await res.json()) as { models?: { name: string; size_vram?: number }[] };
+      const m = models.find((x) => x.name === model || x.name === `${model}:latest`);
+      if (!m) return undefined;
+      return (m.size_vram ?? 0) > 0 ? "gpu" : "cpu";
+    } catch {
+      return undefined;
+    }
+  }
+
   return {
     id: `ollama:${model}`,
     dims,
@@ -44,11 +58,12 @@ export function createOllamaProvider(cfg: GroundedConfig): EmbeddingProvider {
       }
       return out;
     },
-    async health(): Promise<{ ok: boolean; detail?: string }> {
+    async health(): Promise<{ ok: boolean; detail?: string; device?: "gpu" | "cpu" }> {
       try {
         const res = await fetch(`${baseUrl}/api/tags`);
         if (!res.ok) return { ok: false, detail: `ollama ${res.status}` };
-        return { ok: true, detail: `ollama @ ${baseUrl}${device === "cpu" ? " (cpu)" : ""}` };
+        const where = device === "cpu" ? "cpu" : await loadedOn();
+        return { ok: true, detail: `ollama @ ${baseUrl}${where ? ` (${where})` : ""}`, device: where };
       } catch (err) {
         return { ok: false, detail: (err as Error).message };
       }

@@ -15,6 +15,7 @@ import {
 } from "./icons.js";
 import { useToastChannel } from "./hooks.js";
 import { RecordDrawer } from "./components/RecordDrawer.js";
+import { CpuNotice } from "./components/CpuNotice.js";
 import { OverviewView } from "./views/Overview.js";
 import { VisionView } from "./views/Vision.js";
 import { FactsView } from "./views/Facts.js";
@@ -223,6 +224,8 @@ export function App() {
               <span class="hint">↵ recall</span>
             </form>
           </header>
+
+          <CpuNotice onDetails={() => navigate("health")} />
 
           <div class="scroll">
             {view === "overview" && <OverviewView onAdapter={setStorageAdapter} />}

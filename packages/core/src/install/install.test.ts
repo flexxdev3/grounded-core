@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { bootstrap, CABINET_DIRS } from "./bootstrap.js";
-import { defaultHome } from "../config.js";
+import { cabinetDir, defaultConfig, defaultHome, visibleRoot } from "../config.js";
 import {
   readManifest,
   writeManifest,
@@ -84,8 +84,21 @@ describe("defaultHome", () => {
     expect(defaultHome("darwin", home)).toBe(join(home, ".grounded"));
   });
 
-  it("is ~/Grounded on Windows", () => {
-    expect(defaultHome("win32", home)).toBe(join(home, "Grounded"));
+  it("is ~/Grounded/.core on Windows, with the data in a visible ~/Grounded/Cabinet", () => {
+    const h = defaultHome("win32", home);
+    expect(h).toBe(join(home, "Grounded", ".core"));
+    expect(cabinetDir(h)).toBe(join(home, "Grounded", "Cabinet"));
+    expect(visibleRoot(h)).toBe(join(home, "Grounded"));
+  });
+
+  it("keeps the cabinet inside any other home", () => {
+    expect(cabinetDir(join(home, ".grounded"))).toBe(join(home, ".grounded", "cabinet"));
+    expect(visibleRoot(join(home, ".grounded"))).toBe(join(home, ".grounded"));
+  });
+
+  it("puts the default sqlite file in the Cabinet of a .core home", () => {
+    const h = join(home, "Grounded", ".core");
+    expect(defaultConfig(h).storage.path).toBe(join(home, "Grounded", "Cabinet", "grounded.db"));
   });
 
   it("keeps an existing ~/.grounded cabinet on Windows so an upgrade strands nothing", () => {
@@ -93,7 +106,7 @@ describe("defaultHome", () => {
     writeFileSync(join(home, ".grounded", "config.toml"), "[storage]\n");
     expect(defaultHome("win32", home)).toBe(join(home, ".grounded"));
     mkdirSync(join(home, "Grounded"));
-    expect(defaultHome("win32", home)).toBe(join(home, "Grounded"));
+    expect(defaultHome("win32", home)).toBe(join(home, "Grounded", ".core"));
   });
 });
 

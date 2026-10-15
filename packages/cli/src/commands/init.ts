@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { bootstrap } from "@grounded/core";
+import { bootstrap, cabinetDir, visibleRoot } from "@grounded/core";
 import type { GlobalOpts } from "../util/global.js";
 import { c, line, printJson, fail } from "../util/output.js";
 
@@ -19,6 +19,7 @@ export function initCommand(global: () => GlobalOpts): Command {
 
       if (g.json) return printJson(result);
       line(c.green(`cabinet ready at ${result.home}`));
+      if (visibleRoot(result.home) !== result.home) line(c.dim(`your data: ${cabinetDir(result.home)}`));
       line(
         c.dim(
           result.wroteConfig

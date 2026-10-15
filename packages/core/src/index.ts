@@ -12,7 +12,7 @@
 export * from "./contract.js";
 
 // Runtime implementation surface (provided by core internals).
-export { loadConfig, defaultConfig, defaultHome, CONFIG_FILENAME } from "./config.js";
+export { loadConfig, defaultConfig, defaultHome, cabinetDir, visibleRoot, CORE_DIRNAME, CONFIG_FILENAME } from "./config.js";
 export { openStore } from "./store.js";
 export { createEmbeddingProvider } from "./embedding/index.js";
 

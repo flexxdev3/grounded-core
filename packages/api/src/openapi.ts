@@ -453,6 +453,11 @@ export const openApiDocument = {
               ok: { type: "boolean" },
               dims: { type: "integer" },
               detail: { type: "string" },
+              device: {
+                type: "string",
+                enum: ["gpu", "cpu"],
+                description: "Where vectors are computed, when the provider knows. Absent when unknown (e.g. ollama has not loaded the model yet).",
+              },
             },
           },
           counts: {

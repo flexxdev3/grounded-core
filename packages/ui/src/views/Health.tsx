@@ -53,6 +53,9 @@ export function HealthView({ onAdapter }: { onAdapter: (a: string) => void }) {
               <Line k="provider" v={data.embeddings.provider} />
               {data.embeddings.model && <Line k="model" v={data.embeddings.model} />}
               <Line k="dims" v={String(data.embeddings.dims)} />
+              {data.embeddings.device && (
+                <Line k="runs on" v={data.embeddings.device === "gpu" ? "GPU (graphics card)" : "CPU (processor), slower"} />
+              )}
               {data.embeddings.detail && <Line k="detail" v={data.embeddings.detail} />}
             </Panel>
             <Panel title="Counts" ok>

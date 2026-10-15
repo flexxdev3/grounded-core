@@ -1,12 +1,5 @@
 import { Command } from "commander";
-import {
-  detect,
-  readManifest,
-  resolveHome,
-  manifestPath,
-  DEFAULT_PORT,
-  type InstallMethod,
-} from "@grounded/core";
+import { detect, readManifest, resolveHome, manifestPath, DEFAULT_PORT, type InstallMethod, cabinetDir, visibleRoot } from "@grounded/core";
 import { rm } from "node:fs/promises";
 import type { GlobalOpts } from "../util/global.js";
 import { c, line, header, field, printJson, fail, ok } from "../util/output.js";
@@ -54,7 +47,8 @@ export function statusCommand(global: () => GlobalOpts): Command {
       header("Grounded status");
       field("running", d.running ? c.green("yes") : c.red("no"));
       if (d.method) field("method", String(d.method));
-      field("cabinet", home);
+      field("cabinet", cabinetDir(home));
+      if (visibleRoot(home) !== home) field("engine", home);
       if (d.health) {
         field("health", ok(d.health.ok));
         field("port", String(d.health.port));

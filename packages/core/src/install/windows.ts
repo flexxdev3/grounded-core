@@ -239,10 +239,10 @@ export function renderDesktopIni(): string {
  *
  * Explorer reads desktop.ini only when the FOLDER carries the read-only (or
  * system) attribute. On a folder, read-only does not make its contents
- * read-only. The icon and desktop.ini are hidden + system so the folder shows
- * only the user's cabinet.
+ * read-only. The icon and desktop.ini are hidden + system, and `core` (the
+ * engine's `.core` folder) is hidden, so the folder shows only the Cabinet.
  */
-export async function decorateWindowsFolder(home: string): Promise<boolean> {
+export async function decorateWindowsFolder(home: string, core?: string): Promise<boolean> {
   if (process.platform !== "win32") return false;
   try {
     const { writeFileSync, existsSync, readFileSync } = await import("node:fs");
@@ -267,6 +267,8 @@ export async function decorateWindowsFolder(home: string): Promise<boolean> {
     await attrib(["+h", "+s", icoPath]);
     await attrib(["+h", "+s", iniPath]);
     await attrib(["+r", home]);
+    // Explorer does not hide dot-folders; the attribute does.
+    if (core) await attrib(["+h", core]);
     return true;
   } catch {
     return false;

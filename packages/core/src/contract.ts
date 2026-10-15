@@ -299,8 +299,11 @@ export interface EmbeddingProvider {
   readonly enabled: boolean;
   /** embed a batch; returns one vector per input (empty array per input when disabled). */
   embed(texts: string[]): Promise<number[][]>;
-  /** liveness check (e.g. ping Ollama). */
-  health(): Promise<{ ok: boolean; detail?: string }>;
+  /**
+   * liveness check (e.g. ping Ollama). `device` is where vectors are actually
+   * computed, when known — the console warns when it is "cpu".
+   */
+  health(): Promise<{ ok: boolean; detail?: string; device?: "gpu" | "cpu" }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +311,7 @@ export interface EmbeddingProvider {
 // ---------------------------------------------------------------------------
 
 export type StorageAdapter = "sqlite" | "postgres";
+export type EmbeddingDevice = "auto" | "cpu" | "gpu";
 export type EmbeddingProviderName = "ollama" | "openai" | "local" | "none";
 
 export interface GroundedConfig {
@@ -329,10 +333,12 @@ export interface GroundedConfig {
     dims?: number;
     apiKey?: string;
     /**
-     * ollama only. "cpu" sends `options.num_gpu = 0` on every request so the
-     * model never takes GPU memory; "auto" (default) lets ollama place it.
+     * Where vectors are computed. "auto" (default): the GPU when one is usable,
+     * else the CPU. "cpu": never touch the GPU (ollama gets `num_gpu = 0`).
+     * "gpu": local requires a GPU and fails loudly without one; ollama treats
+     * it as "auto" because ollama places the model itself.
      */
-    device?: "auto" | "cpu";
+    device?: EmbeddingDevice;
     /** local only: a directory holding the model files; skips the download. */
     modelPath?: string;
     /** local only: the ONNX file inside the model repo. Default `onnx/model_fp16.onnx`. */
@@ -751,7 +757,15 @@ export interface TimelineOptions {
 export interface HealthReport {
   ok: boolean;
   storage: { adapter: StorageAdapter; ok: boolean; detail?: string; location?: string };
-  embeddings: { provider: string; ok: boolean; dims: number; detail?: string; model?: string };
+  embeddings: {
+    provider: string;
+    ok: boolean;
+    dims: number;
+    detail?: string;
+    model?: string;
+    /** where vectors are computed, when the provider knows. */
+    device?: "gpu" | "cpu";
+  };
   /**
    * `docs` counts chunks; `documents` counts distinct source files (chunk_idx = 0).
    * `bytes` is the on-disk size of the grounded tables+indexes (0 when unavailable).

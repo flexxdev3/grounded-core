@@ -1,7 +1,7 @@
 import { mkdirSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
-import { EmbedError } from "../contract.js";
+import { ConfigError, EmbedError } from "../contract.js";
 import type { EmbeddingProvider, GroundedConfig } from "../contract.js";
 
 /**
@@ -31,6 +31,7 @@ type Tok = InstanceType<typeof import("@huggingface/tokenizers").Tokenizer>;
 
 interface Loaded {
   ort: Ort;
+  device: "gpu" | "cpu";
   session: import("onnxruntime-node").InferenceSession;
   tokenizer: Tok;
   needsTokenTypes: boolean;
@@ -72,7 +73,15 @@ export function createLocalProvider(cfg: GroundedConfig): EmbeddingProvider {
   const modelFile = cfg.embeddings.modelFile ?? DEFAULT_MODEL_FILE;
   // half the cores by default: embedding is bursty and should never pin the box.
   const threads = cfg.embeddings.threads ?? Math.max(1, Math.floor(availableParallelism() / 2));
+  const device = cfg.embeddings.device ?? "auto";
+  if (device !== "auto" && device !== "cpu" && device !== "gpu") {
+    throw new ConfigError(`embeddings.device must be "auto", "cpu" or "gpu", got ${JSON.stringify(device)}`);
+  }
+  // DirectML ships inside onnxruntime-node on Windows and drives any DX12 GPU
+  // (NVIDIA, AMD, Intel) with no CUDA install. Elsewhere: CPU for now.
+  const gpuEp = process.platform === "win32" ? "dml" : undefined;
   let loading: Promise<Loaded> | undefined;
+  let active: "gpu" | "cpu" | undefined;
 
   async function load(): Promise<Loaded> {
     let ort: Ort;
@@ -88,12 +97,35 @@ export function createLocalProvider(cfg: GroundedConfig): EmbeddingProvider {
     if (!cfg.embeddings.modelPath) await ensureLocalModel(dir, model, modelFile);
     const read = (f: string) => JSON.parse(readFileSync(join(dir, f), "utf8"));
     const tokenizer = new Tokenizer(read("tokenizer.json"), read("tokenizer_config.json"));
-    const session = await ort.InferenceSession.create(join(dir, modelFile), {
-      intraOpNumThreads: threads,
-      interOpNumThreads: 1,
-      graphOptimizationLevel: "all",
-    });
-    return { ort, session, tokenizer, needsTokenTypes: session.inputNames.includes("token_type_ids") };
+    const path = join(dir, modelFile);
+    const cpuOpts = { intraOpNumThreads: threads, interOpNumThreads: 1, graphOptimizationLevel: "all" } as const;
+    let session: import("onnxruntime-node").InferenceSession | undefined;
+    let onGpu = false;
+    if (device !== "cpu" && gpuEp) {
+      try {
+        // DirectML wants sequential execution and no memory pattern (ORT docs).
+        session = await ort.InferenceSession.create(path, {
+          ...cpuOpts,
+          executionProviders: [gpuEp],
+          executionMode: "sequential",
+          enableMemPattern: false,
+        });
+        onGpu = true;
+      } catch (err) {
+        if (device === "gpu") throw new EmbedError(`no usable GPU for local embeddings: ${(err as Error).message}`);
+      }
+    } else if (device === "gpu") {
+      throw new EmbedError(`local embeddings have no GPU backend on ${process.platform} yet`);
+    }
+    session ??= await ort.InferenceSession.create(path, { ...cpuOpts, executionProviders: ["cpu"] });
+    active = onGpu ? "gpu" : "cpu";
+    return {
+      ort,
+      device: active,
+      session,
+      tokenizer,
+      needsTokenTypes: session.inputNames.includes("token_type_ids"),
+    };
   }
 
   async function embedBatch(m: Loaded, texts: string[]): Promise<number[][]> {
@@ -158,14 +190,21 @@ export function createLocalProvider(cfg: GroundedConfig): EmbeddingProvider {
       }
       return out;
     },
-    async health(): Promise<{ ok: boolean; detail?: string }> {
+    async health(): Promise<{ ok: boolean; detail?: string; device?: "gpu" | "cpu" }> {
       const have = existsSync(join(dir, modelFile));
       try {
         await import("onnxruntime-node");
       } catch {
         return { ok: false, detail: "onnxruntime-node not installed" };
       }
-      return { ok: true, detail: `local ${model} (cpu, ${threads} threads)${have ? "" : ", downloads on first use"}` };
+      // known once the model has loaded; before that, "cpu" is certain only when forced.
+      const where = active ?? (device === "cpu" || !gpuEp ? "cpu" : undefined);
+      const how = where === "gpu" ? "gpu (directml)" : where === "cpu" ? `cpu, ${threads} threads` : "not loaded yet";
+      return {
+        ok: true,
+        detail: `local ${model} (${how})${have ? "" : ", downloads on first use"}`,
+        device: where,
+      };
     },
   };
 }

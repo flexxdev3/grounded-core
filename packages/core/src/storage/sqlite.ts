@@ -1892,6 +1892,7 @@ export class SqliteStore implements Store {
         dims: this.embedder.dims,
         detail: embHealth.detail,
         model: this.cfg.embeddings.model,
+        device: embHealth.device,
       },
       counts: {
         facts: Number(counts.facts),

@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
-import { defaultConfig, defaultHome, loadConfig, CONFIG_FILENAME } from "../config.js";
+import { cabinetDir, defaultConfig, defaultHome, loadConfig, visibleRoot, CONFIG_FILENAME } from "../config.js";
 import { decorateWindowsFolder } from "./windows.js";
 import { openStore } from "../store.js";
 import type { GroundedConfig } from "../contract.js";
@@ -77,7 +77,7 @@ export function renderConfigToml(cfg: GroundedConfig): string {
   // location and break relocating it (e.g. a Docker install writing the host
   // file with the container-only `/cabinet` path). Only persist a sqlite `path`
   // when the operator set a *custom* one; postgres url/schema are always kept.
-  const defaultSqlitePath = join(cfg.home, "cabinet", "grounded.db");
+  const defaultSqlitePath = join(cabinetDir(cfg.home), "grounded.db");
   const customPath =
     s.path !== undefined && s.path !== defaultSqlitePath ? s.path : undefined;
 
@@ -129,15 +129,15 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<BootstrapR
 
   mkdirSync(base.home, { recursive: true });
   for (const dir of CABINET_DIRS) {
-    mkdirSync(join(base.home, "cabinet", dir), { recursive: true });
+    mkdirSync(join(cabinetDir(base.home), dir), { recursive: true });
   }
   mkdirSync(join(base.home, "logs"), { recursive: true });
   mkdirSync(join(base.home, "mcp"), { recursive: true });
-  // The default Windows cabinet sits beside Documents and Downloads, so it gets
-  // the Grounded icon like they get theirs. A folder the operator chose
-  // (--home / GROUNDED_HOME) is theirs: never decorated.
+  // The default Windows folder sits beside Documents and Downloads, so it gets
+  // the Grounded icon like they get theirs, and its `.core` is hidden. A folder
+  // the operator chose (--home / GROUNDED_HOME) is theirs: never decorated.
   if (process.platform === "win32" && base.home === defaultHome()) {
-    await decorateWindowsFolder(base.home);
+    await decorateWindowsFolder(visibleRoot(base.home), base.home);
   }
 
   const configPath = join(base.home, CONFIG_FILENAME);

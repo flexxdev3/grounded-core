@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import { parse as parseToml } from "smol-toml";
 import { ConfigError } from "./contract.js";
@@ -188,23 +188,41 @@ function reserveFromBudget(budget: Record<BriefLane, LaneBudget>): GroundedConfi
   };
 }
 
+/** Hidden system folder inside the Windows `Grounded` folder. */
+export const CORE_DIRNAME = ".core";
+
 /**
- * The cabinet root when neither an argument nor GROUNDED_HOME names one.
+ * The engine home (config, logs, service, models) when neither an argument
+ * nor GROUNDED_HOME names one.
  *
- * - Windows: `%USERPROFILE%\Grounded`, beside Documents and Downloads, where a
- *   Windows user expects to find their own data. Not under Documents: OneDrive
- *   backup syncs Documents, and a live SQLite file in a synced folder gets
- *   locked mid-write and forked into conflict copies. The profile root is never
- *   synced. A cabinet already at `~\.grounded` keeps being used, so an
- *   upgrade never strands one.
- * - Everywhere else: `~/.grounded`, the dotfile convention.
+ * - Windows: `%USERPROFILE%\Grounded\.core`. The user-facing folder is
+ *   `%USERPROFILE%\Grounded`, beside Documents and Downloads, holding only
+ *   `Cabinet\` (their data) and the hidden `.core\` (everything they never
+ *   need to see). Not under Documents: OneDrive backup syncs Documents, and a
+ *   live SQLite file in a synced folder gets locked mid-write and forked into
+ *   conflict copies. The profile root is never synced. A cabinet already at
+ *   `~\.grounded` keeps being used, so an upgrade never strands one.
+ * - Everywhere else: `~/.grounded`, the dotfile convention, already hidden.
  */
 export function defaultHome(platform: NodeJS.Platform = process.platform, home: string = homedir()): string {
   const legacy = join(home, ".grounded");
   if (platform !== "win32") return legacy;
-  const cabinet = join(home, "Grounded");
-  if (!existsSync(cabinet) && existsSync(join(legacy, CONFIG_FILENAME))) return legacy;
-  return cabinet;
+  const visible = join(home, "Grounded");
+  if (!existsSync(visible) && existsSync(join(legacy, CONFIG_FILENAME))) return legacy;
+  return join(visible, CORE_DIRNAME);
+}
+
+/**
+ * Where the user's data lives. A `.core` home keeps it beside itself in a
+ * visible `Cabinet` folder; any other home keeps it inside, at `cabinet/`.
+ */
+export function cabinetDir(home: string): string {
+  return basename(home) === CORE_DIRNAME ? join(dirname(home), "Cabinet") : join(home, "cabinet");
+}
+
+/** The folder a user opens: the parent of a `.core` home, else the home itself. */
+export function visibleRoot(home: string): string {
+  return basename(home) === CORE_DIRNAME ? dirname(home) : home;
 }
 
 export function defaultConfig(home?: string): GroundedConfig {
@@ -213,7 +231,7 @@ export function defaultConfig(home?: string): GroundedConfig {
     home: resolvedHome,
     storage: {
       adapter: "sqlite",
-      path: join(resolvedHome, "cabinet", "grounded.db"),
+      path: join(cabinetDir(resolvedHome), "grounded.db"),
       schema: "public",
     },
     embeddings: {
