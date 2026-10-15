@@ -158,7 +158,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<BootstrapR
         cfg.embeddings = { provider: "none" };
         embeddings = {
           provider: "none",
-          reason: `no ollama at ${url}: lexical-only recall. Install ollama and set [embeddings] provider = "ollama" to add vectors.`,
+          reason: `no ollama at ${url}: keyword search only. To search by meaning, turn on the Embeddings add-on in the console or run \`grounded addon add embeddings\` (one-time model download).`,
         };
       }
     }
