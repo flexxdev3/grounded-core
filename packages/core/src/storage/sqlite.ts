@@ -353,6 +353,10 @@ export class SqliteStore implements Store {
         return this.factsUpdate(Number(existing.id), input);
       }
     }
+    // Embed BEFORE any write: a failing embedder must leave no row behind (the
+    // postgres adapter already orders it this way). Otherwise the caller gets an
+    // error for a write that landed, and a retry duplicates it.
+    const vec = await this.embedOne(`${input.fact}\n${input.detail ?? ""}`.trim());
     const ts = nowIso();
     const info = this.db
       .prepare(
@@ -382,7 +386,6 @@ export class SqliteStore implements Store {
     this.db
       .prepare(`insert into fts_facts(rowid, fact, detail) values (?, ?, ?)`)
       .run(id, input.fact, input.detail ?? null);
-    const vec = await this.embedOne(`${input.fact}\n${input.detail ?? ""}`.trim());
     if (vec) this.upsertVector("vec_facts", id, vec);
     const fact = await this.factsGet(id);
     if (!fact) throw new StoreError("failed to read inserted fact");
@@ -458,6 +461,8 @@ export class SqliteStore implements Store {
       createdBy: patch.createdBy !== undefined ? patch.createdBy : existing.createdBy,
     };
     const textChanged = next.fact !== existing.fact || (next.detail ?? "") !== (existing.detail ?? "");
+    // Embed before touching the row or its FTS entry (see factsAdd).
+    const vec = textChanged ? await this.embedOne(`${next.fact}\n${next.detail ?? ""}`.trim()) : null;
     if (textChanged) {
       // External-content FTS5: retire the old index entry using the OLD values
       // (the 'delete' command) BEFORE the base row changes, then insert the new one.
@@ -510,7 +515,6 @@ export class SqliteStore implements Store {
       this.db
         .prepare(`insert into fts_facts(rowid, fact, detail) values (?, ?, ?)`)
         .run(id, next.fact, next.detail ?? null);
-      const vec = await this.embedOne(`${next.fact}\n${next.detail ?? ""}`.trim());
       if (vec) this.upsertVector("vec_facts", id, vec);
     }
     const fact = await this.factsGet(id);
@@ -651,6 +655,8 @@ export class SqliteStore implements Store {
   }
 
   async sessionsAdd(input: SessionInput): Promise<Session> {
+    // Embed before the insert (see factsAdd).
+    const vec = await this.embedOne(`${input.summary}\n${input.details ?? ""}`.trim());
     const ts = nowIso();
     const info = this.db
       .prepare(
@@ -672,9 +678,6 @@ export class SqliteStore implements Store {
     this.db
       .prepare(`insert into fts_sessions(rowid, summary, details) values (?, ?, ?)`)
       .run(id, input.summary, input.details ?? null);
-    const vec = await this.embedOne(
-      `${input.summary}\n${input.details ?? ""}`.trim(),
-    );
     if (vec) this.upsertVector("vec_sessions", id, vec);
     const s = await this.sessionsGet(id);
     if (!s) throw new StoreError("failed to read inserted session");
@@ -736,6 +739,8 @@ export class SqliteStore implements Store {
     const textChanged =
       next.summary !== existing.summary ||
       (next.details ?? "") !== (existing.details ?? "");
+    // Embed before touching the row or its FTS entry (see factsAdd).
+    const vec = textChanged ? await this.embedOne(`${next.summary}\n${next.details ?? ""}`.trim()) : null;
     if (textChanged) {
       // External-content FTS5: retire the old entry with the OLD values before
       // the base row changes (same discipline as factsUpdate/sessionsDelete).
@@ -764,7 +769,6 @@ export class SqliteStore implements Store {
       this.db
         .prepare(`insert into fts_sessions(rowid, summary, details) values (?, ?, ?)`)
         .run(id, next.summary, next.details ?? null);
-      const vec = await this.embedOne(`${next.summary}\n${next.details ?? ""}`.trim());
       if (vec) this.upsertVector("vec_sessions", id, vec);
     }
     const s = await this.sessionsGet(id);
@@ -973,6 +977,7 @@ export class SqliteStore implements Store {
           const ingestedAt = nowIso();
           if (prev) {
             const id = Number(prev.id);
+            const vec = await this.embedOne(chunk.body); // before the write (see factsAdd)
             this.db
               .prepare(
                 `update docs set source=?, title=?, body=?, total_chunks=?, body_hash=?, mtime=?, status='active', kind=?, machine=?, scope=?, project=?, ingested_at=? where id=?`,
@@ -995,10 +1000,10 @@ export class SqliteStore implements Store {
             this.db
               .prepare(`insert into fts_docs(rowid, title, body) values (?, ?, ?)`)
               .run(id, title, chunk.body);
-            const vec = await this.embedOne(chunk.body);
             if (vec) this.upsertVector("vec_docs", id, vec);
             report.updated++;
           } else {
+            const vec = await this.embedOne(chunk.body); // before the write (see factsAdd)
             const info = this.db
               .prepare(
                 `insert into docs(source, path, title, body, chunk_idx, total_chunks, body_hash, mtime, status, kind, machine, scope, project, ingested_at)
@@ -1023,7 +1028,6 @@ export class SqliteStore implements Store {
             this.db
               .prepare(`insert into fts_docs(rowid, title, body) values (?, ?, ?)`)
               .run(id, title, chunk.body);
-            const vec = await this.embedOne(chunk.body);
             if (vec) this.upsertVector("vec_docs", id, vec);
             report.added++;
           }

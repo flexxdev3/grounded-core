@@ -119,3 +119,53 @@ describe("sqlite vector lane (fake embedder)", () => {
     }
   });
 });
+
+describe("sqlite: a failing embedder leaves no write behind", () => {
+  let home: string;
+  let store: SqliteStore;
+  let fail = false;
+
+  beforeAll(async () => {
+    home = mkdtempSync(join(tmpdir(), "grounded-embedfail-"));
+    const cfg: GroundedConfig = defaultConfig(home);
+    cfg.storage.path = join(home, "fail.db");
+    cfg.embeddings.dims = DIMS;
+    const good = fakeEmbedder();
+    store = new SqliteStore(cfg, {
+      ...good,
+      async embed(texts) {
+        if (fail) throw new Error("ollama embed request failed: fetch failed");
+        return good.embed(texts);
+      },
+    });
+    await store.init();
+  });
+
+  afterAll(async () => {
+    await store.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("factsAdd throws and stores nothing — a retry cannot duplicate", async () => {
+    fail = true;
+    await expect(store.factsAdd({ fact: "should not persist" })).rejects.toThrow(/embed/);
+    fail = false;
+    expect((await store.factsList()).meta.available).toBe(0);
+  });
+
+  it("factsUpdate throws and leaves the old text in place", async () => {
+    const f = await store.factsAdd({ fact: "original text" });
+    fail = true;
+    await expect(store.factsUpdate(f.id, { fact: "new text" })).rejects.toThrow(/embed/);
+    fail = false;
+    expect((await store.factsGet(f.id))?.fact).toBe("original text");
+    expect((await store.recall("original")).data.map((r) => r.typedId)).toContain(`fact:${f.id}`);
+  });
+
+  it("sessionsAdd throws and stores nothing", async () => {
+    fail = true;
+    await expect(store.sessionsAdd({ summary: "should not persist" })).rejects.toThrow(/embed/);
+    fail = false;
+    expect((await store.sessionsList()).meta.available).toBe(0);
+  });
+});
