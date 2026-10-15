@@ -144,6 +144,11 @@ exists without reading content you were not scoped to.
 
 ## Writing
 
+### When to log a session
+
+A session spans an extended working conversation and may contain many requests. Completing a request, sending a final reply, passing checks, or finishing an artifact does not end the session. Create a session row when the user explicitly asks to record the work or signals that the working session is ending. Do not infer closure from task completion.
+
+
 - \`POST /facts\` — upserts on \`(scope, topicKey)\` as a **merge-patch**: omitted fields keep
   their existing value. Supply \`topicKey\` to revise a rule in place; omit it and every call
   writes a new row. Capped — see "The budget contract".

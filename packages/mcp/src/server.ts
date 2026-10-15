@@ -536,7 +536,8 @@ export function createServer(
     "ground_session_add",
     {
       title: "Add session",
-      description: "Append a session (work-log entry).",
+      description:
+        "Append a session (work-log entry). A session spans an extended working conversation and may contain many requests. Completing a request, sending a final reply, passing checks, or finishing an artifact does not end the session. Create a session row when the user explicitly asks to record the work or signals that the working session is ending. Do not infer closure from task completion.",
       inputSchema: strictInput({
         summary: z.string().describe("one-line summary"),
         details: z.string().optional(),
