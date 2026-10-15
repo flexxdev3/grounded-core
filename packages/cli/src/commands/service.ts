@@ -143,7 +143,10 @@ export function uninstallCommand(global: () => GlobalOpts): Command {
       if (!method) return fail("no Grounded service found to uninstall.");
 
       line(`This will remove the ${c.bold(method)} service.`);
-      if (opts.purge) line(c.red(`--purge will DELETE the cabinet at ${home} (all facts, sessions, docs).`));
+      // A `.core` home lives inside the folder the user sees; purge that whole
+      // folder, or the Cabinet beside `.core` would be left behind.
+      const purgeRoot = visibleRoot(home);
+      if (opts.purge) line(c.red(`--purge will DELETE ${purgeRoot} (all facts, sessions, docs).`));
       if (!opts.yes && interactive && !(await confirm("Continue?", false))) {
         return line(c.dim("aborted."));
       }
@@ -156,8 +159,8 @@ export function uninstallCommand(global: () => GlobalOpts): Command {
       // Drop the manifest; optionally purge data.
       await rm(manifestPath(home), { force: true });
       if (opts.purge) {
-        await rm(home, { recursive: true, force: true });
-        line(c.yellow(`purged ${home}`));
+        await rm(purgeRoot, { recursive: true, force: true });
+        line(c.yellow(`purged ${purgeRoot}`));
       }
       line(c.green(`uninstalled (${method})${opts.purge ? " + purged cabinet" : " — cabinet kept"}`));
     });
