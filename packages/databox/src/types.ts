@@ -55,6 +55,8 @@ export interface IndexPointer {
   tables: TableInfo[];
   /** Databox index format; a reader refuses a newer one and falls back to the JSON. */
   format: number;
+  /** how this generation was made: only changed items re-read, or everything (and why). Absent on older pointers. */
+  build?: { mode: "incremental"; changed: number; removed: number } | { mode: "full"; reason: string };
 }
 
 export type BoxState =

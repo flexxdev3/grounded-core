@@ -158,7 +158,8 @@ export class Databox {
 
   /**
    * Writer only: (re)build the index. Resolves when the build finishes.
-   * Unchanged items are a no-op unless `force`.
+   * Unchanged items are a no-op unless `force`. Changed items rebuild incrementally;
+   * `force` = full build (also drops columns only removed items used).
    */
   async index(name: string, opts: { force?: boolean } = {}): Promise<IndexPointer> {
     const b = this.box(name);
@@ -245,10 +246,11 @@ export class Databox {
       const scan = this.scan(b, true);
       const current = readPointer(b.cfg.root);
       if (!force && current && current.fingerprint === scan.fingerprint) return current;
-      const { pointer } = await buildIndex(b.cfg.root, { scan });
+      const { pointer } = await buildIndex(b.cfg.root, { scan, full: force });
       b.failedFingerprint = null;
       rmSync(join(indexDir(b.cfg.root), "last-error.json"), { force: true });
-      this.log(`databox ${b.cfg.name}: indexed ${pointer.files} items in ${pointer.buildMs} ms (${pointer.tables.length} tables)`);
+      const how = pointer.build?.mode === "incremental" ? `incremental, ${pointer.build.changed} changed + ${pointer.build.removed} removed` : `full: ${pointer.build?.reason ?? ""}`;
+      this.log(`databox ${b.cfg.name}: indexed ${pointer.files} items in ${pointer.buildMs} ms (${pointer.tables.length} tables, ${how})`);
       await this.announce(b, pointer);
       return pointer;
     })()
@@ -310,6 +312,7 @@ export class Databox {
             bytes: ptr.bytes,
             tables: ptr.tables.length,
             rows: ptr.tables.reduce((n, t) => n + t.rows, 0),
+            ...(ptr.build ? { build: ptr.build } : {}),
           }
         : null,
       lastError,

@@ -156,7 +156,12 @@ function Box({ box, onChanged }: { box: BoxStatus; onChanged: () => void }) {
         <div class="mono" style={{ fontSize: "0.7rem", color: "var(--ink-faint)", marginTop: "0.6rem", lineHeight: 1.7, overflowWrap: "anywhere" }}>
           {box.items.files.toLocaleString()} items · {fmtBytes(box.items.bytes)}
           {box.index &&
-            ` · ${box.index.tables} tables · ${box.index.rows.toLocaleString()} rows · indexed ${fmtDate(box.index.builtAt)} in ${box.index.buildMs} ms`}
+            ` · ${box.index.tables} tables · ${box.index.rows.toLocaleString()} rows · indexed ${fmtDate(box.index.builtAt)} in ${box.index.buildMs} ms` +
+              (box.index.build?.mode === "incremental"
+                ? ` (incremental: ${box.index.build.changed} changed, ${box.index.build.removed} removed)`
+                : box.index.build
+                  ? ` (full: ${box.index.build.reason})`
+                  : "")}
           <br />
           {box.root}
           {box.manifest && (

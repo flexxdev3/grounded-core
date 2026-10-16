@@ -1,6 +1,6 @@
 import type { DuckDBConnection } from "@duckdb/node-api";
 import { ident, lit } from "./duck.js";
-import type { KindScan } from "./items.js";
+import type { KindScan, TypeHints } from "./items.js";
 import type { ColumnInfo, TableInfo } from "./types.js";
 
 /**
@@ -26,10 +26,27 @@ import type { ColumnInfo, TableInfo } from "./types.js";
 const READ_OPTS = "union_by_name = true, filename = '_databox_file', sample_size = -1";
 const RAW = "_raw";
 
-export function readJsonSql(k: KindScan): string {
+export interface MaterializeOpts {
+  /** write the tables into this attached catalog (incremental build: the delta) instead of the default one. */
+  catalog?: string;
+  /** read only these files (absolute, forward slashes) instead of the kind's glob. */
+  files?: string[];
+  /** read with this exact raw schema (a previous build's) instead of inferring one. */
+  columns?: ColumnInfo[];
+  /** `<table>.<column>` -> DuckDB type, applied when a table is written. */
+  hints?: TypeHints;
+  /** collects every hint key that matched a column. */
+  hintsUsed?: Set<string>;
+}
+
+export function readJsonSql(k: KindScan, o: Pick<MaterializeOpts, "files" | "columns"> = {}): string {
   // filename comes back with OS separators; strip the kind prefix by length and the extension.
   const item = `regexp_replace(substr(replace(_databox_file, '\\', '/'), ${k.prefix.length + 1}), '\\.json$', '', 'i')`;
-  return `SELECT ${item} AS _item, * EXCLUDE (_databox_file) FROM read_json(${lit(k.glob)}, ${READ_OPTS})`;
+  const source = o.files ? `[${o.files.map(lit).join(", ")}]` : lit(k.glob);
+  const opts = o.columns
+    ? `columns = {${o.columns.map((c) => `${lit(c.name)}: ${lit(c.type)}`).join(", ")}}, filename = '_databox_file'`
+    : READ_OPTS;
+  return `SELECT ${item} AS _item, * EXCLUDE (_databox_file) FROM read_json(${source}, ${opts})`;
 }
 
 /** The table a top-level array key becomes. `items` is taken by the per-file table. */
@@ -49,24 +66,73 @@ const safe = (name: string) => name.replace(/[^A-Za-z0-9_]/g, "_");
 /** Child tables stop at this depth; deeper arrays stay as list columns (query them with unnest()). */
 const MAX_DEPTH = 4;
 
-/** Materialize one kind: `_raw` from the files, then `items` + one table per array key, then drop `_raw`. */
-export async function materializeKind(conn: DuckDBConnection, k: KindScan): Promise<void> {
-  const s = ident(k.kind);
-  if (k.kind !== "main") await conn.run(`CREATE SCHEMA IF NOT EXISTS ${s}`);
-  await conn.run(`CREATE TABLE ${s}.${RAW} AS ${readJsonSql(k)}`);
-  const cols = await describe(conn, `${s}.${RAW}`);
+/** Where a kind's tables go: `<catalog>.<schema>` or `<schema>`, plus the `/schema` name prefix hints use. */
+interface Target {
+  schema: string;
+  /** `cars.` for a kind, empty for main. */
+  prefix: string;
+  kind: string;
+  o: MaterializeOpts;
+}
 
-  const scalar = cols.filter((c) => !c.type.endsWith("[]")).map((c) => ident(c.name));
-  await conn.run(`CREATE TABLE ${s}."items" AS SELECT ${scalar.join(", ")} FROM ${s}.${RAW}`);
+/**
+ * Materialize one kind: `_raw` from the files, then `items` + one table per array key.
+ * Returns the raw schema (without `_item`): an incremental build reads changed
+ * files with exactly it, so the delta's tables match the index's.
+ *
+ * Intermediates (`_raw`, and a parent table while it still carries its child
+ * arrays) are TEMP tables: they never reach the database file. Measured on the
+ * FH6 catalogue (1.6 GB items): written as real tables then dropped, they left
+ * 71% of the index as free blocks (985 MB file, 286 MB live) and their
+ * checkpoints cost ~15 s of the 81.5 s build. Every user table is written once.
+ */
+export async function materializeKind(conn: DuckDBConnection, k: KindScan, o: MaterializeOpts = {}): Promise<ColumnInfo[]> {
+  const schema = o.catalog ? `${ident(o.catalog)}.${ident(k.kind)}` : ident(k.kind);
+  if (k.kind !== "main") await conn.run(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
+  const t: Target = { schema, prefix: k.kind === "main" ? "" : `${k.kind}.`, kind: k.kind, o };
+  const raw = tempName(k.kind, RAW);
+  await conn.run(`CREATE TEMP TABLE ${raw.name} AS ${readJsonSql(k, o)}`);
+  const cols = await describe(conn, raw.ref);
+
+  const arrays = cols.filter((c) => c.type.endsWith("[]")).map((c) => c.name);
+  await writeTable(conn, t, "items", raw.ref, arrays);
 
   const taken = new Set(["items"]);
   for (const c of cols) {
     if (!c.type.endsWith("[]")) continue;
     const table = arrayTableName(c.name);
     taken.add(table.toLowerCase());
-    await explode(conn, s, `${s}.${RAW}`, c, table, [], taken, 1);
+    await explode(conn, t, raw.ref, c, table, [], taken, 1);
   }
-  await conn.run(`DROP TABLE ${s}.${RAW}`);
+  await conn.run(`DROP TABLE ${raw.ref}`);
+  return cols.filter((c) => c.name !== "_item");
+}
+
+/** A TEMP table name unique per kind: `name` for CREATE TEMP TABLE, `ref` to read or drop it. */
+function tempName(kind: string, table: string): { name: string; ref: string } {
+  const name = ident(`_databox_${safe(kind)}_${table}`);
+  return { name, ref: `temp.main.${name}` };
+}
+
+/** CREATE the user table `table` from `source` minus `exclude`, casting the columns hints name. */
+async function writeTable(conn: DuckDBConnection, t: Target, table: string, source: string, exclude: string[]): Promise<void> {
+  const casts: string[] = [];
+  const key = `${t.prefix}${table}`;
+  const mine = Object.entries(t.o.hints ?? {}).filter(([h]) => h.slice(0, h.lastIndexOf(".")) === key);
+  if (mine.length) {
+    const have = new Set((await describe(conn, `SELECT * FROM ${source} LIMIT 0`)).map((c) => c.name));
+    for (const [h, type] of mine) {
+      const col = h.slice(h.lastIndexOf(".") + 1);
+      if (!have.has(col) || exclude.includes(col)) continue;
+      casts.push(`CAST(${ident(col)} AS ${type}) AS ${ident(col)}`);
+      t.o.hintsUsed?.add(h);
+    }
+  }
+  const star =
+    "*" +
+    (exclude.length ? ` EXCLUDE (${exclude.map(ident).join(", ")})` : "") +
+    (casts.length ? ` REPLACE (${casts.join(", ")})` : "");
+  await conn.run(`CREATE TABLE ${t.schema}.${ident(table)} AS SELECT ${star} FROM ${source}`);
 }
 
 /**
@@ -84,7 +150,7 @@ export async function materializeKind(conn: DuckDBConnection, k: KindScan): Prom
  */
 async function explode(
   conn: DuckDBConnection,
-  s: string,
+  t: Target,
   from: string,
   col: ColumnInfo,
   table: string,
@@ -99,11 +165,17 @@ async function explode(
     `SELECT _item, ${keys.map((k) => `${ident(k)}, `).join("")}` +
     `unnest(generate_series(1, len(${c}))) AS _n, unnest(${c}) AS _el FROM ${from}`;
   const struct = isStructList(col.type);
-  await conn.run(`CREATE TABLE ${s}.${ident(table)} AS SELECT ${lead}, ${struct ? "_el.*" : "_el AS value"} FROM (${inner})`);
-  if (!struct || depth >= MAX_DEPTH) return;
+  const select = `(SELECT ${lead}, ${struct ? "_el.*" : "_el AS value"} FROM (${inner}))`;
+  // bind-only DESCRIBE (LIMIT 0): which fields become child tables, before writing anything.
+  const children =
+    struct && depth < MAX_DEPTH ? (await describe(conn, `SELECT * FROM ${select} LIMIT 0`)).filter((x) => isStructList(x.type)) : [];
+  if (children.length === 0) {
+    await writeTable(conn, t, table, select, []);
+    return;
+  }
 
-  const children = (await describe(conn, `${s}.${ident(table)}`)).filter((x) => isStructList(x.type));
-  if (children.length === 0) return;
+  const tmp = tempName(t.kind, table);
+  await conn.run(`CREATE TEMP TABLE ${tmp.name} AS SELECT * FROM ${select}`);
   let key = `${safe(col.name)}_n`;
   while (keys.includes(key)) key += "_";
   const childKeys = [...keys, key];
@@ -112,10 +184,11 @@ async function explode(
     while (taken.has(child.toLowerCase())) child += "_";
     taken.add(child.toLowerCase());
     // the child sees this table's `_n` under its key name (parts._n -> parts_n).
-    const src = `(SELECT _item, ${keys.map((k) => `${ident(k)}, `).join("")}_n AS ${ident(key)}, ${ident(cc.name)} FROM ${s}.${ident(table)})`;
-    await explode(conn, s, src, cc, child, childKeys, taken, depth + 1);
-    await conn.run(`ALTER TABLE ${s}.${ident(table)} DROP COLUMN ${ident(cc.name)}`);
+    const src = `(SELECT _item, ${keys.map((k) => `${ident(k)}, `).join("")}_n AS ${ident(key)}, ${ident(cc.name)} FROM ${tmp.ref})`;
+    await explode(conn, t, src, cc, child, childKeys, taken, depth + 1);
   }
+  await writeTable(conn, t, table, tmp.ref, children.map((x) => x.name));
+  await conn.run(`DROP TABLE ${tmp.ref}`);
 }
 
 /** Every user-facing table with its columns and row count. */

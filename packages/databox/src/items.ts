@@ -24,9 +24,22 @@ export interface ItemsScan {
   files: number;
   bytes: number;
   newestMtimeMs: number;
-  /** sha1 over (relative path, size, mtime) of every item: any add/remove/edit changes it. */
+  /** sha1 over (relative path, size, mtime) of every item + the type hints: any add/remove/edit changes it. */
   fingerprint: string;
+  /** relative path under items/ (forward slashes) -> "size:mtime": what an incremental build diffs. */
+  stamps: Record<string, string>;
+  /** column type hints from manifest.json (see readTypeHints). */
+  hints: TypeHints;
 }
+
+/**
+ * `manifest.json` -> `"databox": { "types": { "<table>.<column>": "<DuckDB type>" } }`,
+ * `<table>` as /schema names it (`cars.parts_meshes_uv`, or `items` for top-level files).
+ * The extractor declares what JSON cannot say, e.g. a float32 source value: JSON
+ * numbers infer DOUBLE, `"FLOAT[4]"` halves those columns (FH6 catalogue: -50 MB,
+ * lossless because the values came from float32). A hint naming no column fails the build.
+ */
+export type TypeHints = Record<string, string>;
 
 const slash = (p: string) => p.replaceAll("\\", "/");
 
@@ -47,13 +60,16 @@ export function scanItems(root: string): ItemsScan {
   let bytes = 0;
   let newest = 0;
   const kinds: KindScan[] = [];
-  if (!existsSync(dir)) return { itemsDir: dir, kinds, files: 0, bytes, newestMtimeMs: 0, fingerprint: "" };
+  const stamps: Record<string, string> = {};
+  const hints = readTypeHints(root);
+  if (!existsSync(dir)) return { itemsDir: dir, kinds, files: 0, bytes, newestMtimeMs: 0, fingerprint: "", stamps, hints };
 
   const seen = new Map<string, string>();
   const count = (abs: string, rel: string): void => {
     const st = statSync(abs);
     bytes += st.size;
     newest = Math.max(newest, st.mtimeMs);
+    stamps[rel] = `${st.size}:${Math.trunc(st.mtimeMs)}`;
     lines.push(`${rel}\t${st.size}\t${Math.trunc(st.mtimeMs)}`);
   };
   const walk = (abs: string, rel: string): number => {
@@ -91,8 +107,43 @@ export function scanItems(root: string): ItemsScan {
   if (rootFiles > 0) kinds.unshift({ kind: "main", prefix: `${slash(dir)}/`, glob: `${slash(dir)}/*.json`, files: rootFiles });
 
   lines.sort();
-  const fingerprint = lines.length ? createHash("sha1").update(lines.join("\n")).digest("hex") : "";
-  return { itemsDir: dir, kinds, files: lines.length, bytes, newestMtimeMs: newest, fingerprint };
+  const files = lines.length;
+  if (files && Object.keys(hints).length) lines.push(`hints\t${JSON.stringify(hints)}`);
+  const fingerprint = files ? createHash("sha1").update(lines.join("\n")).digest("hex") : "";
+  return { itemsDir: dir, kinds, files, bytes, newestMtimeMs: newest, fingerprint, stamps, hints };
+}
+
+/** The kind (schema) and `_item` of a path relative to items/: `Cars/sub/X.json` -> cars, `sub/X`. */
+export function relItem(rel: string): { kind: string; item: string } {
+  const i = rel.indexOf("/");
+  const kind = i < 0 ? "main" : kindName(rel.slice(0, i));
+  return { kind, item: rel.slice(i + 1).replace(/\.json$/i, "") };
+}
+
+/** `databox.types` from manifest.json. A missing/unreadable manifest = no hints; a malformed hint throws. */
+export function readTypeHints(root: string): TypeHints {
+  const p = join(resolve(root), "manifest.json");
+  if (!existsSync(p)) return {};
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return {};
+  }
+  const types = (raw as { databox?: { types?: unknown } } | null)?.databox?.types;
+  if (types === undefined) return {};
+  if (typeof types !== "object" || types === null || Array.isArray(types)) {
+    throw new DataboxError('manifest.json databox.types must be an object of "<table>.<column>": "<type>"', "DATABOX_BUILD", 500);
+  }
+  const out: TypeHints = {};
+  for (const [k, v] of Object.entries(types)) {
+    // the type is spliced into CAST(... AS <type>): type-name characters only.
+    if (typeof v !== "string" || !/^[^.]+(\.[^.]+){1,2}$/.test(k) || !/^[A-Za-z0-9_ ,()[\]"]+$/.test(v)) {
+      throw new DataboxError(`manifest.json databox.types: "${k}" must be "<table>.<column>": "<DuckDB type>"`, "DATABOX_BUILD", 500);
+    }
+    out[k] = v;
+  }
+  return out;
 }
 
 /** Top-level scalars of `<root>/manifest.json`, or null. Never throws: a manifest is informational. */

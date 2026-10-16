@@ -335,12 +335,16 @@ with SQL instead of re-reading or re-decoding raw files: answers come back in mi
   \`GET /databox\`. Then \`GET /databox/:box/schema\` for tables and columns.
 - Tables: items directly under \`items/\` give \`items\` (one row per file) plus one table per
   top-level array; \`items/<kind>/\` gives \`<kind>.items\` and \`<kind>.<array>\`. Every row has
-  \`_item\` (the file name); array tables add \`_n\` (position). Nested arrays: \`unnest()\`.
+  \`_item\` (the file name); array tables add \`_n\` (position). An array of objects inside an
+  array table is its own child table \`<table>_<key>\`, joined on \`_item\` + \`<table>_n\`
+  (\`parts_matis.parts_n = parts._n\`); deeper than 4 levels stays a list column (\`unnest()\`).
 - \`POST /databox/:box/query\` \`{"sql": "...", "limit"?: 1..5000}\` — ONE read-only statement,
   DuckDB dialect (SELECT / WITH / EXPLAIN). Writes, file access and settings are refused (400).
   The answer uses the \`{data, meta}\` envelope: \`meta.available\` counts every row,
   \`meta.truncated\` says the limit cut it, \`meta.stale: true\` means items changed after the index
   was built (a rebuild is under way; re-ask if it matters).
+- \`POST /databox/:box/index\` rebuilds only the items that changed (seconds); \`{"force": true}\`
+  is a full rebuild. \`GET /databox/:box\` -> \`index.build\` says which one ran and why.
 - **Cite what you conclude.** A fact drawn from a box carries \`meta.citation\` (\`databox:<box>\`)
   and the SQL, so anyone can re-run it rather than trust the summary.
 - Rows never enter recall, the brief, or any memory lane. Store the conclusion, not the rows.
