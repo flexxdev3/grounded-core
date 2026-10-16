@@ -77,7 +77,7 @@ export async function buildIndex(root: string, opts: { scan?: ItemsScan } = {}):
   try {
     instance = await duck.DuckDBInstance.create(file);
     const conn = await instance.connect();
-    for (const k of scan.kinds) await materializeKind(conn, k, "TABLE");
+    for (const k of scan.kinds) await materializeKind(conn, k);
     const tables = await listTables(conn, true);
     await conn.run("CHECKPOINT");
     conn.closeSync();
