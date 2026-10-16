@@ -23,6 +23,9 @@ importers:
       '@grounded/core':
         specifier: workspace:*
         version: link:../core
+      '@grounded/databox':
+        specifier: workspace:*
+        version: link:../databox
       '@grounded/ui':
         specifier: workspace:*
         version: link:../ui

@@ -3,6 +3,7 @@ import type { Store } from "@grounded/core/contract";
 import type { ResolvedBudget } from "@grounded/core/delivery";
 import { createApp } from "./app.js";
 import type { EmbeddingsAddon } from "./addons.js";
+import type { Databox } from "@grounded/databox";
 import { resolveUiDist, serveUi } from "./static.js";
 
 export interface StartServerOptions {
@@ -38,6 +39,8 @@ export interface StartServerOptions {
    *  the resolved config by the bin, same pattern as `factsReserveTok`. */
   visionReserveTok?: number;
   embeddingsAddon?: EmbeddingsAddon;
+  /** the Databox addition, when `[databox] enabled`. */
+  databox?: Databox;
 }
 
 export interface RunningServer {
@@ -60,6 +63,7 @@ export function startServer(opts: StartServerOptions): Promise<RunningServer> {
       ? { factsReserveTok: opts.factsReserveTok }
       : {}),
     ...(opts.embeddingsAddon ? { embeddingsAddon: opts.embeddingsAddon } : {}),
+    ...(opts.databox ? { databox: opts.databox } : {}),
     ...(opts.visionReserveTok !== undefined
       ? { visionReserveTok: opts.visionReserveTok }
       : {}),

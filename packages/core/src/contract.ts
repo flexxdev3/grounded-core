@@ -469,6 +469,16 @@ export interface GroundedConfig {
   delivery: {
     typicalFactLimit: number;
   };
+  /**
+   * The Databox addition (`@grounded/databox`): off by default. Each
+   * `[[databox.box]]` names a folder an extractor fills with `items/**.json`;
+   * the service indexes it and answers read-only SQL. Entries are validated by
+   * the databox package, not here, so a cabinet without it never loads it.
+   */
+  databox?: {
+    enabled: boolean;
+    box: { name: string; root: string; description?: string }[];
+  };
 }
 
 // ---------------------------------------------------------------------------

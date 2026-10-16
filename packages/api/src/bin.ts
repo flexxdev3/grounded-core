@@ -4,6 +4,7 @@ import { resolveBudget } from "@grounded/core/delivery";
 import type { Store } from "@grounded/core/contract";
 import { startServer } from "./server.js";
 import { createEmbeddingsAddon } from "./addons.js";
+import { createServiceDatabox } from "./databox.js";
 
 async function main(): Promise<void> {
   // Self-bootstrap: ensure the cabinet, config, and migrations exist before we
@@ -42,6 +43,8 @@ async function main(): Promise<void> {
     },
   });
 
+  const databox = createServiceDatabox(config, store);
+
   const token = process.env.GROUNDED_API_TOKEN;
   const port = Number(process.env.GROUNDED_API_PORT ?? 7437);
   const host = process.env.GROUNDED_API_HOST ?? "127.0.0.1";
@@ -58,6 +61,7 @@ async function main(): Promise<void> {
     // the same object, so a config.toml edit moves them together.
     budget: resolveBudget(config),
     embeddingsAddon,
+    ...(databox ? { databox } : {}),
   });
   console.log(`grounded-api listening on ${server.url}`);
   console.log(server.ui ? `console: ${server.url}/` : "console: not built (headless)");
@@ -65,6 +69,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     await server.close();
+    await databox?.close();
     await store.close();
     process.exit(0);
   };

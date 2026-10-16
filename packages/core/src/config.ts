@@ -292,6 +292,7 @@ export function defaultConfig(home?: string): GroundedConfig {
       // the facts lane's delivered-row count.
       typicalFactLimit: LANE_BUDGETS.facts.rows,
     },
+    databox: { enabled: false, box: [] },
   };
 }
 

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { EmbeddingsAddon } from "./addons.js";
+import { DataboxError, type Databox } from "@grounded/databox";
 import {
   ConfigError,
   EmbedError,
@@ -545,6 +546,8 @@ export function createApp(
     visionReserveTok?: number;
     /** the Embeddings add-on; absent when the host cannot reload its store. */
     embeddingsAddon?: EmbeddingsAddon;
+    /** the Databox addition; absent when `[databox] enabled` is false. */
+    databox?: Databox;
   } = {},
 ): Hono {
   const app = new Hono();
@@ -705,8 +708,15 @@ export function createApp(
       conformance: conf,
     });
 
+    // Databox reports loud, never silent: a missing DuckDB payload is a
+    // visible "unavailable", not a quietly absent block.
+    const databox = opts.databox
+      ? { enabled: true, ...(await opts.databox.health()) }
+      : { enabled: false, ok: true, detail: "off", boxes: 0 };
+
     return c.json({
       ...report,
+      databox,
       counts,
       budget: {
         vision: laneOut(budget.vision, conformance.vision),
@@ -1005,6 +1015,68 @@ export function createApp(
     return c.json({ data: status }, started ? 202 : 409);
   });
 
+  // ---- databox ----
+  // Read-only structured data. Rows answer queries here and never enter a
+  // memory lane; a box reaches recall only through its schema card.
+  function databox(): Databox {
+    if (!opts.databox) {
+      throw new DataboxError(
+        "Databox is off. Turn it on with `grounded addon add databox` (or `[databox] enabled = true` in config.toml) and restart.",
+        "DATABOX_DISABLED",
+        404,
+      );
+    }
+    return opts.databox;
+  }
+
+  app.get("/databox", async (c) => {
+    if (!opts.databox) {
+      return c.json({ data: [], meta: { returned: 0, available: 0, truncated: false, enabled: false } });
+    }
+    const boxes = await opts.databox.list();
+    const health = await opts.databox.health();
+    return c.json({
+      data: boxes,
+      meta: { returned: boxes.length, available: boxes.length, truncated: false, enabled: true, runtime: health },
+    });
+  });
+
+  app.get("/databox/:box", async (c) => c.json({ data: await databox().status(c.req.param("box")) }));
+
+  app.get("/databox/:box/schema", async (c) => c.json({ data: await databox().schema(c.req.param("box")) }));
+
+  app.post("/databox/:box/query", async (c) => {
+    const body = await readJson(c);
+    if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+    rejectUnknownKeys(body, ["sql", "limit", "timeoutMs"]);
+    const limit = optNumber(body.limit, "limit");
+    const timeoutMs = optNumber(body.timeoutMs, "timeoutMs");
+    const result = await databox().query(c.req.param("box"), body.sql, {
+      ...(limit !== undefined ? { limit } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    });
+    return c.json(result);
+  });
+
+  app.post("/databox/:box/index", async (c) => {
+    const body = await readJsonOptional(c);
+    if (!isRecord(body)) throw new ValidationError("body must be a JSON object");
+    rejectUnknownKeys(body, ["force", "wait"]);
+    const force = optBool(body.force, "force") ?? false;
+    const wait = optBool(body.wait, "wait") ?? false;
+    const db = databox();
+    const name = c.req.param("box");
+    const job = db.index(name, { force });
+    if (wait) {
+      await job;
+      return c.json({ data: await db.status(name) });
+    }
+    job.catch(() => {
+      /* recorded in the box's lastError */
+    });
+    return c.json({ data: await db.status(name) }, 202);
+  });
+
   app.notFound((c) => c.json({ error: "not found", code: "NOT_FOUND" }, 404));
 
   app.onError((err, c) => {
@@ -1016,6 +1088,9 @@ export function createApp(
     }
     if (err instanceof EmbedError) {
       return c.json({ error: err.message, code: err.code }, 503);
+    }
+    if (err instanceof DataboxError) {
+      return c.json({ error: err.message, code: err.code }, err.status);
     }
     // An unreadable ingest root is the caller's bad path, not a server fault —
     // 400 so it can never be mistaken for "the directory was empty".
