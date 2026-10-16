@@ -1,0 +1,53 @@
+{
+  "name": "@grounded/databox",
+  "version": "0.1.0",
+  "description": "Grounded Databox — an optional addition: decode a dataset once into plain JSON items, query it with read-only SQL (DuckDB index derived from the files).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@grounded/core": "workspace:*"
+  },
+  "optionalDependencies": {
+    "@duckdb/node-api": "1.5.6-r.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flexxdev3/grounded-core.git",
+    "directory": "packages/databox"
+  },
+  "homepage": "https://github.com/flexxdev3/grounded-core#readme",
+  "keywords": [
+    "grounded",
+    "databox",
+    "duckdb",
+    "structured-data",
+    "agents"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
