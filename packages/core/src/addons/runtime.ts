@@ -51,10 +51,20 @@ export async function importAddonModule<T = unknown>(
       } catch {
         continue;
       }
-      return (await import(pathToFileURL(resolved).href)) as T;
+      return withCjsExports(await import(pathToFileURL(resolved).href)) as T;
     }
     throw err;
   }
+}
+
+/**
+ * Importing a CommonJS file by path exposes only the names Node's lexer can detect;
+ * the rest sit on `default` (@huggingface/tokenizers' `Tokenizer` is one). Merge them
+ * so callers see the same shape a bare `import()` gives them.
+ */
+function withCjsExports(mod: Record<string, unknown>): Record<string, unknown> {
+  const d = mod.default;
+  return d && typeof d === "object" ? { ...(d as Record<string, unknown>), ...mod } : mod;
 }
 
 /** The npm CLI that ships beside this Node, or GROUNDED_NPM_CLI. */
