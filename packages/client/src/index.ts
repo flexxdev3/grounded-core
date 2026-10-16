@@ -27,6 +27,7 @@ import type {
   Vision,
   VisionInput,
 } from "@grounded/core/contract";
+import type { BoxSchema, BoxStatus, QueryOptions, QueryResult } from "@grounded/databox";
 
 export interface ClientOptions {
   /** Base URL of a running grounded-api, e.g. http://127.0.0.1:7437 */
@@ -73,6 +74,20 @@ export interface EmbeddingsAddonStatus {
   };
 }
 
+export type { BoxSchema, BoxStatus, QueryOptions, QueryResult };
+
+export interface DataboxList {
+  data: BoxStatus[];
+  meta: {
+    returned: number;
+    available: number;
+    truncated: boolean;
+    enabled: boolean;
+    /** DuckDB payload health; present when enabled. */
+    runtime?: { ok: boolean; detail: string; boxes: number };
+  };
+}
+
 export interface GroundedClient {
   health(): Promise<HealthReport>;
   /** the Embeddings add-on: inspect it, and start it (an operator action). */
@@ -81,6 +96,16 @@ export interface GroundedClient {
       status(): Promise<EmbeddingsAddonStatus>;
       start(opts?: { device?: "auto" | "cpu" | "gpu" }): Promise<EmbeddingsAddonStatus>;
     };
+  };
+  /** the Databox addition: read-only SQL over structured boxes. */
+  databox: {
+    /** every box and its state; `meta.enabled` false when Databox is off. */
+    list(): Promise<DataboxList>;
+    status(box: string): Promise<BoxStatus>;
+    schema(box: string): Promise<BoxSchema>;
+    query(box: string, sql: string, opts?: QueryOptions): Promise<QueryResult>;
+    /** rebuild the index (an operator action). `wait` resolves after the build. */
+    index(box: string, opts?: { force?: boolean; wait?: boolean }): Promise<BoxStatus>;
   };
   /**
    * `opts.scopes` filters the doc lane (match any, OR); defaults to
@@ -238,6 +263,16 @@ export function createClient(options: ClientOptions): GroundedClient {
         start: async (opts = {}) =>
           (await request<{ data: EmbeddingsAddonStatus }>("POST", "/addons/embeddings", opts)).data,
       },
+    },
+    databox: {
+      list: () => request<DataboxList>("GET", "/databox"),
+      status: async (box) => (await request<{ data: BoxStatus }>("GET", `/databox/${encodeURIComponent(box)}`)).data,
+      schema: async (box) =>
+        (await request<{ data: BoxSchema }>("GET", `/databox/${encodeURIComponent(box)}/schema`)).data,
+      query: (box, sql, opts = {}) =>
+        request<QueryResult>("POST", `/databox/${encodeURIComponent(box)}/query`, { sql, ...opts }),
+      index: async (box, opts = {}) =>
+        (await request<{ data: BoxStatus }>("POST", `/databox/${encodeURIComponent(box)}/index`, opts)).data,
     },
     recall: (query, opts = {}) => request<ListResult<RecallResult>>("POST", "/recall", { query, ...opts }),
     impact: (subject, opts = {}) =>

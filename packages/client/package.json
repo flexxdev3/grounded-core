@@ -21,7 +21,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@grounded/core": "workspace:*"
+    "@grounded/core": "workspace:*",
+    "@grounded/databox": "workspace:*"
   },
   "devDependencies": {
     "@grounded/api": "workspace:*",

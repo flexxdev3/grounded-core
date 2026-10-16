@@ -468,3 +468,17 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 0.92rem; letter-spacing: 0.01em; }
 .shell.narrow .home-foot { flex-wrap: wrap; }
 
 .tray .searchbox { flex: none; }
+
+/* ===================== Databox ===================== */
+.dbx-grid {
+  overflow: auto; max-height: 28rem; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--card-solid);
+}
+.dbx-grid table { border-collapse: collapse; font-family: var(--mono); font-size: 0.74rem; width: max-content; min-width: 100%; }
+.dbx-grid th {
+  position: sticky; top: 0; background: var(--paper-deep); color: var(--ink-soft); text-align: left;
+  font-weight: 600; padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--line-strong); white-space: nowrap;
+}
+.dbx-grid td { padding: 0.35rem 0.7rem; border-bottom: 1px solid var(--line); color: var(--ink); white-space: nowrap; }
+.dbx-grid tr:hover td { background: var(--sage-wash); }
+.dbx-grid td.null { color: var(--ink-faint); }
