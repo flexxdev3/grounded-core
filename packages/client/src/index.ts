@@ -61,6 +61,8 @@ export interface EmbeddingsAddonStatus {
   modelPresent: boolean;
   downloadBytes: number;
   gpuBackend: "directml" | null;
+  /** the `[embeddings] device` setting in config.toml. */
+  device: "auto" | "gpu" | "cpu";
   job: {
     state: "idle" | "running" | "done" | "error";
     phase?: "download" | "probe" | "config" | "reload" | "backfill";

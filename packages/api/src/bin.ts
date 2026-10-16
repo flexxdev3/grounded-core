@@ -48,6 +48,7 @@ async function main(): Promise<void> {
     loadConfig,
     embeddings: embeddingsAddon,
     reloadStore: reload,
+    embeddingsDevice: async () => (await current.health()).embeddings.device,
     createDatabox: (cfg) => createServiceDatabox(cfg, store),
     ...(initialDatabox ? { initialDatabox } : {}),
   });

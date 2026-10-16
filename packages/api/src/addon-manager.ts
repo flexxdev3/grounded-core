@@ -20,6 +20,9 @@ import type { EmbeddingsAddon } from "./addons.js";
  * (packaged Core ships without them), then switch it on inside the running service:
  *   embeddings → the existing model-download/backfill job takes over;
  *   databox    → `[databox] enabled = true`, then the service attaches it live.
+ * Installing an add-on that is already on re-runs its switch-on step: for
+ * embeddings that is how the device (auto/gpu/cpu) changes — reload the model
+ * there, rewrite config.toml, swap the store. The download is skipped.
  * Host administration: the shared LAN listener never forwards these POSTs.
  */
 
@@ -66,6 +69,8 @@ export interface AddonManagerDeps {
   embeddings: EmbeddingsAddon;
   /** reopen the store from config.toml (embeddings provider changed). */
   reloadStore: () => Promise<unknown>;
+  /** where the live store computes vectors (undefined until the model first loads). */
+  embeddingsDevice?: () => Promise<"gpu" | "cpu" | undefined>;
   /** build + start the service Databox from config (undefined when disabled). */
   createDatabox: (cfg: GroundedConfig) => Databox | undefined;
   /** the Databox the service started with. */
@@ -92,7 +97,9 @@ export function createAddonManager(deps: AddonManagerDeps): AddonManager {
     if (def.id === "embeddings") {
       const s = await deps.embeddings.status();
       enabled = s.enabled;
-      info = { model: s.model, modelPresent: s.modelPresent, gpuBackend: s.gpuBackend, device: s.job.device ?? null, provider: s.provider };
+      // device = where vectors run now; deviceSetting = what config.toml asks for.
+      const live = s.enabled ? (s.job.device ?? (await deps.embeddingsDevice?.().catch(() => undefined))) : undefined;
+      info = { model: s.model, modelPresent: s.modelPresent, gpuBackend: s.gpuBackend, device: live ?? null, deviceSetting: s.device, provider: s.provider };
       downloadBytes += s.downloadBytes;
       // after the runtime phase the embeddings job owns progress: surface it as ours.
       if (j.phase === "handoff" || (j.state !== "running" && s.job.state === "running")) {

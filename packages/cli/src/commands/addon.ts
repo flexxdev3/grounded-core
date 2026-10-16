@@ -16,6 +16,7 @@ interface AddonStatus {
   modelPresent: boolean;
   downloadBytes: number;
   gpuBackend: string | null;
+  device?: string;
   job: {
     state: "idle" | "running" | "done" | "error";
     phase?: string;
@@ -53,6 +54,7 @@ function describe(s: AddonStatus): void {
   field("model", s.model);
   field("download", s.modelPresent ? "already downloaded" : `${mb(s.downloadBytes)}, once`);
   field("graphics card", s.gpuBackend ? `used when available (${s.gpuBackend})` : "not supported here yet; runs on the CPU");
+  if (s.device) field("device setting", s.device);
 }
 
 function progress(j: AddonStatus["job"]): string {

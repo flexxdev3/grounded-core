@@ -32,6 +32,8 @@ export interface EmbeddingsAddonPlan {
   downloadBytes: number;
   /** GPU backend this platform can use, if any. */
   gpuBackend: "directml" | null;
+  /** the device setting in config.toml (`[embeddings] device`, default auto). */
+  device: EmbeddingDevice;
 }
 
 export async function runtimeInstalled(): Promise<boolean> {
@@ -55,6 +57,7 @@ export async function embeddingsAddonPlan(cfg: GroundedConfig): Promise<Embeddin
     modelPresent: present,
     downloadBytes: present ? 0 : DEFAULT_LOCAL_DOWNLOAD_BYTES,
     gpuBackend: process.platform === "win32" ? "directml" : null,
+    device: cfg.embeddings.device ?? "auto",
   };
 }
 

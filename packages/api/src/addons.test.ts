@@ -20,6 +20,7 @@ function fakeAddon(): EmbeddingsAddon & { starts: number } {
         modelPresent: false,
         downloadBytes: 274_000_000,
         gpuBackend: null,
+        device: "auto" as const,
         job,
       };
     },

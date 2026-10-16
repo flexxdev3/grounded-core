@@ -313,6 +313,8 @@ it, so the fix lands everywhere instead of leaving the next agent a dangling ref
 | GET | \`/health\` | liveness + counts + the resolved budget table and per-lane over-cap counts; auth-exempt |
 | GET · POST · DELETE | \`/sharing\` | local host control for persistent opt-in LAN sharing: status · open/refresh a short pairing window (3 minutes by default) · stop. Never callable through the shared listener |
 | GET/POST | \`/addons/embeddings\` | the Embeddings add-on: GET = plan (download size, GPU backend) + job progress; POST \`{device?}\` starts it (downloads the model, turns vectors on, embeds existing rows). Operator action: never start it unasked |
+| GET | \`/addons\` | the add-on catalog (embeddings, databox): state, download size, job progress, \`info\` (embeddings: model, \`device\` = where vectors run now or null, \`deviceSetting\` = auto/gpu/cpu from config.toml, \`gpuBackend\`) |
+| POST | \`/addons/:id/install\` · \`/addons/:id/disable\` | host administration from the computer running Core (the shared listener refuses /addons/*). Install \`{device?}\` on embeddings that are already on switches the device: reloads the model there, rewrites \`[embeddings] device\`, no download. Operator action: never run unasked |
 | GET | \`/llms.txt\` | this document; auth-exempt |
 | GET | \`/openapi.json\` | full schema for every route below |
 | GET · POST · PATCH · DELETE | \`/facts\` \`/facts/:id\` | durable rules |

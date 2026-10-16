@@ -587,6 +587,38 @@ export const openApiDocument = {
         responses: { "202": { description: "started" }, "409": { description: "already running" } },
       },
     },
+    "/addons": {
+      get: {
+        summary: "Add-on catalog: state, download size, job progress and per-add-on info",
+        description:
+          "embeddings info: model, modelPresent, gpuBackend, provider, `device` (gpu | cpu | null = where vectors run now, null until the model loads) and `deviceSetting` (auto | gpu | cpu, from config.toml).",
+        responses: { "200": { description: "{ data: AddonView[] }" }, "404": { description: "add-ons not managed by this deployment" } },
+      },
+    },
+    "/addons/{id}/install": {
+      post: {
+        summary: "Install / turn on an add-on (local host only; the shared listener refuses it)",
+        description:
+          "Downloads the runtime when missing, then switches the add-on on. On embeddings that are already on, `device` switches where vectors run: the model reloads there, config.toml is rewritten, nothing is downloaded.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", enum: ["embeddings", "databox"] } }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: { type: "object", properties: { device: { type: "string", enum: ["auto", "cpu", "gpu"] } } },
+            },
+          },
+        },
+        responses: { "202": { description: "{ data: AddonView } job started" }, "409": { description: "a job is already running" }, "404": { description: "unknown add-on" } },
+      },
+    },
+    "/addons/{id}/disable": {
+      post: {
+        summary: "Turn an add-on off (local host only). Keeps its runtime and data",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", enum: ["embeddings", "databox"] } }],
+        responses: { "200": { description: "{ data: AddonView }" }, "404": { description: "unknown add-on" } },
+      },
+    },
     "/databox": {
       get: {
         summary: "Databox boxes and their state (fresh / stale / unindexed / empty / error)",
