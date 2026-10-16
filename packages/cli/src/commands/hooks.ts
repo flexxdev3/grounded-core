@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { GlobalOpts } from "../util/global.js";
@@ -8,8 +8,11 @@ import { c, line, printJson, header, field, fail } from "../util/output.js";
 type HookTarget = "claude-code" | "codex" | "cursor" | "generic";
 const HOOK_TARGETS: HookTarget[] = ["claude-code", "codex", "cursor", "generic"];
 
-// hooks/ ships alongside dist/ (see package.json "files"); from dist/commands/ → ../../hooks
-const hooksDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "hooks");
+// hooks/ ships alongside dist/ (see package.json "files"); from dist/commands/ → ../../hooks.
+// The release bundle is lib/cli.mjs with hooks/ beside lib/ → ../hooks.
+const here = dirname(fileURLToPath(import.meta.url));
+const hooksDir = [join(here, "..", "hooks"), join(here, "..", "..", "hooks")].find((d) => existsSync(d))
+  ?? join(here, "..", "..", "hooks");
 
 function scriptName(target: HookTarget): string {
   return target === "claude-code"

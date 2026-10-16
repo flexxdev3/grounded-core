@@ -13,3 +13,6 @@ coverage/
 *.grounded.db-*
 .grounded-test/
 scratchspace/
+
+# Release artifacts (scripts/package.mjs)
+release/
