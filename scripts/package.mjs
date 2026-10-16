@@ -42,7 +42,7 @@ if (git("status", "--porcelain", "--untracked-files=no")) {
 if (!process.argv.includes("--skip-build")) {
   for (const p of ["core", "databox", "client", "ui", "api", "mcp", "cli"]) {
     const req = createRequire(join(pkg(p), "package.json"));
-    const bin = p === "ui" ? req.resolve("vite/bin/vite.js") : req.resolve("typescript/bin/tsc");
+    const bin = p === "ui" ? join(dirname(req.resolve("vite/package.json")), "bin", "vite.js") : req.resolve("typescript/bin/tsc");
     log(`build ${p}`);
     execFileSync(process.execPath, p === "ui" ? [bin, "build"] : [bin, "-p", "tsconfig.json"], { cwd: pkg(p), stdio: "inherit" });
   }
