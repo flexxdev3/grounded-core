@@ -149,9 +149,10 @@ exists without reading content you were not scoped to.
 A session spans an extended working conversation and may contain many requests. Completing a request, sending a final reply, passing checks, or finishing an artifact does not end the session. Create a session row when the user explicitly asks to record the work or signals that the working session is ending. Do not infer closure from task completion.
 
 
-- \`POST /facts\` — upserts on \`(scope, topicKey)\` as a **merge-patch**: omitted fields keep
-  their existing value. Supply \`topicKey\` to revise a rule in place; omit it and every call
-  writes a new row. Capped — see "The budget contract".
+- \`POST /facts\` — creates or upserts on \`(scope, topicKey)\`; \`fact\` is required even on an
+  upsert. Supply \`topicKey\` to revise a rule in place; omit it and every call writes a new row.
+  Use \`PATCH /facts/:id\` for a true partial merge-patch such as pinning an existing row. Capped —
+  see "The budget contract".
 - \`POST /sessions\` — log what happened. \`summary\` is the line an agent sees at startup;
   \`details\` is the body recall searches. Both capped — see "The budget contract".
 - \`PATCH /sessions/:id\` — correct a work-log entry in place (partial; omitted fields keep
@@ -310,6 +311,7 @@ it, so the fix lands everywhere instead of leaving the next agent a dangling ref
 | Method | Path | |
 |---|---|---|
 | GET | \`/health\` | liveness + counts + the resolved budget table and per-lane over-cap counts; auth-exempt |
+| GET · POST · DELETE | \`/sharing\` | local host control for persistent opt-in LAN sharing: status · open/refresh a short pairing window (3 minutes by default) · stop. Never callable through the shared listener |
 | GET/POST | \`/addons/embeddings\` | the Embeddings add-on: GET = plan (download size, GPU backend) + job progress; POST \`{device?}\` starts it (downloads the model, turns vectors on, embeds existing rows). Operator action: never start it unasked |
 | GET | \`/llms.txt\` | this document; auth-exempt |
 | GET | \`/openapi.json\` | full schema for every route below |

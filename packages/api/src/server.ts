@@ -5,6 +5,9 @@ import { createApp } from "./app.js";
 import type { EmbeddingsAddon } from "./addons.js";
 import type { Databox } from "@grounded/databox";
 import { resolveUiDist, serveUi } from "./static.js";
+import { createSharingController, sharingInternalHeader, type SharingController } from "./sharing.js";
+import { defaultHome } from "@grounded/core";
+import { join } from "node:path";
 
 export interface StartServerOptions {
   store: Store;
@@ -41,19 +44,39 @@ export interface StartServerOptions {
   embeddingsAddon?: EmbeddingsAddon;
   /** the Databox addition, when `[databox] enabled`. */
   databox?: Databox;
+  /** Enable opt-in, paired LAN sharing support. Defaults on for loopback hosts. */
+  sharing?: boolean;
+  /** Secondary temporary listener. Defaults to the main port + 1. */
+  sharingPort?: number;
 }
 
 export interface RunningServer {
   url: string;
   /** true when the console UI is being served at `url`. */
   ui: boolean;
+  sharing?: SharingController;
   close: () => Promise<void>;
 }
 
 /** Boot grounded-api on a real port. Shared by the `grounded-api` bin and
  *  `ground ui`. Serves the console from the same origin unless disabled. */
 export function startServer(opts: StartServerOptions): Promise<RunningServer> {
-  const app = createApp(opts.store, {
+  const port = opts.port ?? 7437;
+  const host = opts.host ?? "127.0.0.1";
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+  const sharingEnabled = opts.sharing ?? loopback;
+  const internalHeader = sharingInternalHeader();
+  let app!: ReturnType<typeof createApp>;
+  const sharing = sharingEnabled
+    ? createSharingController({
+        fetch: (request) => app.fetch(request),
+        port: opts.sharingPort ?? port + 1,
+        internalHeader,
+        stateFile: join(defaultHome(), "sharing.json"),
+      })
+    : undefined;
+
+  app = createApp(opts.store, {
     ...(opts.token ? { token: opts.token } : {}),
     ...(opts.budget ? { budget: opts.budget } : {}),
     ...(opts.typicalFactLimit !== undefined
@@ -64,6 +87,7 @@ export function startServer(opts: StartServerOptions): Promise<RunningServer> {
       : {}),
     ...(opts.embeddingsAddon ? { embeddingsAddon: opts.embeddingsAddon } : {}),
     ...(opts.databox ? { databox: opts.databox } : {}),
+    ...(sharing ? { sharing, sharingInternalHeader: internalHeader } : {}),
     ...(opts.visionReserveTok !== undefined
       ? { visionReserveTok: opts.visionReserveTok }
       : {}),
@@ -72,18 +96,25 @@ export function startServer(opts: StartServerOptions): Promise<RunningServer> {
   const distDir = opts.ui === false ? null : resolveUiDist();
   if (distDir) serveUi(app, distDir);
 
-  const port = opts.port ?? 7437;
-  const host = opts.host ?? "127.0.0.1";
-
-  return new Promise((resolve) => {
-    const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
+  return new Promise((resolve, reject) => {
+    const server = serve({ fetch: app.fetch, port, hostname: host }, async (info) => {
+      try {
+        await sharing?.initialize();
+      } catch (error) {
+        server.close();
+        reject(error);
+        return;
+      }
       resolve({
         url: `http://${host}:${info.port}`,
         ui: Boolean(distDir),
-        close: () =>
-          new Promise<void>((res) => {
+        ...(sharing ? { sharing } : {}),
+        close: async () => {
+          await sharing?.close();
+          await new Promise<void>((res) => {
             server.close(() => res());
-          }),
+          });
+        },
       });
     });
   });

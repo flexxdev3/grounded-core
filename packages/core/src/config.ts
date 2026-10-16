@@ -188,50 +188,59 @@ function reserveFromBudget(budget: Record<BriefLane, LaneBudget>): GroundedConfi
   };
 }
 
-/** Hidden system folder inside the Windows `Grounded` folder. */
+/** Legacy Windows system folder. Kept so existing installs remain discoverable. */
 export const CORE_DIRNAME = ".core";
+export const SYSTEM_DIRNAME = ".grounded";
 
 /**
  * The engine home (config, logs, service, models) when neither an argument
  * nor GROUNDED_HOME names one.
  *
- * - Windows: `%USERPROFILE%\Grounded\.core`. The user-facing folder is
- *   `%USERPROFILE%\Grounded`, beside Documents and Downloads, holding only
- *   `Cabinet\` (their data) and the hidden `.core\` (everything they never
- *   need to see). Not under Documents: OneDrive backup syncs Documents, and a
- *   live SQLite file in a synced folder gets locked mid-write and forked into
- *   conflict copies. The profile root is never synced. A cabinet already at
- *   `~\.grounded` keeps being used, so an upgrade never strands one.
- * - Everywhere else: `~/.grounded`, the dotfile convention, already hidden.
+ * New installs use `~/.grounded` on every platform. Windows cabinet data stays
+ * separate at `~/Grounded/Cabinet` so the system/configuration home can be
+ * managed without putting the live SQLite database in a hidden or synced
+ * directory. An existing Windows `~/Grounded/.core/config.toml` still wins
+ * until the explicit migration flow moves it; an upgrade must never silently
+ * select a new empty cabinet.
  */
 export function defaultHome(platform: NodeJS.Platform = process.platform, home: string = homedir()): string {
-  const legacy = join(home, ".grounded");
-  if (platform !== "win32") return legacy;
-  const visible = join(home, "Grounded");
-  if (!existsSync(visible) && existsSync(join(legacy, CONFIG_FILENAME))) return legacy;
-  return join(visible, CORE_DIRNAME);
+  const system = join(home, SYSTEM_DIRNAME);
+  if (platform !== "win32") return system;
+  const legacy = join(home, "Grounded", CORE_DIRNAME);
+  if (existsSync(join(system, CONFIG_FILENAME))) return system;
+  if (existsSync(join(legacy, CONFIG_FILENAME))) return legacy;
+  return system;
 }
 
 /**
- * Where the user's data lives. A `.core` home keeps it beside itself in a
- * visible `Cabinet` folder; any other home keeps it inside, at `cabinet/`.
+ * Where the user's data lives. Windows' default `.grounded` system home and
+ * the legacy `.core` home both use the visible `~/Grounded/Cabinet`. Explicit
+ * custom homes keep their cabinet inside the home at `cabinet/`.
  */
-export function cabinetDir(home: string): string {
-  return basename(home) === CORE_DIRNAME ? join(dirname(home), "Cabinet") : join(home, "cabinet");
+export function cabinetDir(home: string, platform: NodeJS.Platform = process.platform): string {
+  if (basename(home) === CORE_DIRNAME) return join(dirname(home), "Cabinet");
+  if (platform === "win32" && basename(home) === SYSTEM_DIRNAME) {
+    return join(dirname(home), "Grounded", "Cabinet");
+  }
+  return join(home, "cabinet");
 }
 
-/** The folder a user opens: the parent of a `.core` home, else the home itself. */
-export function visibleRoot(home: string): string {
-  return basename(home) === CORE_DIRNAME ? dirname(home) : home;
+/** The folder a user opens: the visible Grounded folder on Windows. */
+export function visibleRoot(home: string, platform: NodeJS.Platform = process.platform): string {
+  if (basename(home) === CORE_DIRNAME) return dirname(home);
+  if (platform === "win32" && basename(home) === SYSTEM_DIRNAME) {
+    return join(dirname(home), "Grounded");
+  }
+  return home;
 }
 
-export function defaultConfig(home?: string): GroundedConfig {
-  const resolvedHome = home ?? defaultHome();
+export function defaultConfig(home?: string, platform: NodeJS.Platform = process.platform): GroundedConfig {
+  const resolvedHome = home ?? defaultHome(platform);
   return {
     home: resolvedHome,
     storage: {
       adapter: "sqlite",
-      path: join(cabinetDir(resolvedHome), "grounded.db"),
+      path: join(cabinetDir(resolvedHome, platform), "grounded.db"),
       schema: "public",
     },
     embeddings: {

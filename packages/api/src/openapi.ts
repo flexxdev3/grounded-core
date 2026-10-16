@@ -435,9 +435,29 @@ export const openApiDocument = {
       },
       HealthReport: {
         type: "object",
-        required: ["ok", "storage", "embeddings", "counts"],
+        required: ["ok", "version", "capabilities", "storage", "embeddings", "counts"],
         properties: {
           ok: { type: "boolean" },
+          version: { type: "string" },
+          capabilities: {
+            type: "object",
+            properties: {
+              embeddings: { type: "boolean" },
+              databox: { type: "boolean" },
+              temporarySharing: { type: "boolean" },
+            },
+          },
+          sharing: {
+            type: "object",
+            properties: {
+              active: { type: "boolean" },
+              pairingOpen: { type: "boolean" },
+              pairedClients: { type: "integer" },
+              port: { type: "integer" },
+              expiresAt: { type: "string" },
+              addresses: { type: "array", items: { type: "string" } },
+            },
+          },
           storage: {
             type: "object",
             properties: {
@@ -533,6 +553,22 @@ export const openApiDocument = {
   },
   security: [{ bearerAuth: [] }],
   paths: {
+    "/sharing": {
+      get: {
+        summary: "Read paired network-sharing status (local host administration)",
+        responses: { "200": { description: "{ data: { active, pairingOpen, pairedClients, port, code?, startedAt?, expiresAt?, addresses } }" } },
+      },
+      post: {
+        summary: "Enable LAN sharing and open a temporary pairing window",
+        description: "Generates a six-digit enrollment code. Code expiry does not disconnect registered clients. The LAN listener cannot control sharing, add-ons, or Databox indexing.",
+        requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { minutes: { type: "integer", minimum: 1, maximum: 60, default: 3 } } } } } },
+        responses: { "201": { description: "sharing started" }, "400": { description: "invalid duration" } },
+      },
+      delete: {
+        summary: "Stop LAN sharing immediately",
+        responses: { "200": { description: "sharing stopped" } },
+      },
+    },
     "/addons/embeddings": {
       get: {
         summary: "Embeddings add-on: plan (model, download size, GPU backend) and job progress",
@@ -633,7 +669,7 @@ export const openApiDocument = {
     "/health": {
       get: {
         summary:
-          "Service health — storage, embeddings, counts, and the resolved budget contract with per-lane over-cap counts",
+          "Service health — version, capabilities, temporary sharing state, storage, embeddings, counts, and the resolved budget contract",
         security: [],
         responses: {
           "200": {

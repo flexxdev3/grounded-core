@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { EmbeddingsAddon } from "./addons.js";
+import type { SharingController } from "./sharing.js";
 import { DataboxError, type Databox } from "@grounded/databox";
 import {
   ConfigError,
@@ -548,6 +549,10 @@ export function createApp(
     embeddingsAddon?: EmbeddingsAddon;
     /** the Databox addition; absent when `[databox] enabled` is false. */
     databox?: Databox;
+    /** Temporary, code-gated network listener controlled from this local API. */
+    sharing?: SharingController;
+    /** Unforgeable marker added only by the temporary sharing listener. */
+    sharingInternalHeader?: string;
   } = {},
 ): Hono {
   const app = new Hono();
@@ -608,7 +613,10 @@ export function createApp(
       if (PUBLIC_PATHS.has(c.req.path)) return next();
       const header = c.req.header("authorization") ?? "";
       const expected = `Bearer ${token}`;
-      if (header !== expected) {
+      const shared =
+        opts.sharingInternalHeader !== undefined &&
+        c.req.header("x-grounded-internal-share") === opts.sharingInternalHeader;
+      if (header !== expected && !shared) {
         return c.json({ error: "unauthorized", code: "UNAUTHORIZED" }, 401);
       }
       return next();
@@ -716,6 +724,13 @@ export function createApp(
 
     return c.json({
       ...report,
+      version: "0.1.0",
+      capabilities: {
+        embeddings: Boolean(opts.embeddingsAddon),
+        databox: Boolean(opts.databox),
+        temporarySharing: Boolean(opts.sharing),
+      },
+      ...(opts.sharing ? { sharing: opts.sharing.status(false) } : {}),
       databox,
       counts,
       budget: {
@@ -731,6 +746,31 @@ export function createApp(
   app.get("/llms.txt", (c) =>
     c.text(LLMS_TXT, 200, { "content-type": "text/markdown; charset=utf-8" }),
   );
+
+  // ---- opt-in network sharing and temporary pairing ----
+  // These controls exist only on the normal loopback service. The secondary
+  // listener blocks /sharing before forwarding any request into this app.
+  app.get("/sharing", (c) => {
+    if (!opts.sharing) throw new NotFoundError("network sharing is not available in this deployment");
+    return c.json({ data: opts.sharing.status(true) });
+  });
+
+  app.post("/sharing", async (c) => {
+    if (!opts.sharing) throw new NotFoundError("network sharing is not available in this deployment");
+    const body = await readJsonOptional(c);
+    if (!isRecord(body)) throw new ValidationError("body must be an object");
+    rejectUnknownKeys(body, ["minutes"]);
+    const minutes = optNumber(body.minutes, "minutes");
+    if (minutes !== undefined && (!Number.isInteger(minutes) || minutes < 1 || minutes > 60)) {
+      throw new ValidationError('"minutes" must be an integer from 1 to 60');
+    }
+    return c.json({ data: await opts.sharing.start(minutes) }, 201);
+  });
+
+  app.delete("/sharing", async (c) => {
+    if (!opts.sharing) throw new NotFoundError("network sharing is not available in this deployment");
+    return c.json({ data: await opts.sharing.stop() });
+  });
 
   // ---- facts ----
   app.get("/facts", async (c) => {

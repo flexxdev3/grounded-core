@@ -84,29 +84,32 @@ describe("defaultHome", () => {
     expect(defaultHome("darwin", home)).toBe(join(home, ".grounded"));
   });
 
-  it("is ~/Grounded/.core on Windows, with the data in a visible ~/Grounded/Cabinet", () => {
+  it("uses ~/.grounded for Windows system state and a separate visible Cabinet", () => {
     const h = defaultHome("win32", home);
-    expect(h).toBe(join(home, "Grounded", ".core"));
-    expect(cabinetDir(h)).toBe(join(home, "Grounded", "Cabinet"));
-    expect(visibleRoot(h)).toBe(join(home, "Grounded"));
+    expect(h).toBe(join(home, ".grounded"));
+    expect(cabinetDir(h, "win32")).toBe(join(home, "Grounded", "Cabinet"));
+    expect(visibleRoot(h, "win32")).toBe(join(home, "Grounded"));
   });
 
   it("keeps the cabinet inside any other home", () => {
-    expect(cabinetDir(join(home, ".grounded"))).toBe(join(home, ".grounded", "cabinet"));
-    expect(visibleRoot(join(home, ".grounded"))).toBe(join(home, ".grounded"));
+    expect(cabinetDir(join(home, ".grounded"), "linux")).toBe(join(home, ".grounded", "cabinet"));
+    expect(visibleRoot(join(home, ".grounded"), "linux")).toBe(join(home, ".grounded"));
+    expect(cabinetDir(join(home, "custom"), "win32")).toBe(join(home, "custom", "cabinet"));
   });
 
-  it("puts the default sqlite file in the Cabinet of a .core home", () => {
-    const h = join(home, "Grounded", ".core");
-    expect(defaultConfig(h).storage.path).toBe(join(home, "Grounded", "Cabinet", "grounded.db"));
+  it("puts the Windows default sqlite file in the visible Cabinet", () => {
+    const h = join(home, ".grounded");
+    expect(defaultConfig(h, "win32").storage.path).toBe(join(home, "Grounded", "Cabinet", "grounded.db"));
   });
 
-  it("keeps an existing ~/.grounded cabinet on Windows so an upgrade strands nothing", () => {
+  it("keeps an existing legacy .core install until explicit migration", () => {
+    const legacy = join(home, "Grounded", ".core");
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, "config.toml"), "[storage]\n");
+    expect(defaultHome("win32", home)).toBe(legacy);
     mkdirSync(join(home, ".grounded"));
     writeFileSync(join(home, ".grounded", "config.toml"), "[storage]\n");
     expect(defaultHome("win32", home)).toBe(join(home, ".grounded"));
-    mkdirSync(join(home, "Grounded"));
-    expect(defaultHome("win32", home)).toBe(join(home, "Grounded", ".core"));
   });
 });
 
