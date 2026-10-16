@@ -9,6 +9,7 @@
  */
 export { Databox, validateBoxes, type DataboxOptions } from "./databox.js";
 export { renderSchemaCard } from "./card.js";
+export { writeDataboxConfig } from "./config.js";
 export { duckHealth } from "./duck.js";
 export { scanItems } from "./items.js";
 export {

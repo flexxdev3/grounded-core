@@ -18,7 +18,7 @@ function isManageable(m: unknown): m is InstallMethod {
   return typeof m === "string" && (MANAGEABLE as string[]).includes(m);
 }
 
-async function resolveMethod(home: string, port: number): Promise<InstallMethod> {
+export async function resolveMethod(home: string, port: number): Promise<InstallMethod> {
   const d = await detect({ home, port });
   if (isManageable(d.method)) return d.method;
   if (d.running) {

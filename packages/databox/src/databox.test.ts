@@ -34,6 +34,26 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 const box = (writer = true, onIndexed?: ConstructorParameters<typeof Databox>[0]["onIndexed"]) =>
   new Databox({ boxes: [{ name: "cars", root, description: "test cars" }], writer, log: () => {}, ...(onIndexed ? { onIndexed } : {}) });
 
+describe("writeDataboxConfig", () => {
+  it("replaces the databox block and keeps everything else", async () => {
+    const { writeDataboxConfig } = await import("./index.js");
+    const { parse } = await import("smol-toml");
+    const p = join(root, "config.toml");
+    writeFileSync(
+      p,
+      '# mine\n[storage]\nadapter = "sqlite"\n\n[databox]\nenabled = false\n\n[[databox.box]]\nname = "old"\nroot = "x"\n\n[embeddings]\nprovider = "none"\n',
+    );
+    writeDataboxConfig(p, { enabled: true, box: [{ name: "cars", root: "C:\\data\\cars", description: 'say "hi"' }] });
+    const text = (await import("node:fs")).readFileSync(p, "utf8");
+    expect(text).toContain("# mine");
+    expect(text).not.toContain('"old"');
+    const cfg = parse(text) as Record<string, any>;
+    expect(cfg.storage.adapter).toBe("sqlite");
+    expect(cfg.embeddings.provider).toBe("none");
+    expect(cfg.databox).toEqual({ enabled: true, box: [{ name: "cars", root: "C:\\data\\cars", description: 'say "hi"' }] });
+  });
+});
+
 describe("config", () => {
   it("validates box entries", () => {
     expect(validateBoxes(undefined)).toEqual([]);

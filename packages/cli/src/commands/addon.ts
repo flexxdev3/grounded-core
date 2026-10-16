@@ -3,8 +3,9 @@ import { detect, resolveHome } from "@grounded/core";
 import type { GlobalOpts } from "../util/global.js";
 import { c, line, header, field, printJson, fail } from "../util/output.js";
 import { confirm, interactive } from "../util/prompt.js";
+import { addDatabox } from "./databox.js";
 
-const ADDONS = ["embeddings"] as const;
+const ADDONS = ["embeddings", "databox"] as const;
 const POLL_MS = 1000;
 
 interface AddonStatus {
@@ -66,7 +67,7 @@ function progress(j: AddonStatus["job"]): string {
 }
 
 export function addonCommand(global: () => GlobalOpts): Command {
-  const cmd = new Command("addon").description("optional add-ons (embeddings)");
+  const cmd = new Command("addon").description("optional add-ons (embeddings, databox)");
 
   cmd
     .command("status")
@@ -74,22 +75,48 @@ export function addonCommand(global: () => GlobalOpts): Command {
     .option("--port <n>", "service port")
     .action(async (opts: { port?: string }) => {
       const g = global();
-      const { data } = await call(await serviceUrl(g, opts.port));
-      if (g.json) return printJson({ embeddings: data });
+      const url = await serviceUrl(g, opts.port);
+      const { data } = await call(url);
+      const health = (await (await fetch(`${url}/health`)).json()) as { databox?: { enabled: boolean; ok: boolean; detail: string; boxes: number } };
+      if (g.json) return printJson({ embeddings: data, databox: health.databox ?? null });
       header("Embeddings add-on");
       describe(data);
+      header("Databox add-on");
+      const dbx = health.databox;
+      field(
+        "structured data",
+        !dbx || !dbx.enabled ? c.yellow("off") : dbx.ok ? c.green(`on (${dbx.boxes} box${dbx.boxes === 1 ? "" : "es"}, ${dbx.detail})`) : c.yellow(`on, ${dbx.detail}`),
+      );
     });
 
   cmd
     .command("add")
     .argument("<name>", `add-on to turn on: ${ADDONS.join(" | ")}`)
-    .description("turn on an add-on (embeddings: download the model and switch on search by meaning)")
-    .option("--device <d>", "auto | cpu | gpu (default auto: the GPU when usable)")
+    .description(
+      "turn on an add-on (embeddings: download the model and switch on search by meaning; " +
+        "databox: query structured data boxes with SQL)",
+    )
+    .option("--device <d>", "embeddings: auto | cpu | gpu (default auto: the GPU when usable)")
+    .option("--box <name=folder...>", "databox: add or replace a box (the folder holds items/*.json)")
+    .option("--description <text>", "databox: one line about the box(es) added with --box")
+    .option("--no-restart", "databox: write the config but do not restart the service")
     .option("--port <n>", "service port")
     .option("-y, --yes", "no confirmation prompt")
-    .action(async (name: string, opts: { device?: string; port?: string; yes?: boolean }) => {
+    .action(
+      async (
+        name: string,
+        opts: { device?: string; port?: string; yes?: boolean; box?: string[]; description?: string; restart?: boolean },
+      ) => {
       const g = global();
       if (!(ADDONS as readonly string[]).includes(name)) fail(`unknown add-on "${name}". Available: ${ADDONS.join(", ")}`);
+      if (name === "databox") {
+        return addDatabox(g, {
+          ...(opts.box ? { box: opts.box } : {}),
+          ...(opts.description ? { description: opts.description } : {}),
+          ...(opts.yes ? { yes: true } : {}),
+          ...(opts.restart === false ? { restart: false } : {}),
+        });
+      }
       if (opts.device && !["auto", "cpu", "gpu"].includes(opts.device)) fail("--device must be auto, cpu or gpu");
       const url = await serviceUrl(g, opts.port);
       const { data: plan } = await call(url);
