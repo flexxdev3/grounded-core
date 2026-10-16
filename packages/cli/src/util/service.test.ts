@@ -109,6 +109,31 @@ async function loadService(env: Record<string, string | undefined> = {}) {
   return import("./service.js");
 }
 
+// ---- host stubs --------------------------------------------------------------
+// service.ts reads process.platform and process.getuid at call time, so the
+// tests pin the host they describe instead of inheriting the runner's: on
+// Windows getuid does not exist (vi.spyOn cannot wrap it), and a Linux CI
+// runner may well be root.
+
+const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const realGetuid = Object.getOwnPropertyDescriptor(process, "getuid");
+
+function onPlatform(p: NodeJS.Platform) {
+  Object.defineProperty(process, "platform", { value: p, configurable: true });
+}
+function asUid(uid: number) {
+  Object.defineProperty(process, "getuid", { value: () => uid, configurable: true, writable: true });
+}
+function restoreHost() {
+  Object.defineProperty(process, "platform", realPlatform);
+  if (realGetuid) Object.defineProperty(process, "getuid", realGetuid);
+  else delete (process as { getuid?: unknown }).getuid;
+}
+
+/** A POSIX-looking absolute path as THIS host's path module spells it — what
+ *  fileURLToPath + resolve() would hand service.ts for a module living there. */
+const hostAbs = (p: string) => resolve(p);
+
 const argvOf = (cmd: string) => spawnCalls.filter((c) => c.cmd === cmd).map((c) => c.args);
 const ranAny = (cmd: string, first: string) =>
   spawnCalls.some((c) => c.cmd === cmd && c.args[0] === first);
@@ -128,6 +153,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  restoreHost();
   delete process.env.GROUNDED_IMAGE;
   delete process.env.GROUNDED_BUILD_CONTEXT;
   delete process.env.GROUNDED_API_BIN;
@@ -138,6 +164,9 @@ afterEach(() => {
  *  GROUNDED_HOME pointed at a fake cabinet so no real filesystem is consulted. */
 const CAB = "/cab";
 const SHIPPED_API = join(CAB, "lib", "current", "lib", "api.mjs");
+/** The root-owned system unit, as core's systemdUnitPath() joins it on this host
+ *  ("/etc/systemd/system/grounded.service" on Linux, the only host it serves). */
+const SYSTEM_UNIT = join("/etc/systemd/system", "grounded.service");
 
 // ---- process helpers ---------------------------------------------------------
 
@@ -186,9 +215,9 @@ describe("dockerBuildContext", () => {
   // four-levels-up walk lands inside that tree, where an unrelated Dockerfile
   // would have been built as if it were ours. It must say null, not guess.
   it("refuses a guess under node_modules even when every marker is present", async () => {
-    moduleFileOverride = "/home/u/proj/node_modules/@grounded/cli/dist/util/service.js";
+    const guess = hostAbs("/home/u/proj/node_modules");
+    moduleFileOverride = join(guess, "@grounded", "cli", "dist", "util", "service.js");
     const { dockerBuildContext } = await loadService();
-    const guess = "/home/u/proj/node_modules";
     existing = new Set(
       ["Dockerfile", "packages", "pnpm-workspace.yaml"].map((m) => join(guess, m)),
     );
@@ -196,9 +225,9 @@ describe("dockerBuildContext", () => {
   });
 
   it("still resolves a real in-checkout root through the same walk", async () => {
-    moduleFileOverride = "/home/u/grounded-core/packages/cli/dist/util/service.js";
+    const root = hostAbs("/home/u/grounded-core");
+    moduleFileOverride = join(root, "packages", "cli", "dist", "util", "service.js");
     const { dockerBuildContext } = await loadService();
-    const root = "/home/u/grounded-core";
     existing = new Set(
       ["Dockerfile", "packages", "pnpm-workspace.yaml"].map((m) => join(root, m)),
     );
@@ -411,10 +440,10 @@ describe("materializeSystemd", () => {
 
   it("system scope without root writes the unit through `sudo tee` and drives sudo systemctl", async () => {
     const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
-    vi.spyOn(process, "getuid").mockReturnValue(1000);
+    asUid(1000);
     existing.add(SHIPPED_API);
     await materializeSystemd("system", { port: 7437, token: "tok" });
-    expect(spawnCalls[0]).toEqual({ cmd: "sudo", args: ["tee", "/etc/systemd/system/grounded.service"] });
+    expect(spawnCalls[0]).toEqual({ cmd: "sudo", args: ["tee", SYSTEM_UNIT] });
     expect(teeWrites).toHaveLength(1);
     expect(teeWrites[0]).toContain("Environment=GROUNDED_API_PORT=7437");
     expect(teeWrites[0]).toContain("Environment=GROUNDED_API_TOKEN=tok");
@@ -429,7 +458,7 @@ describe("materializeSystemd", () => {
   // directly — the unit must name the interpreter or it dies 203/EXEC.
   it("renders ExecStart as `<node> <path>` for a bundled .mjs entry point", async () => {
     const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
-    vi.spyOn(process, "getuid").mockReturnValue(1000);
+    asUid(1000);
     existing.add(SHIPPED_API);
     await materializeSystemd("system", { port: 7437 });
     expect(teeWrites[0]).toContain(`ExecStart=${process.execPath} ${SHIPPED_API}`);
@@ -437,7 +466,7 @@ describe("materializeSystemd", () => {
 
   it("renders ExecStart bare for a real executable, with no interpreter prefix", async () => {
     const { materializeSystemd } = await loadService({ GROUNDED_API_BIN: "/usr/local/bin/grounded-api" });
-    vi.spyOn(process, "getuid").mockReturnValue(1000);
+    asUid(1000);
     existing.add("/usr/local/bin/grounded-api");
     await materializeSystemd("system", { port: 7437 });
     expect(teeWrites[0]).toContain("ExecStart=/usr/local/bin/grounded-api\n");
@@ -445,7 +474,7 @@ describe("materializeSystemd", () => {
 
   it("system scope as root drives systemctl directly, no sudo", async () => {
     const { materializeSystemd } = await loadService({ GROUNDED_HOME: CAB });
-    vi.spyOn(process, "getuid").mockReturnValue(0);
+    asUid(0);
     existing.add(SHIPPED_API);
     await materializeSystemd("system", { port: 7437 });
     expect(argvOf("systemctl")).toEqual([["daemon-reload"], ["enable", "--now", "grounded.service"]]);
@@ -490,11 +519,23 @@ describe("resolveApiBin", () => {
   });
 
   it("falls back to a grounded-api resolved through `which`, never a bare name", async () => {
+    onPlatform("linux");
     const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
     execOut = (cmd, args) =>
       cmd === "which" && args[0] === "grounded-api" ? "/usr/local/bin/grounded-api\n" : null;
     existing.add("/usr/local/bin/grounded-api");
     await expect(resolveApiBin()).resolves.toBe("/usr/local/bin/grounded-api");
+  });
+
+  // `where` lists every PATH hit, CRLF-separated; only the first is taken.
+  it("on Windows asks `where` instead and takes its first hit", async () => {
+    onPlatform("win32");
+    const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
+    const hit = "C:\\g\\bin\\grounded-api.cmd";
+    execOut = (cmd, args) =>
+      cmd === "where" && args[0] === "grounded-api" ? `${hit}\r\nC:\\other\\grounded-api\r\n` : null;
+    existing.add(hit);
+    await expect(resolveApiBin()).resolves.toBe(hit);
   });
 
   it("ignores a `which` hit whose path does not exist (stale shim / hashed shell)", async () => {
@@ -504,10 +545,10 @@ describe("resolveApiBin", () => {
   });
 
   it("falls back to the workspace build when running out of a repo checkout", async () => {
-    moduleFileOverride = "/home/u/grounded-core/packages/cli/dist/util/service.js";
+    const root = hostAbs("/home/u/grounded-core");
+    moduleFileOverride = join(root, "packages", "cli", "dist", "util", "service.js");
     const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
     execOut = () => null;
-    const root = "/home/u/grounded-core";
     existing = new Set([
       ...["Dockerfile", "packages", "pnpm-workspace.yaml"].map((m) => join(root, m)),
       join(root, "packages", "api", "dist", "bin.js"),
@@ -518,10 +559,10 @@ describe("resolveApiBin", () => {
   // Same identity check as dockerBuildContext(): a CLI vendored into someone
   // else's node_modules must not claim their tree's packages/api as ours.
   it("refuses the checkout fallback under node_modules even with every marker present", async () => {
-    moduleFileOverride = "/home/u/proj/node_modules/@grounded/cli/dist/util/service.js";
+    const guess = hostAbs("/home/u/proj/node_modules");
+    moduleFileOverride = join(guess, "@grounded", "cli", "dist", "util", "service.js");
     const { resolveApiBin } = await loadService({ GROUNDED_HOME: CAB });
     execOut = () => null;
-    const guess = "/home/u/proj/node_modules";
     existing = new Set([
       ...["Dockerfile", "packages", "pnpm-workspace.yaml"].map((m) => join(guess, m)),
       join(guess, "packages", "api", "dist", "bin.js"),
@@ -585,7 +626,7 @@ describe("lifecycle verbs", () => {
 
   it("systemd-system lifecycle escalates through sudo when not root", async () => {
     const { startService } = await loadService();
-    vi.spyOn(process, "getuid").mockReturnValue(1000);
+    asUid(1000);
     await startService("systemd-system");
     expect(spawnCalls[0]).toEqual({ cmd: "sudo", args: ["systemctl", "start", "grounded.service"] });
   });
@@ -614,7 +655,7 @@ describe("logsService", () => {
 
   it("systemd-system: sudo journalctl (regardless of uid)", async () => {
     const { logsService } = await loadService();
-    vi.spyOn(process, "getuid").mockReturnValue(0);
+    asUid(0);
     await logsService("systemd-system", false);
     expect(spawnCalls[0]).toEqual({
       cmd: "sudo",
@@ -643,11 +684,11 @@ describe("uninstallService", () => {
 
   it("systemd-system: removes the root-owned unit via sudo rm", async () => {
     const { uninstallService } = await loadService();
-    vi.spyOn(process, "getuid").mockReturnValue(1000);
+    asUid(1000);
     await uninstallService("systemd-system");
     expect(argvOf("sudo")).toEqual([
       ["systemctl", "disable", "--now", "grounded.service"],
-      ["rm", "-f", "/etc/systemd/system/grounded.service"],
+      ["rm", "-f", SYSTEM_UNIT],
       ["systemctl", "daemon-reload"],
     ]);
   });

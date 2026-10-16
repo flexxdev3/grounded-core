@@ -118,6 +118,24 @@ describe("portInUse", () => {
 });
 
 describe("detectCapabilities", () => {
+  // detectCapabilities reads process.platform and process.getuid itself. Pin the
+  // host each case describes: a non-root Linux box by default (Windows has no
+  // getuid and skips the systemd/sudo probes; a CI runner may be root).
+  const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const realGetuid = Object.getOwnPropertyDescriptor(process, "getuid");
+  const onPlatform = (p: NodeJS.Platform) =>
+    Object.defineProperty(process, "platform", { value: p, configurable: true });
+
+  beforeEach(() => {
+    onPlatform("linux");
+    Object.defineProperty(process, "getuid", { value: () => 1000, configurable: true, writable: true });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, "platform", realPlatform);
+    if (realGetuid) Object.defineProperty(process, "getuid", realGetuid);
+    else delete (process as { getuid?: unknown }).getuid;
+  });
+
   it("upgrades the system scope when passwordless sudo is available", async () => {
     execImpl = (cmd, a) => {
       if (cmd === "docker") return nope();
@@ -138,6 +156,18 @@ describe("detectCapabilities", () => {
     const caps = await preflight.detectCapabilities();
     expect(caps.systemd.present).toBe(true);
     expect(caps.systemd.system).toBe(false);
+  });
+
+  it("on Windows reports systemd absent and never probes systemctl or sudo", async () => {
+    onPlatform("win32");
+    delete (process as { getuid?: unknown }).getuid;
+    execImpl = (cmd) => (cmd === "schtasks" ? okOut("") : okOut("running"));
+    const caps = await preflight.detectCapabilities();
+    expect(caps.systemd).toEqual({ present: false, user: false, system: false, detail: "not available on Windows" });
+    expect(caps.sudo).toBe(false);
+    expect(caps.root).toBe(false);
+    expect(caps.windows.taskScheduler).toBe(true);
+    expect(execCalls.some((c) => c.cmd === "systemctl" || c.cmd === "sudo")).toBe(false);
   });
 
   it("never throws when every probe fails", async () => {
