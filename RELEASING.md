@@ -21,36 +21,32 @@ unpacks to `~/.grounded/lib/<version>/`, flips the `current` symlink, and symlin
 > The repo must be **public** for `curl | sh` to fetch anonymously — release assets and the raw
 > `install.sh` URL on a private repo require an auth header.
 
-## What ships in a tarball
+## What ships in an artifact
 
-The workspace packages are build inputs, not release artifacts. Each is bundled into one file:
-
-| Package | Role | Ships as |
-|---|---|---|
-| `@grounded/core` | engine (storage, embeddings, recall, install kit) | linked into every bundle |
-| `@grounded/client` | typed HTTP client | linked into `ui` |
-| `@grounded/ui` | built console assets | linked into `api.mjs` |
-| `@grounded/api` | REST API + console (`grounded-api` bin) | `lib/api.mjs` |
-| `@grounded/mcp` | MCP server (`grounded-mcp` bin) | `lib/mcp.mjs` |
-| `@grounded/cli` | the `grounded` installer bin | `lib/cli.mjs` + `bin/grounded` shim |
+`scripts/package.mjs` builds one artifact for the platform it runs on. Natives are ABI-keyed, so each platform
+builds on its own box: **windows-x64 on vivobook, linux-x64 on arch1, darwin-arm64 on the macbook.**
 
 ```
-grounded-<version>-<os>-<arch>.tar.gz
-├── bin/grounded                    # shim: exec "$NODE" "$DIR/lib/cli.mjs" "$@"
-├── lib/{cli,api,mcp}.mjs
-└── lib/native/
-    ├── better_sqlite3.node         # 2.1 MB, keyed to platform + arch + Node ABI
-    └── vec0.so                     # 160 KB, platform + arch only
+grounded-<version>-<os>-<arch>.{zip|tar.gz}      # zip on windows, tar.gz elsewhere; unpacks flat
+├── bin/grounded, bin/grounded.cmd               # shims: node lib/cli.mjs
+├── lib/{api,cli,mcp}.mjs                        # esbuild bundles of the workspace bins
+├── lib/node_modules/                            # only what cannot be bundled:
+│   ├── better-sqlite3 (+ bindings, file-uri-to-path)   better_sqlite3.node, ABI-keyed
+│   ├── sqlite-vec + sqlite-vec-<os>-<arch>
+│   └── @grounded/ui                             # built console, resolved by the API at runtime
+├── hooks/                                       # agent session-start hooks
+└── release.json                                 # version, commit, os, arch, node_abi
 ```
 
-Target ~2–3 MB compressed per tarball. Matrix: `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`.
+~2 MB per artifact. Add-on runtimes (onnxruntime-node, @duckdb/node-api) are **not** in the base artifact; add-ons
+install their own dependencies. The CLI resolves the shipped API at `$GROUNDED_HOME/lib/current/lib/api.mjs`.
 
-> **`better_sqlite3.node` is ABI-keyed** — a tarball built against Node 20 fails on Node 24. Either ship
-> one `.node` per supported ABI and select at runtime from `process.versions.modules`, or state the
-> supported Node range in the release notes and have `install.sh` enforce it.
->
-> The natives are optional payload: `packages/core/src/store.ts` imports the adapter with `await import`,
-> so a Postgres-only install never loads `better-sqlite3`.
+`package.mjs` refuses a dirty tree (the artifact must match a commit), smokes the staged runtime (natives load,
+console resolves, `cli --version`), then writes `release/<version>/<artifact>` plus `<artifact>.json` — the
+fragment `release.mjs` folds into the manifest.
+
+> **`node_abi` is per asset.** A Node 24 build (ABI 137) fails on Node 26 (ABI 147). The manifest records
+> each asset's ABI; updaters must refuse a mismatch instead of installing it.
 
 ## Pre-release checklist
 
@@ -70,18 +66,27 @@ Target ~2–3 MB compressed per tarball. Matrix: `linux-x64`, `linux-arm64`, `da
 
 ## Cut the release
 
-```sh
-# per platform in the matrix:
-#   bundle each bin, vendor lib/native/, tar, then:
-sha256sum grounded-<version>-*.tar.gz > SHA256SUMS
+Releases, not commits, are the update channel (same contract as ModControl). Every artifact must be built from
+the commit being tagged.
 
-git tag v<version> && git push origin v<version>
-gh release create v<version> grounded-<version>-*.tar.gz SHA256SUMS \
-  --title "v<version>" --notes-file NOTES.md
+```sh
+# 1. commit + push master. 2. on EACH platform box, from that commit:
+node scripts/package.mjs
+# 3. copy each release/<version>/<artifact> and <artifact>.json to arch1's release/<version>/, then on arch1:
+node scripts/release.mjs --notes "what changed" --dry-run   # verifies commits + hashes, writes manifest.json, SHA256SUMS
+node scripts/release.mjs --notes "what changed"             # tags v<version>, pushes the tag, gh release create
 ```
 
-Paste the contents of `SHA256SUMS` into the release body as well. The script and the checksums must not
-share a single point of compromise — `curl | sh` is a supply-chain surface and the sums are the floor.
+The channel is `https://github.com/flexxdev3/grounded-core/releases/latest/download/manifest.json`:
+
+```json
+{ "name": "grounded", "version": "0.1.0", "tag": "v0.1.0", "commit": "…", "notes": "…", "published_at": "…",
+  "assets": [{ "name": "grounded-0.1.0-windows-x64.zip", "os": "windows", "arch": "x64", "node_abi": "137",
+               "sha256": "…", "size": 2097152, "url": "https://github.com/…/releases/download/v0.1.0/…" }] }
+```
+
+`SHA256SUMS` is attached and pasted into the release body. The script and the checksums must not share a single
+point of compromise — `curl | sh` is a supply-chain surface and the sums are the floor.
 
 ## Publish the Docker image (optional but recommended)
 
