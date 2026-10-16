@@ -43,6 +43,12 @@ export async function describe(conn: DuckDBConnection, relation: string): Promis
   return r.getRowObjectsJson().map((row) => ({ name: String(row["column_name"]), type: String(row["column_type"]) }));
 }
 
+const isStructList = (type: string) => type.startsWith("STRUCT(") && type.endsWith("[]");
+const safe = (name: string) => name.replace(/[^A-Za-z0-9_]/g, "_");
+
+/** Child tables stop at this depth; deeper arrays stay as list columns (query them with unnest()). */
+const MAX_DEPTH = 4;
+
 /** Materialize one kind: `_raw` from the files, then `items` + one table per array key, then drop `_raw`. */
 export async function materializeKind(conn: DuckDBConnection, k: KindScan): Promise<void> {
   const s = ident(k.kind);
@@ -53,18 +59,63 @@ export async function materializeKind(conn: DuckDBConnection, k: KindScan): Prom
   const scalar = cols.filter((c) => !c.type.endsWith("[]")).map((c) => ident(c.name));
   await conn.run(`CREATE TABLE ${s}."items" AS SELECT ${scalar.join(", ")} FROM ${s}.${RAW}`);
 
+  const taken = new Set(["items"]);
   for (const c of cols) {
     if (!c.type.endsWith("[]")) continue;
-    const col = ident(c.name);
-    const element = c.type.slice(0, -2);
-    // two unnests in one SELECT zip together: position + element.
-    const inner = `SELECT _item, unnest(generate_series(1, len(${col}))) AS _n, unnest(${col}) AS _el FROM ${s}.${RAW}`;
-    const body = element.startsWith("STRUCT(")
-      ? `SELECT _item, _n, _el.* FROM (${inner})`
-      : `SELECT _item, _n, _el AS value FROM (${inner})`;
-    await conn.run(`CREATE TABLE ${s}.${ident(arrayTableName(c.name))} AS ${body}`);
+    const table = arrayTableName(c.name);
+    taken.add(table.toLowerCase());
+    await explode(conn, s, `${s}.${RAW}`, c, table, [], taken, 1);
   }
   await conn.run(`DROP TABLE ${s}.${RAW}`);
+}
+
+/**
+ * One array column -> one table, one row per element:
+ *   `_item`, the parent positions (`<parent array>_n`, outermost first), `_n`,
+ *   then the element's fields (array of objects) or `value` (array of scalars).
+ * An array of objects INSIDE the new table becomes its own child table
+ * `<table>_<key>` the same way and leaves the parent:
+ *   parts (_item, _n, ...) -> parts_matis (_item, parts_n, _n, ...)
+ *                          -> parts_matis_params (_item, parts_n, matis_n, _n, ...)
+ * Measured why: on the FH6 catalogue a second-level unnest (1.2M params inside
+ * 318k MatIs inside 62k parts) took 3.4 s per query; a flat table is a column scan.
+ *
+ * `from` is a relation exposing `_item`, `keys` and the array column.
+ */
+async function explode(
+  conn: DuckDBConnection,
+  s: string,
+  from: string,
+  col: ColumnInfo,
+  table: string,
+  keys: string[],
+  taken: Set<string>,
+  depth: number,
+): Promise<void> {
+  const c = ident(col.name);
+  const lead = ["_item", ...keys.map(ident), "_n"].join(", ");
+  // two unnests in one SELECT zip together: position + element.
+  const inner =
+    `SELECT _item, ${keys.map((k) => `${ident(k)}, `).join("")}` +
+    `unnest(generate_series(1, len(${c}))) AS _n, unnest(${c}) AS _el FROM ${from}`;
+  const struct = isStructList(col.type);
+  await conn.run(`CREATE TABLE ${s}.${ident(table)} AS SELECT ${lead}, ${struct ? "_el.*" : "_el AS value"} FROM (${inner})`);
+  if (!struct || depth >= MAX_DEPTH) return;
+
+  const children = (await describe(conn, `${s}.${ident(table)}`)).filter((x) => isStructList(x.type));
+  if (children.length === 0) return;
+  let key = `${safe(col.name)}_n`;
+  while (keys.includes(key)) key += "_";
+  const childKeys = [...keys, key];
+  for (const cc of children) {
+    let child = `${table}_${safe(cc.name)}`;
+    while (taken.has(child.toLowerCase())) child += "_";
+    taken.add(child.toLowerCase());
+    // the child sees this table's `_n` under its key name (parts._n -> parts_n).
+    const src = `(SELECT _item, ${keys.map((k) => `${ident(k)}, `).join("")}_n AS ${ident(key)}, ${ident(cc.name)} FROM ${s}.${ident(table)})`;
+    await explode(conn, s, src, cc, child, childKeys, taken, depth + 1);
+    await conn.run(`ALTER TABLE ${s}.${ident(table)} DROP COLUMN ${ident(cc.name)}`);
+  }
 }
 
 /** Every user-facing table with its columns and row count. */

@@ -85,14 +85,22 @@ d("Databox", () => {
     const w = box();
     const ptr = await w.index("cars");
     const names = ptr.tables.map((t) => t.name).sort();
-    expect(names).toEqual(["cars.items", "cars.meshes", "cars.tags", "library.items", "library.params"]);
+    expect(names).toEqual(["cars.items", "cars.meshes", "cars.meshes_uv", "cars.tags", "library.items", "library.params"]);
     const items = ptr.tables.find((t) => t.name === "cars.items")!;
     expect(items.columns.map((c) => c.name)).toEqual(["_item", "car", "year"]);
     expect(items.rows).toBe(2);
     const r = await w.query("cars", "select _item, _n, value from cars.tags order by _item, _n");
     expect(r.data).toEqual([{ _item: "A", _n: 1, value: "x" }, { _item: "A", _n: 2, value: "y" }]);
-    const nested = await w.query("cars", "select u.uvm from cars.meshes, unnest(uv) t(u) where _item = 'A'");
-    expect(nested.data).toEqual([{ uvm: 2.5 }]);
+    // an array of objects inside an array table is its own child table, keyed by the parent position
+    const meshes = ptr.tables.find((t) => t.name === "cars.meshes")!;
+    expect(meshes.columns.map((c) => c.name)).not.toContain("uv");
+    const uv = ptr.tables.find((t) => t.name === "cars.meshes_uv")!;
+    expect(uv.columns.map((c) => c.name)).toEqual(["_item", "meshes_n", "_n", "ch", "uvm"]);
+    const joined = await w.query(
+      "cars",
+      "select m.part, u.uvm from cars.meshes m join cars.meshes_uv u on u._item = m._item and u.meshes_n = m._n",
+    );
+    expect(joined.data).toEqual([{ part: "body", uvm: 2.5 }]);
     await w.close();
   });
 
