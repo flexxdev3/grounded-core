@@ -14,6 +14,9 @@ export * from "./contract.js";
 // Runtime implementation surface (provided by core internals).
 export { loadConfig, defaultConfig, defaultHome, cabinetDir, visibleRoot, CORE_DIRNAME, SYSTEM_DIRNAME, CONFIG_FILENAME } from "./config.js";
 export { openStore } from "./store.js";
+export { ADDON_CATALOG, addonDefinition, addonSupported } from "./addons/catalog.js";
+export type { AddonDefinition, AddonId, AddonRuntimePackage } from "./addons/catalog.js";
+export { addonRuntimeDir, addonRuntimePresent, addonsRoot, findNpmCli, importAddonModule, installAddonRuntime } from "./addons/runtime.js";
 export { createEmbeddingProvider } from "./embedding/index.js";
 export {
   embeddingsAddonPlan,

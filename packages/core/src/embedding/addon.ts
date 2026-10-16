@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_FILENAME } from "../config.js";
+import { importAddonModule } from "../addons/runtime.js";
 import { EmbedError } from "../contract.js";
 import type { EmbeddingDevice, GroundedConfig } from "../contract.js";
 import {
@@ -35,8 +36,8 @@ export interface EmbeddingsAddonPlan {
 
 export async function runtimeInstalled(): Promise<boolean> {
   try {
-    await import("onnxruntime-node");
-    await import("@huggingface/tokenizers");
+    await importAddonModule("onnxruntime-node");
+    await importAddonModule("@huggingface/tokenizers");
     return true;
   } catch {
     return false;

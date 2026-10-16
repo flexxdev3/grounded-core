@@ -3,6 +3,7 @@ import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { ConfigError, EmbedError } from "../contract.js";
 import type { EmbeddingProvider, GroundedConfig } from "../contract.js";
+import { importAddonModule } from "../addons/runtime.js";
 
 /**
  * In-process embeddings: an ONNX model run on the CPU by onnxruntime-node.
@@ -139,8 +140,8 @@ export function createLocalProvider(cfg: GroundedConfig): EmbeddingProvider {
     let ort: Ort;
     let Tokenizer: typeof import("@huggingface/tokenizers").Tokenizer;
     try {
-      ort = await import("onnxruntime-node");
-      ({ Tokenizer } = await import("@huggingface/tokenizers"));
+      ort = await importAddonModule<Ort>("onnxruntime-node", { home: cfg.home });
+      ({ Tokenizer } = await importAddonModule<typeof import("@huggingface/tokenizers")>("@huggingface/tokenizers", { home: cfg.home }));
     } catch {
       throw new EmbedError(
         'local embeddings need onnxruntime-node and @huggingface/tokenizers (provider = "local")',
@@ -251,7 +252,7 @@ export function createLocalProvider(cfg: GroundedConfig): EmbeddingProvider {
     async health(): Promise<{ ok: boolean; detail?: string; device?: "gpu" | "cpu" }> {
       const have = existsSync(join(dir, modelFile));
       try {
-        await import("onnxruntime-node");
+        await importAddonModule("onnxruntime-node", { home: cfg.home });
       } catch {
         return { ok: false, detail: "onnxruntime-node not installed" };
       }

@@ -1,3 +1,4 @@
+import { importAddonModule } from "@grounded/core";
 import { DataboxError } from "./types.js";
 
 /**
@@ -10,10 +11,12 @@ let loading: Promise<Duck | null> | undefined;
 let reason: string | undefined;
 
 export function loadDuck(): Promise<Duck | null> {
-  loading ??= import("@duckdb/node-api").then(
-    (m) => m as Duck,
+  // A failure is not cached: the Add-ons page can install DuckDB into the running service.
+  loading ??= importAddonModule<Duck>("@duckdb/node-api", { local: () => import("@duckdb/node-api") }).then(
+    (m) => m,
     (err: unknown) => {
       reason = err instanceof Error ? err.message.split("\n")[0] : String(err);
+      loading = undefined;
       return null;
     },
   );

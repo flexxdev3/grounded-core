@@ -4,6 +4,7 @@ import type { ResolvedBudget } from "@grounded/core/delivery";
 import { createApp } from "./app.js";
 import type { EmbeddingsAddon } from "./addons.js";
 import type { Databox } from "@grounded/databox";
+import type { AddonManager } from "./addon-manager.js";
 import { resolveUiDist, serveUi } from "./static.js";
 import { createSharingController, sharingInternalHeader, type SharingController } from "./sharing.js";
 import { defaultHome } from "@grounded/core";
@@ -44,6 +45,8 @@ export interface StartServerOptions {
   embeddingsAddon?: EmbeddingsAddon;
   /** the Databox addition, when `[databox] enabled`. */
   databox?: Databox;
+  /** the Add-ons catalog + install jobs (owns the live Databox when given). */
+  addons?: AddonManager;
   /** Enable opt-in, paired LAN sharing support. Defaults on for loopback hosts. */
   sharing?: boolean;
   /** Secondary temporary listener. Defaults to the main port + 1. */
@@ -87,6 +90,7 @@ export function startServer(opts: StartServerOptions): Promise<RunningServer> {
       : {}),
     ...(opts.embeddingsAddon ? { embeddingsAddon: opts.embeddingsAddon } : {}),
     ...(opts.databox ? { databox: opts.databox } : {}),
+    ...(opts.addons ? { addons: opts.addons } : {}),
     ...(sharing ? { sharing, sharingInternalHeader: internalHeader } : {}),
     ...(opts.visionReserveTok !== undefined
       ? { visionReserveTok: opts.visionReserveTok }

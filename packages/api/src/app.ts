@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import type { EmbeddingsAddon } from "./addons.js";
 import type { SharingController } from "./sharing.js";
 import { DataboxError, type Databox } from "@grounded/databox";
+import type { AddonId } from "@grounded/core";
+import type { AddonManager } from "./addon-manager.js";
 import {
   ConfigError,
   EmbedError,
@@ -549,6 +551,8 @@ export function createApp(
     embeddingsAddon?: EmbeddingsAddon;
     /** the Databox addition; absent when `[databox] enabled` is false. */
     databox?: Databox;
+    /** the Add-ons catalog + install jobs; when present it owns the live Databox. */
+    addons?: AddonManager;
     /** Temporary, code-gated network listener controlled from this local API. */
     sharing?: SharingController;
     /** Unforgeable marker added only by the temporary sharing listener. */
@@ -556,6 +560,8 @@ export function createApp(
   } = {},
 ): Hono {
   const app = new Hono();
+  // the Add-ons page can attach or detach Databox while the service runs.
+  const liveDatabox = (): Databox | undefined => (opts.addons ? opts.addons.databox() : opts.databox);
   const token = opts.token;
   // ONE table for this app: every write cap, every warning threshold, and the
   // table /health publishes all read from it. Threaded from the resolved
@@ -718,8 +724,9 @@ export function createApp(
 
     // Databox reports loud, never silent: a missing DuckDB payload is a
     // visible "unavailable", not a quietly absent block.
-    const databox = opts.databox
-      ? { enabled: true, ...(await opts.databox.health()) }
+    const dbx = liveDatabox();
+    const databox = dbx
+      ? { enabled: true, ...(await dbx.health()) }
       : { enabled: false, ok: true, detail: "off", boxes: 0 };
 
     return c.json({
@@ -727,7 +734,8 @@ export function createApp(
       version: "0.1.0",
       capabilities: {
         embeddings: Boolean(opts.embeddingsAddon),
-        databox: Boolean(opts.databox),
+        databox: Boolean(liveDatabox()),
+        addons: Boolean(opts.addons),
         temporarySharing: Boolean(opts.sharing),
       },
       ...(opts.sharing ? { sharing: opts.sharing.status(false) } : {}),
@@ -1055,26 +1063,66 @@ export function createApp(
     return c.json({ data: status }, started ? 202 : 409);
   });
 
+  // Catalog for the Add-ons page. GET is a read (the shared listener forwards it);
+  // install/disable are host administration (the shared listener refuses /addons/*).
+  app.get("/addons", async (c) => {
+    if (!opts.addons) throw new NotFoundError("add-ons are not managed by this deployment");
+    return c.json({ data: await opts.addons.list() });
+  });
+
+  app.post("/addons/:id/install", async (c) => {
+    if (!opts.addons) throw new NotFoundError("add-ons are not managed by this deployment");
+    const id = c.req.param("id");
+    if (!(await opts.addons.get(id))) throw new NotFoundError(`unknown add-on "${id}"`);
+    const body = await readJsonOptional(c);
+    if (!isRecord(body)) throw new ValidationError("body must be an object");
+    const device = body.device;
+    if (device !== undefined && device !== "auto" && device !== "cpu" && device !== "gpu") {
+      throw new ValidationError('"device" must be one of auto, cpu, gpu');
+    }
+    let started: boolean;
+    try {
+      started = opts.addons.install(id as AddonId, device === undefined ? {} : { device });
+    } catch (err) {
+      throw new ValidationError(err instanceof Error ? err.message : String(err));
+    }
+    return c.json({ data: await opts.addons.get(id) }, started ? 202 : 409);
+  });
+
+  app.post("/addons/:id/disable", async (c) => {
+    if (!opts.addons) throw new NotFoundError("add-ons are not managed by this deployment");
+    const id = c.req.param("id");
+    if (!(await opts.addons.get(id))) throw new NotFoundError(`unknown add-on "${id}"`);
+    try {
+      await opts.addons.disable(id as AddonId);
+    } catch (err) {
+      throw new ValidationError(err instanceof Error ? err.message : String(err));
+    }
+    return c.json({ data: await opts.addons.get(id) });
+  });
+
   // ---- databox ----
   // Read-only structured data. Rows answer queries here and never enter a
   // memory lane; a box reaches recall only through its schema card.
   function databox(): Databox {
-    if (!opts.databox) {
+    const dbx = liveDatabox();
+    if (!dbx) {
       throw new DataboxError(
-        "Databox is off. Turn it on with `grounded addon add databox` (or `[databox] enabled = true` in config.toml) and restart.",
+        "Databox is off. Turn it on from Add-ons in Companion, or `grounded addon add databox`.",
         "DATABOX_DISABLED",
         404,
       );
     }
-    return opts.databox;
+    return dbx;
   }
 
   app.get("/databox", async (c) => {
-    if (!opts.databox) {
+    const dbx = liveDatabox();
+    if (!dbx) {
       return c.json({ data: [], meta: { returned: 0, available: 0, truncated: false, enabled: false } });
     }
-    const boxes = await opts.databox.list();
-    const health = await opts.databox.health();
+    const boxes = await dbx.list();
+    const health = await dbx.health();
     return c.json({
       data: boxes,
       meta: { returned: boxes.length, available: boxes.length, truncated: false, enabled: true, runtime: health },

@@ -5,6 +5,7 @@ import type { Store } from "@grounded/core/contract";
 import { startServer } from "./server.js";
 import { createEmbeddingsAddon } from "./addons.js";
 import { createServiceDatabox } from "./databox.js";
+import { createAddonManager } from "./addon-manager.js";
 
 async function main(): Promise<void> {
   // Self-bootstrap: ensure the cabinet, config, and migrations exist before we
@@ -31,19 +32,25 @@ async function main(): Promise<void> {
       return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(current) : v;
     },
   });
-  const embeddingsAddon = createEmbeddingsAddon({
-    loadConfig,
-    reload: async () => {
-      const next = await openStore(loadConfig());
-      const prev = current;
-      current = next;
-      // let in-flight requests on the old handle finish before closing it.
-      setTimeout(() => void prev.close().catch(() => {}), 10_000).unref();
-      return next;
-    },
-  });
+  const reload = async (): Promise<Store> => {
+    const next = await openStore(loadConfig());
+    const prev = current;
+    current = next;
+    // let in-flight requests on the old handle finish before closing it.
+    setTimeout(() => void prev.close().catch(() => {}), 10_000).unref();
+    return next;
+  };
+  const embeddingsAddon = createEmbeddingsAddon({ loadConfig, reload });
 
-  const databox = createServiceDatabox(config, store);
+  const initialDatabox = createServiceDatabox(config, store);
+  // Owns the live Databox from here on: the Add-ons page attaches/detaches it.
+  const addons = createAddonManager({
+    loadConfig,
+    embeddings: embeddingsAddon,
+    reloadStore: reload,
+    createDatabox: (cfg) => createServiceDatabox(cfg, store),
+    ...(initialDatabox ? { initialDatabox } : {}),
+  });
 
   const token = process.env.GROUNDED_API_TOKEN;
   const port = Number(process.env.GROUNDED_API_PORT ?? 7437);
@@ -61,7 +68,7 @@ async function main(): Promise<void> {
     // the same object, so a config.toml edit moves them together.
     budget: resolveBudget(config),
     embeddingsAddon,
-    ...(databox ? { databox } : {}),
+    addons,
   });
   console.log(`grounded-api listening on ${server.url}`);
   console.log(server.ui ? `console: ${server.url}/` : "console: not built (headless)");
@@ -69,7 +76,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     await server.close();
-    await databox?.close();
+    await addons.databox()?.close();
     await store.close();
     process.exit(0);
   };
