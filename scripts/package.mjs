@@ -16,7 +16,7 @@
 //   release.json                       version, commit, platform, node ABI of this runtime
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,10 +71,16 @@ const nm = join(stage, "lib", "node_modules");
 const vendor = (from, to, parts) => {
   for (const part of parts) {
     if (!existsSync(join(from, part))) throw new Error(`missing ${join(from, part)}`);
-    cpSync(join(from, part), join(nm, to, part), { recursive: true });
+    cpSync(join(from, part), join(nm, to, part), { recursive: true, dereference: true });
   }
 };
-const dirOf = (req, id) => dirname(req.resolve(`${id}/package.json`));
+// package dir via the resolver's search paths: some packages do not export ./package.json,
+// and pnpm links them, so return the real path
+const dirOf = (req, id) => {
+  const hit = req.resolve.paths(id).map((d) => join(d, id)).find((d) => existsSync(join(d, "package.json")));
+  if (!hit) throw new Error(`cannot find ${id}`);
+  return realpathSync(hit);
+};
 const bsq = dirOf(coreReq, "better-sqlite3");
 vendor(bsq, "better-sqlite3", ["package.json", "lib", "build/Release/better_sqlite3.node"]);
 const bsqReq = createRequire(join(bsq, "package.json"));
@@ -85,7 +91,7 @@ const vec = dirOf(coreReq, "sqlite-vec");
 vendor(vec, "sqlite-vec", ["package.json", "index.mjs", "index.cjs"]);
 const vecPlat = `sqlite-vec-${os}-${arch}`;
 const vecPlatDir = dirOf(createRequire(join(vec, "package.json")), vecPlat);
-cpSync(vecPlatDir, join(nm, vecPlat), { recursive: true });
+cpSync(vecPlatDir, join(nm, vecPlat), { recursive: true, dereference: true });
 vendor(pkg("ui"), "@grounded/ui", ["package.json", "dist"]);
 
 // 4. shims, hooks, identity
