@@ -551,6 +551,85 @@ export const openApiDocument = {
         responses: { "202": { description: "started" }, "409": { description: "already running" } },
       },
     },
+    "/databox": {
+      get: {
+        summary: "Databox boxes and their state (fresh / stale / unindexed / empty / error)",
+        description:
+          "Always 200. `meta.enabled` false = the addition is off (data is empty). `meta.runtime` reports the DuckDB payload.",
+        responses: { "200": { description: "{ data: BoxStatus[], meta: { returned, available, truncated, enabled, runtime? } }" } },
+      },
+    },
+    "/databox/{box}": {
+      get: {
+        summary: "One box's state: item count, index generation, last build error, manifest scalars",
+        parameters: [{ name: "box", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "{ data: BoxStatus }" }, "404": { description: "DATABOX_DISABLED or DATABOX_NOT_FOUND" } },
+      },
+    },
+    "/databox/{box}/schema": {
+      get: {
+        summary: "Tables and columns of a box (`source` = index, or json when not indexed yet)",
+        parameters: [{ name: "box", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": { description: "{ data: { box, source, stale, indexedAt, tables: [{ name, kind, table, rows, columns: [{ name, type }] }], manifest } }" },
+          "404": { description: "DATABOX_DISABLED or DATABOX_NOT_FOUND" },
+          "409": { description: "DATABOX_EMPTY: the box holds no items yet" },
+          "503": { description: "DATABOX_UNAVAILABLE: DuckDB is not installed" },
+        },
+      },
+    },
+    "/databox/{box}/query": {
+      post: {
+        summary: "Run ONE read-only SQL statement (DuckDB dialect) against a box",
+        description:
+          "SELECT / WITH / EXPLAIN only; writes, file access, ATTACH/INSTALL and SET are refused. `meta.available` counts every row the query produced; `meta.stale` true = items changed after the index was built. Cite conclusions as `meta.citation` + `meta.sql`.",
+        parameters: [{ name: "box", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["sql"],
+                properties: {
+                  sql: { type: "string" },
+                  limit: { type: "integer", minimum: 1, maximum: 5000, default: 100 },
+                  timeoutMs: { type: "integer", minimum: 1, maximum: 120000, default: 15000 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "{ data: rows[], meta: { returned, available, availableIsFloor, truncated, columns, box, source, stale, indexedAt, elapsedMs, citation, sql } }" },
+          "400": { description: "DATABOX_SQL (bad SQL) or DATABOX_READ_ONLY (not a SELECT / touches files or settings)" },
+          "404": { description: "DATABOX_DISABLED or DATABOX_NOT_FOUND" },
+          "409": { description: "DATABOX_EMPTY" },
+          "503": { description: "DATABOX_UNAVAILABLE" },
+          "504": { description: "DATABOX_TIMEOUT" },
+        },
+      },
+    },
+    "/databox/{box}/index": {
+      post: {
+        summary: "Rebuild a box's index (operator action). Unchanged items are a no-op unless force",
+        parameters: [{ name: "box", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: { force: { type: "boolean" }, wait: { type: "boolean", description: "answer after the build finishes" } },
+              },
+            },
+          },
+        },
+        responses: { "200": { description: "built (wait=true): { data: BoxStatus }" }, "202": { description: "started: { data: BoxStatus }" } },
+      },
+    },
     "/health": {
       get: {
         summary:

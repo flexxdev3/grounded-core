@@ -320,8 +320,32 @@ it, so the fix lands everywhere instead of leaving the next agent a dangling ref
 | GET | \`/docs\` \`/docs/:id\` | source browser |
 | POST | \`/recall\` \`/impact\` \`/brief\` | the read surface |
 | GET | \`/get/:typedId\` | full record, e.g. \`fact:87\`, \`session:455\`, \`doc:1204\` |
+| GET | \`/databox\` \`/databox/:box\` \`/databox/:box/schema\` | Databox boxes, state, tables (when the addition is on) |
+| POST | \`/databox/:box/query\` \`/databox/:box/index\` | read-only SQL over a box; rebuild its index (operator action) |
 
 \`GET /openapi.json\` is authoritative for request and response shapes.
+
+## Databox — structured data (an optional addition)
+
+When \`GET /databox\` returns \`meta.enabled: true\`, the cabinet also holds **boxes**: datasets an
+extractor decoded once into \`items/**.json\` (catalogues, inventories, survey data). Ask a box
+with SQL instead of re-reading or re-decoding raw files: answers come back in milliseconds.
+
+- Find the box: recall surfaces its **schema card** (a doc titled \`Databox box: <name>\`); or
+  \`GET /databox\`. Then \`GET /databox/:box/schema\` for tables and columns.
+- Tables: items directly under \`items/\` give \`items\` (one row per file) plus one table per
+  top-level array; \`items/<kind>/\` gives \`<kind>.items\` and \`<kind>.<array>\`. Every row has
+  \`_item\` (the file name); array tables add \`_n\` (position). Nested arrays: \`unnest()\`.
+- \`POST /databox/:box/query\` \`{"sql": "...", "limit"?: 1..5000}\` — ONE read-only statement,
+  DuckDB dialect (SELECT / WITH / EXPLAIN). Writes, file access and settings are refused (400).
+  The answer uses the \`{data, meta}\` envelope: \`meta.available\` counts every row,
+  \`meta.truncated\` says the limit cut it, \`meta.stale: true\` means items changed after the index
+  was built (a rebuild is under way; re-ask if it matters).
+- **Cite what you conclude.** A fact drawn from a box carries \`meta.citation\` (\`databox:<box>\`)
+  and the SQL, so anyone can re-run it rather than trust the summary.
+- Rows never enter recall, the brief, or any memory lane. Store the conclusion, not the rows.
+
+MCP: \`ground_databox_list\`, \`ground_databox_schema\`, \`ground_databox_query\`.
 
 ## If you are an MCP agent
 
