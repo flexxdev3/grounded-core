@@ -8,6 +8,7 @@ import {
   visionCapChars,
   visionCapError,
 } from "@grounded/core/delivery";
+import type { Databox, QueryResult } from "@grounded/databox";
 import type {
   Store,
   RecallResult,
@@ -129,7 +130,13 @@ const TYPED_ID_RE = /^(fact|session|doc):\d+$/;
  */
 export function createServer(
   store: Store,
-  opts: { typicalFactLimit?: number; factsReserveTok?: number; visionReserveTok?: number } = {},
+  opts: {
+    typicalFactLimit?: number;
+    factsReserveTok?: number;
+    visionReserveTok?: number;
+    /** the Databox addition (a reader: the service builds the indexes). Tools register only when given. */
+    databox?: Databox;
+  } = {},
 ): McpServer {
   const typicalFactLimit = opts.typicalFactLimit ?? defaultConfig().delivery.typicalFactLimit;
   // Same threading pattern as typicalFactLimit, for the pinned-reserve
@@ -656,5 +663,104 @@ export function createServer(
     }),
   );
 
+  if (opts.databox) registerDataboxTools(server, opts.databox);
+
   return server;
+}
+
+/** Plain-text table of the first rows, so an agent reads the answer without parsing JSON. */
+function renderRows(r: QueryResult, max = 50): string {
+  if (r.data.length === 0) return "(no rows)";
+  const cols = r.meta.columns.map((c) => c.name);
+  const cell = (v: unknown) => {
+    const s = v === null ? "NULL" : typeof v === "object" ? JSON.stringify(v) : String(v);
+    return s.length > 80 ? `${s.slice(0, 77)}...` : s;
+  };
+  const lines = [cols.join(" | ")];
+  for (const row of r.data.slice(0, max)) lines.push(cols.map((c) => cell(row[c])).join(" | "));
+  if (r.data.length > max) lines.push(`... ${r.data.length - max} more rows in the JSON below`);
+  return lines.join("\n");
+}
+
+function registerDataboxTools(server: McpServer, databox: Databox): void {
+  server.registerTool(
+    "ground_databox_list",
+    {
+      title: "Databox: list boxes",
+      description:
+        "List the Databox boxes: structured datasets (catalogues, inventories, extracts) decoded once and " +
+        "queryable with SQL. Shows each box's state (fresh / stale / unindexed / empty / error), item count " +
+        "and index age. Query a box instead of re-reading or re-decoding raw files.",
+      inputSchema: strictInput({}),
+    },
+    guard(async () => {
+      const boxes = await databox.list();
+      if (boxes.length === 0) return text("No Databox box is configured.");
+      const lines = boxes.map(
+        (b) =>
+          `${b.name}  [${b.state}${b.building ? ", indexing" : ""}]  ${b.items.files} items` +
+          (b.index ? `, ${b.index.tables} tables / ${b.index.rows} rows, indexed ${b.index.builtAt}` : "") +
+          (b.description ? `\n  ${b.description}` : "") +
+          (b.lastError ? `\n  last build failed: ${b.lastError.message}` : ""),
+      );
+      return text(`${lines.join("\n")}\n\n--- raw JSON ---\n${JSON.stringify(boxes)}`);
+    }),
+  );
+
+  server.registerTool(
+    "ground_databox_schema",
+    {
+      title: "Databox: schema",
+      description:
+        "Tables and columns of one box. Every table has `_item` (the item's file name); array tables add `_n` " +
+        "(position in the array). Items directly under items/ give `items` + one table per array key; " +
+        "items/<kind>/ gives `<kind>.items` + `<kind>.<array key>`. Call before writing a query.",
+      inputSchema: strictInput({ box: z.string().describe("box name from ground_databox_list") }),
+    },
+    guard(async ({ box }) => {
+      const s = await databox.schema(box);
+      const head =
+        `box ${s.box}: source ${s.source}${s.stale ? " (STALE: items changed after indexing)" : ""}` +
+        (s.indexedAt ? `, indexed ${s.indexedAt}` : "") +
+        (s.manifest ? `\nmanifest: ${Object.entries(s.manifest).map(([k, v]) => `${k}=${v}`).join(", ")}` : "");
+      const tables = s.tables.map(
+        (t) =>
+          `${t.name}${s.source === "index" ? ` (${t.rows} rows)` : ""}\n  ` +
+          t.columns.map((c) => `${c.name} ${c.type}`).join(", "),
+      );
+      return text(`${head}\n\n${tables.join("\n\n")}`);
+    }),
+  );
+
+  server.registerTool(
+    "ground_databox_query",
+    {
+      title: "Databox: query",
+      description:
+        "Run ONE read-only SQL statement (DuckDB dialect: SELECT / WITH / EXPLAIN; unnest() for nested arrays) " +
+        "against a box. Answers in milliseconds. meta says returned/available/truncated, whether the index is " +
+        "stale, and the citation: when you keep a conclusion as a fact, cite `databox:<box>` plus the SQL.",
+      inputSchema: strictInput({
+        box: z.string().describe("box name from ground_databox_list"),
+        sql: z.string().describe("one SELECT statement; tables from ground_databox_schema"),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(5000)
+          .optional()
+          .describe("rows returned (default 100, max 5000); meta.available still counts every row"),
+      }),
+    },
+    guard(async ({ box, sql, limit }) => {
+      const r = await databox.query(box, sql, limit !== undefined ? { limit } : {});
+      const m = r.meta;
+      const metaLine =
+        `${m.returned} of ${m.available}${m.availableIsFloor ? "+" : ""} rows${m.truncated ? " (truncated)" : ""}` +
+        ` · ${m.elapsedMs} ms · source ${m.source}` +
+        (m.stale ? " · STALE index: items changed, a rebuild is pending" : "") +
+        ` · cite: ${m.citation}`;
+      return text(`${metaLine}\n\n${renderRows(r)}\n\n--- raw JSON ---\n${JSON.stringify(r)}`);
+    }),
+  );
 }

@@ -141,6 +141,9 @@ importers:
       '@grounded/core':
         specifier: workspace:*
         version: link:../core
+      '@grounded/databox':
+        specifier: workspace:*
+        version: link:../databox
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@3.25.76)

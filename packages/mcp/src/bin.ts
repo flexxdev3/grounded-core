@@ -3,6 +3,7 @@ import { createServer as createHttpServer } from "node:http";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { loadConfig, openStore } from "@grounded/core";
+import { Databox } from "@grounded/databox";
 import { createServer } from "./server.js";
 
 // Postgres and this process both come up at boot. If the database is still
@@ -30,10 +31,16 @@ async function openStoreWithRetry(
 async function main(): Promise<void> {
   const config = loadConfig();
   const store = await openStoreWithRetry(config);
+  // A reader: DuckDB allows one writer and that is the service. Stale boxes
+  // still answer (flagged) from the last index the service built.
+  const databox = config.databox?.enabled
+    ? new Databox({ boxes: config.databox.box, writer: false, log: (m) => process.stderr.write(`grounded-mcp: ${m}\n`) })
+    : undefined;
   const server = createServer(store, {
     typicalFactLimit: config.delivery.typicalFactLimit,
     factsReserveTok: config.brief.reserve.facts,
     visionReserveTok: config.brief.reserve.vision,
+    ...(databox ? { databox } : {}),
   });
 
   const portRaw = process.env["GROUNDED_MCP_HTTP_PORT"];
