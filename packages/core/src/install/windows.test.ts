@@ -127,7 +127,7 @@ describe("the cabinet folder icon", () => {
     expect(ico.readUInt16LE(4)).toBe(5); // 16, 24, 32, 48, 256
   });
 
-  it("does nothing off Windows", async () => {
+  it.skipIf(process.platform === "win32")("does nothing off Windows", async () => {
     const home = mkdtempSync(join(tmpdir(), "grounded-ico-"));
     try {
       expect(await decorateWindowsFolder(home)).toBe(false);
