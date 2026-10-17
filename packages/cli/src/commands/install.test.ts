@@ -350,7 +350,7 @@ describe("health gate and manifest", () => {
   it("records the chosen method and port as the source of truth for later re-runs", async () => {
     await run(["install", "-y", "--method", "systemd-user", "--port", "9001"], { home: "/tmp/cab" });
     expect(writeManifest).toHaveBeenCalledWith(
-      { method: "systemd-user", port: 9001, version: "0.1.0", installedAt: expect.any(String) },
+      { method: "systemd-user", port: 9001, version: "0.2.0", installedAt: expect.any(String) },
       "/tmp/cab",
     );
     const [manifest] = writeManifest.mock.calls[0]!;

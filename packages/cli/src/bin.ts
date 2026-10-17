@@ -27,7 +27,7 @@ const program = new Command();
 program
   .name("grounded")
   .description("Grounded — self-hosted continuity, run as a service (Docker or systemd)")
-  .version("0.1.0")
+  .version("0.2.0")
   .option("--home <path>", "cabinet home (overrides GROUNDED_HOME)")
   .option("--json", "machine-readable JSON output")
   .enablePositionalOptions();

@@ -156,7 +156,7 @@ export function createServer(
     return pinnedFactsReserveStatus(activeFacts, factsReserveTok);
   }
   const server = new McpServer(
-    { name: "grounded", version: "0.1.0" },
+    { name: "grounded", version: "0.2.0" },
     {
       instructions:
         "Grounded continuity store. Use ground_recall for compact cited cards, then " +

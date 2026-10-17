@@ -1,6 +1,6 @@
 {
   "name": "@grounded/databox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Grounded Databox — an optional addition: decode a dataset once into plain JSON items, query it with read-only SQL (DuckDB index derived from the files).",
   "license": "Apache-2.0",
   "type": "module",

@@ -186,7 +186,7 @@ export function installCommand(global: () => GlobalOpts): Command {
       const manifest: InstallManifest = {
         method,
         port,
-        version: "0.1.0",
+        version: "0.2.0",
         installedAt: new Date().toISOString(),
       };
       try {

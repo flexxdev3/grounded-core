@@ -5,7 +5,7 @@ export const openApiDocument = {
   openapi: "3.1.0",
   info: {
     title: "Grounded API",
-    version: "0.1.0",
+    version: "0.2.0",
     description:
       "REST surface over the Grounded Store: vision, facts, sessions, docs, source-cited recall, and startup briefs.",
     license: { name: "Apache-2.0" },
