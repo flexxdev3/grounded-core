@@ -15,9 +15,15 @@ Runs entirely on your machine. Every result is cited. No cloud, no account, no t
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
+curl -fsSL https://getgrounded.dev/install.sh | sh
 grounded install
 ```
+
+(`getgrounded.dev/install.sh` redirects to [`install.sh`](install.sh) in this repo; `curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh`
+is the same script. Pin a release or pick the launcher dir with `sh -s -- --version 0.1.0 --prefix ~/bin`.)
+
+The installer verifies the release tarball's size and sha256 against the release manifest and `SHA256SUMS`,
+unpacks it to `~/.grounded/lib/<version>/`, and puts `grounded` in `~/.local/bin`. It starts nothing.
 
 `grounded install` detects what your host supports, lets you pick **Docker** or **systemd**, creates
 the cabinet at `~/.grounded`, and brings the service up on `http://127.0.0.1:7437`. It refuses to
@@ -25,8 +31,11 @@ double-install if one is already running.
 
 Then manage it with `grounded status | start | stop | restart | logs | uninstall`.
 
-**Requirements:** Linux or macOS (x64 or arm64), and either Docker or systemd. Node >= 20 for the
-systemd path. Nothing else — it works offline, with no model running.
+**Requirements:** Linux x64 today (macOS and arm64 builds are coming — see
+[Releases](https://github.com/flexxdev3/grounded-core/releases)), either Docker or systemd, and **the Node
+major the release was built with** — the runtime carries a native SQLite module built for one Node ABI
+(v0.1.0 on Linux: Node 26). The installer checks this and refuses a mismatch, naming the Node it needs;
+it never installs Node for you. Nothing else — it works offline, with no model running.
 
 ## Use it three ways
 

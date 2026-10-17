@@ -11,12 +11,25 @@ package (`micimize`, `0.0.1-alpha`, untouched since 2022-05-04), and the `@groun
 deliberately left unclaimed. Users install with:
 
 ```sh
+curl -fsSL https://getgrounded.dev/install.sh | sh          # 302 -> the raw file below
 curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
+curl -fsSL https://getgrounded.dev/install.sh | sh -s -- --version 0.1.0 --prefix ~/bin
 ```
 
-`install.sh` resolves `os-arch`, downloads the matching tarball, verifies it against `SHA256SUMS`,
-unpacks to `~/.grounded/lib/<version>/`, flips the `current` symlink, and symlinks `grounded` into
-`~/.local/bin`. Upgrade and rollback are a symlink flip; `grounded uninstall` removes both.
+`install.sh` (POSIX sh, Linux + macOS; Windows uses the Companion app) resolves `os-arch`, reads
+`manifest.json` from the release (`latest`, or `v<version>` with `--version` / `GROUNDED_VERSION`), and
+refuses when there is no `<os>-<arch>` `.tar.gz` asset. It then requires `node` (or `$NODE`) whose
+`process.versions.modules` equals the asset's `node_abi` — a mismatch exits naming the Node major from
+`built_with_node`; it never installs Node. The tarball is downloaded to a temp dir and its size and sha256
+must match the manifest **and** `SHA256SUMS` before anything under `~/.grounded` is touched. It unpacks to
+`${GROUNDED_HOME:-~/.grounded}/lib/<version>/`, atomically flips `lib/current` (a relative symlink), and writes
+a small `grounded` launcher script into `--prefix` (default `~/.local/bin`) that execs
+`lib/current/bin/grounded` — a script, not a symlink, because the tarball's shim locates `lib/` from its own
+path. Any failure removes what the run created. Re-running is idempotent; upgrade and rollback are a
+`current` flip (old versions stay in `lib/`). It starts no service — it ends by pointing at `grounded install`.
+
+`grounded uninstall` removes the **service** only; `--purge` deletes the whole home (including `lib/`).
+Neither removes the launcher in `~/.local/bin` — delete it by hand.
 
 > The repo must be **public** for `curl | sh` to fetch anonymously — release assets and the raw
 > `install.sh` URL on a private repo require an auth header.
@@ -116,7 +129,7 @@ A bare local tag (`grounded:latest`, no registry/namespace) is treated as build-
 On a machine that has never built this repo:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
+curl -fsSL https://getgrounded.dev/install.sh | sh
 grounded install --method docker --yes    # or systemd-user
 grounded status
 ```

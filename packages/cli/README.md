@@ -14,15 +14,16 @@ briefs. Apache-2.0, no telemetry.
 
 Not published to any registry. The `grounded` command is delivered by the shell installer, which
 downloads a per-platform tarball from GitHub Releases, unpacks it to `~/.grounded/lib/<version>/`,
-and symlinks `grounded` into `~/.local/bin`:
+and puts a `grounded` launcher in `~/.local/bin`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh
-# pinned:
-curl -fsSL https://raw.githubusercontent.com/flexxdev3/grounded-core/master/install.sh | sh -s -- --version 0.1.0 --prefix ~/.local
+curl -fsSL https://getgrounded.dev/install.sh | sh
+# pinned release, launcher in another bin dir:
+curl -fsSL https://getgrounded.dev/install.sh | sh -s -- --version 0.1.0 --prefix ~/bin
 ```
 
-Node >= 20 on the host. From a checkout instead: `pnpm install && pnpm build`, then run
+Needs the Node major the release was built with (its native module is ABI-keyed; v0.1.0 on Linux:
+Node 26) — the installer checks and names it. From a checkout instead: `pnpm install && pnpm build`, then run
 `packages/cli/dist/bin.js`.
 
 ## Usage
