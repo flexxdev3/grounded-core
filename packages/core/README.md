@@ -66,7 +66,9 @@ With `embeddings.provider = "none"` this runs fully offline on lexical recall al
 **Install helpers** (dependency-free, used by the CLI)
 
 - `installSnippet` · `allInstallSnippets` · `INSTALL_TARGETS` · `SERVER_KEY` · `BIN_COMMAND`
-- `bootstrap` · `renderConfigToml` · `resolveHome` · `CABINET_DIRS` — materialize `~/.grounded`
+- `bootstrap` · `renderConfigToml` · `resolveHome` · `CABINET_DIRS` — materialize `~/.grounded` (config) and the cabinet
+- `cabinetDir` · `cabinetLayout` · `visibleRoot` — where a home's data lives (`~/Grounded/Cabinet` for a `.grounded` home, `<home>/cabinet` for a custom one, a pre-split `~/.grounded/cabinet` until moved)
+- `migrateCabinet` · `planCabinetMigration` — move a pre-split cabinet to `~/Grounded/Cabinet`
 - `detect` · `probeHealth` · `detectDocker` · `detectSystemd` · `readManifest` · `writeManifest` ·
   `manifestPath` · `DEFAULT_PORT` · `DOCKER_NAME` · `DOCKER_LABEL` · `SYSTEMD_UNIT`
 - `renderSystemdUnit` · `renderDockerRunArgs` · `renderComposeYaml` · `systemdUnitPath`

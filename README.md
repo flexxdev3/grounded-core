@@ -26,8 +26,8 @@ The installer verifies the release tarball's size and sha256 against the release
 unpacks it to `~/.grounded/lib/<version>/`, and puts `grounded` in `~/.local/bin`. It starts nothing.
 
 `grounded install` detects what your host supports, lets you pick **Docker** or **systemd**, creates
-the cabinet at `~/.grounded`, and brings the service up on `http://127.0.0.1:7437`. It refuses to
-double-install if one is already running.
+the cabinet at `~/Grounded/Cabinet` (config in `~/.grounded`), and brings the service up on
+`http://127.0.0.1:7437`. It refuses to double-install if one is already running.
 
 Then manage it with `grounded status | start | stop | restart | logs | uninstall`.
 
@@ -91,9 +91,21 @@ its source and id, so you can always chase a claim back to where it came from.
 
 ## Configuration
 
+Two folders, on every platform:
+
+- `~/.grounded` holds configuration, models and dependencies only: `config.toml`, `install.json`,
+  `logs/`, `lib/<version>/`, `addons/`, `models/`.
+- `~/Grounded/Cabinet` (`%USERPROFILE%\Grounded\Cabinet` on Windows) holds your data: `grounded.db`,
+  docs, Databox cards, exports, backups.
+
+A custom home (`--home X` or `GROUNDED_HOME=X`, any folder not named `.grounded`) is self-contained: its
+data lives in `X/cabinet`. An install from before this split, with data still in `~/.grounded/cabinet`,
+keeps working there; `grounded status` says so, and `grounded migrate-cabinet` stops the service, moves
+the data to `~/Grounded/Cabinet`, verifies it and restarts. It refuses if the target already holds files.
+
 Config lives at `~/.grounded/config.toml`. The common knobs also work as environment variables, no
 file edit needed: `GROUNDED_HOME`, `GROUNDED_API_PORT`, `GROUNDED_API_TOKEN`, `GROUNDED_EMBED_PROVIDER`,
-`GROUNDED_EMBED_BASEURL`, `GROUNDED_EMBED_MODEL`, `GROUNDED_EMBED_DEVICE` (`cpu` keeps ollama off the GPU). `GROUNDED_EMBED_PROVIDER=local` embeds in-process on the CPU with no ollama (nomic-embed-text-v1.5, downloaded once into the cabinet).
+`GROUNDED_EMBED_BASEURL`, `GROUNDED_EMBED_MODEL`, `GROUNDED_EMBED_DEVICE` (`cpu` keeps ollama off the GPU). `GROUNDED_EMBED_PROVIDER=local` embeds in-process on the CPU with no ollama (nomic-embed-text-v1.5, downloaded once into `~/.grounded/models`).
 
 ## Documentation
 

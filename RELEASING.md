@@ -21,7 +21,8 @@ curl -fsSL https://getgrounded.dev/install.sh | sh -s -- --version 0.1.0 --prefi
 refuses when there is no `<os>-<arch>` `.tar.gz` asset. It then requires `node` (or `$NODE`) whose
 `process.versions.modules` equals the asset's `node_abi` — a mismatch exits naming the Node major from
 `built_with_node`; it never installs Node. The tarball is downloaded to a temp dir and its size and sha256
-must match the manifest **and** `SHA256SUMS` before anything under `~/.grounded` is touched. It unpacks to
+must match the manifest **and** `SHA256SUMS` before anything under `~/.grounded` is touched (the installer
+only ever writes runtime there; user data lives in `~/Grounded/Cabinet` and is never touched by it). It unpacks to
 `${GROUNDED_HOME:-~/.grounded}/lib/<version>/`, atomically flips `lib/current` (a relative symlink), and writes
 a small `grounded` launcher script into `--prefix` (default `~/.local/bin`) that execs
 `lib/current/bin/grounded` — a script, not a symlink, because the tarball's shim locates `lib/` from its own

@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, type Dirent } from "node:fs";
 import { parse as parseToml } from "smol-toml";
 import { ConfigError } from "./contract.js";
 // The scope-affinity multipliers are DEFINED at their use site in
@@ -196,10 +196,10 @@ export const SYSTEM_DIRNAME = ".grounded";
  * The engine home (config, logs, service, models) when neither an argument
  * nor GROUNDED_HOME names one.
  *
- * New installs use `~/.grounded` on every platform. Windows cabinet data stays
- * separate at `~/Grounded/Cabinet` so the system/configuration home can be
- * managed without putting the live SQLite database in a hidden or synced
- * directory. An existing Windows `~/Grounded/.core/config.toml` still wins
+ * New installs use `~/.grounded` on every platform for configuration, models
+ * and dependencies only. The user's data lives separately in the visible
+ * `~/Grounded/Cabinet` (see `cabinetLayout`), so the live SQLite database is
+ * never in a hidden directory. An existing Windows `~/Grounded/.core/config.toml` still wins
  * until the explicit migration flow moves it; an upgrade must never silently
  * select a new empty cabinet.
  */
@@ -212,25 +212,91 @@ export function defaultHome(platform: NodeJS.Platform = process.platform, home: 
   return system;
 }
 
-/**
- * Where the user's data lives. Windows' default `.grounded` system home and
- * the legacy `.core` home both use the visible `~/Grounded/Cabinet`. Explicit
- * custom homes keep their cabinet inside the home at `cabinet/`.
- */
-export function cabinetDir(home: string, platform: NodeJS.Platform = process.platform): string {
-  if (basename(home) === CORE_DIRNAME) return join(dirname(home), "Cabinet");
-  if (platform === "win32" && basename(home) === SYSTEM_DIRNAME) {
-    return join(dirname(home), "Grounded", "Cabinet");
+/** The cabinet folder name inside a self-contained (custom) home, and the
+ *  legacy location inside `~/.grounded` that installs before the split used. */
+export const LEGACY_CABINET_DIRNAME = "cabinet";
+
+/** True when `dir` holds at least one FILE (empty skeleton dirs do not count:
+ *  bootstrap creates them on every install, so they are not user data). Stops
+ *  at the first file found. */
+export function hasCabinetData(dir: string): boolean {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
   }
-  return join(home, "cabinet");
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      if (hasCabinetData(join(dir, e.name))) return true;
+    } else {
+      return true;
+    }
+  }
+  return false;
 }
 
-/** The folder a user opens: the visible Grounded folder on Windows. */
-export function visibleRoot(home: string, platform: NodeJS.Platform = process.platform): string {
-  if (basename(home) === CORE_DIRNAME) return dirname(home);
-  if (platform === "win32" && basename(home) === SYSTEM_DIRNAME) {
-    return join(dirname(home), "Grounded");
+/** How a home's cabinet is laid out, and why. */
+export interface CabinetLayout {
+  /** the cabinet in use. */
+  dir: string;
+  /**
+   * - `visible`: `~/.grounded` home, data in `~/Grounded/Cabinet` (the default).
+   * - `legacy`:  `~/.grounded` home whose data still sits in `~/.grounded/cabinet`
+   *              (an install from before the split) — kept until `grounded migrate-cabinet`.
+   * - `core`:    Windows `~/Grounded/.core` home, data in `~/Grounded/Cabinet`.
+   * - `custom`:  any other home (--home / GROUNDED_HOME): self-contained, `<home>/cabinet`.
+   */
+  kind: "visible" | "legacy" | "core" | "custom";
+  /** the visible `~/Grounded/Cabinet` this home should use (null for custom homes). */
+  target: string | null;
+  /** `<home>/cabinet` for a `.grounded` home, when it still holds files. */
+  leftover: string | null;
+}
+
+/**
+ * Resolve where a home's data lives. THE rule, every platform:
+ *
+ *   - a `.grounded` home (the default) keeps config, logs, models and add-ons;
+ *     the user's data lives in the visible `<parent>/Grounded/Cabinet`.
+ *   - an older `.grounded` install whose `cabinet/` still holds files keeps
+ *     using it: an upgrade must never silently select a new, empty cabinet.
+ *     `grounded status` names it and `grounded migrate-cabinet` moves it.
+ *   - Windows' legacy `Grounded/.core` home uses the `Cabinet` beside it.
+ *   - an explicit custom home is a self-contained folder by choice: `<home>/cabinet`.
+ *
+ * Postgres installs store no db file here, but the cabinet's other folders
+ * (databox cards, exports, backups) still follow this.
+ */
+export function cabinetLayout(home: string): CabinetLayout {
+  if (basename(home) === CORE_DIRNAME) {
+    return { dir: join(dirname(home), "Cabinet"), kind: "core", target: null, leftover: null };
   }
+  if (basename(home) !== SYSTEM_DIRNAME) {
+    return { dir: join(home, LEGACY_CABINET_DIRNAME), kind: "custom", target: null, leftover: null };
+  }
+  const target = join(dirname(home), "Grounded", "Cabinet");
+  const legacy = join(home, LEGACY_CABINET_DIRNAME);
+  const legacyHasData = hasCabinetData(legacy);
+  if (legacyHasData && !hasCabinetData(target)) {
+    return { dir: legacy, kind: "legacy", target, leftover: legacy };
+  }
+  return { dir: target, kind: "visible", target, leftover: legacyHasData ? legacy : null };
+}
+
+/**
+ * Where the user's data lives. See `cabinetLayout` for the rule. `platform`
+ * is accepted for call-site compatibility; the layout is the same everywhere.
+ */
+export function cabinetDir(home: string, _platform: NodeJS.Platform = process.platform): string {
+  return cabinetLayout(home).dir;
+}
+
+/** The folder a user opens: `~/Grounded` for a default or `.core` home; the
+ *  home itself for a custom home or a not-yet-migrated legacy cabinet. */
+export function visibleRoot(home: string, _platform: NodeJS.Platform = process.platform): string {
+  const layout = cabinetLayout(home);
+  if (layout.kind === "core" || layout.kind === "visible") return dirname(layout.dir);
   return home;
 }
 

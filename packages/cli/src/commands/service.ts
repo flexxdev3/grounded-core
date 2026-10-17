@@ -1,6 +1,8 @@
 import { Command } from "commander";
-import { detect, readManifest, resolveHome, manifestPath, DEFAULT_PORT, type InstallMethod, cabinetDir, visibleRoot } from "@grounded/core";
+import { detect, readManifest, resolveHome, manifestPath, DEFAULT_PORT, type InstallMethod, cabinetDir, cabinetLayout, visibleRoot } from "@grounded/core";
+import { printCabinetNotice } from "./migrate.js";
 import { rm } from "node:fs/promises";
+import { sep } from "node:path";
 import type { GlobalOpts } from "../util/global.js";
 import { c, line, header, field, printJson, fail, ok } from "../util/output.js";
 import { confirm, interactive } from "../util/prompt.js";
@@ -42,13 +44,13 @@ export function statusCommand(global: () => GlobalOpts): Command {
       const port = opts.port ? Number(opts.port) : undefined;
       const d = await detect({ home, port });
 
-      if (g.json) return printJson(d);
+      if (g.json) return printJson({ ...d, cabinet: cabinetLayout(home), config: home });
 
       header("Grounded status");
       field("running", d.running ? c.green("yes") : c.red("no"));
       if (d.method) field("method", String(d.method));
       field("cabinet", cabinetDir(home));
-      if (visibleRoot(home) !== home) field("engine", home);
+      field("config", home);
       if (d.health) {
         field("health", ok(d.health.ok));
         field("port", String(d.health.port));
@@ -69,6 +71,7 @@ export function statusCommand(global: () => GlobalOpts): Command {
         line();
         line(c.dim("not running — `grounded install` to set it up."));
       }
+      printCabinetNotice(home);
     });
 }
 
@@ -129,10 +132,17 @@ export function logsCommand(global: () => GlobalOpts): Command {
 
 // ---- uninstall ---------------------------------------------------------------
 
+/** Every folder `uninstall --purge` removes: the visible root and the config
+ *  home, minus any that sits inside another. */
+export function purgeTargets(home: string): string[] {
+  const roots = [...new Set([visibleRoot(home), home])];
+  return roots.filter((r) => !roots.some((o) => o !== r && (r + sep).startsWith(o + sep)));
+}
+
 export function uninstallCommand(global: () => GlobalOpts): Command {
   return new Command("uninstall")
     .description("remove the service (keeps the cabinet/data by default)")
-    .option("--purge", "also delete the cabinet (~/.grounded, or ~\\Grounded on Windows) — destroys all data")
+    .option("--purge", "also delete the cabinet (~/Grounded) and config (~/.grounded) — destroys all data")
     .option("-y, --yes", "no confirmation prompt")
     .action(async (opts: { purge?: boolean; yes?: boolean }) => {
       const g = global();
@@ -143,10 +153,11 @@ export function uninstallCommand(global: () => GlobalOpts): Command {
       if (!method) return fail("no Grounded service found to uninstall.");
 
       line(`This will remove the ${c.bold(method)} service.`);
-      // A `.core` home lives inside the folder the user sees; purge that whole
-      // folder, or the Cabinet beside `.core` would be left behind.
-      const purgeRoot = visibleRoot(home);
-      if (opts.purge) line(c.red(`--purge will DELETE ${purgeRoot} (all facts, sessions, docs).`));
+      // Data and config live apart by default (~/Grounded + ~/.grounded), so
+      // purge both; a `.core` home sits inside its visible folder, and a
+      // custom or legacy home holds its own cabinet, so those collapse to one.
+      const purgeRoots = purgeTargets(home);
+      if (opts.purge) line(c.red(`--purge will DELETE ${purgeRoots.join(" and ")} (all facts, sessions, docs).`));
       if (!opts.yes && interactive && !(await confirm("Continue?", false))) {
         return line(c.dim("aborted."));
       }
@@ -159,8 +170,10 @@ export function uninstallCommand(global: () => GlobalOpts): Command {
       // Drop the manifest; optionally purge data.
       await rm(manifestPath(home), { force: true });
       if (opts.purge) {
-        await rm(purgeRoot, { recursive: true, force: true });
-        line(c.yellow(`purged ${purgeRoot}`));
+        for (const root of purgeRoots) {
+          await rm(root, { recursive: true, force: true });
+          line(c.yellow(`purged ${root}`));
+        }
       }
       line(c.green(`uninstalled (${method})${opts.purge ? " + purged cabinet" : " — cabinet kept"}`));
     });

@@ -315,7 +315,7 @@ export type EmbeddingDevice = "auto" | "cpu" | "gpu";
 export type EmbeddingProviderName = "ollama" | "openai" | "local" | "none";
 
 export interface GroundedConfig {
-  /** cabinet home, e.g. ~/.grounded. */
+  /** engine home (config, models), e.g. ~/.grounded. Data: cabinetDir(home). */
   home: string;
   storage: {
     adapter: StorageAdapter;

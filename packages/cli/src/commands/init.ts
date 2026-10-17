@@ -1,11 +1,12 @@
 import { Command } from "commander";
-import { bootstrap, cabinetDir, visibleRoot } from "@grounded/core";
+import { bootstrap, cabinetDir } from "@grounded/core";
+import { printCabinetNotice } from "./migrate.js";
 import type { GlobalOpts } from "../util/global.js";
 import { c, line, printJson, fail } from "../util/output.js";
 
 export function initCommand(global: () => GlobalOpts): Command {
   return new Command("init")
-    .description("create the cabinet (~/.grounded, or ~\\Grounded on Windows), write default config, run migrations")
+    .description("create the cabinet (~/Grounded/Cabinet) and config (~/.grounded), write default config, run migrations")
     .action(async () => {
       const g = global();
       const home = g.home ?? process.env.GROUNDED_HOME;
@@ -18,8 +19,9 @@ export function initCommand(global: () => GlobalOpts): Command {
       }
 
       if (g.json) return printJson(result);
-      line(c.green(`cabinet ready at ${result.home}`));
-      if (visibleRoot(result.home) !== result.home) line(c.dim(`your data: ${cabinetDir(result.home)}`));
+      line(c.green(`cabinet ready at ${cabinetDir(result.home)}`));
+      line(c.dim(`config: ${result.home}`));
+      printCabinetNotice(result.home);
       line(
         c.dim(
           result.wroteConfig

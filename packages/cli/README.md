@@ -35,7 +35,7 @@ grounded mcp install claude-code    # print a ready-to-paste MCP server config
 grounded hooks print claude-code    # print a SessionStart brief hook + wiring
 ```
 
-`install` creates `~/.grounded` (config + database + migrations), starts the service on
+`install` creates `~/.grounded` (config) and `~/Grounded/Cabinet` (database + data) and runs migrations, starts the service on
 `http://127.0.0.1:7437`, and refuses to double-install if an instance is already detected. Then open
 `http://127.0.0.1:7437/` for the console.
 
@@ -48,7 +48,8 @@ grounded hooks print claude-code    # print a SessionStart brief hook + wiring
 | `start` · `stop` · `restart` | service lifecycle |
 | `logs` | show service logs |
 | `uninstall` | remove the service (keeps the cabinet/data by default) |
-| `init` | create the cabinet (`~/.grounded`), write default config, run migrations |
+| `init` | create the cabinet (`~/Grounded/Cabinet`) and config (`~/.grounded`), run migrations |
+| `migrate-cabinet` | move a pre-split cabinet from `~/.grounded/cabinet` to `~/Grounded/Cabinet` (stops, moves, verifies, restarts; refuses if the target holds files) |
 | `mcp install [target]` · `mcp targets` | print a ready-to-paste MCP server config (does not modify files) |
 | `hooks print [target]` · `hooks targets` | print a SessionStart hook script + wiring (does not modify files) |
 
@@ -59,14 +60,14 @@ Notable per-command options:
 - `install`: `--port <n>` · `--method docker|systemd-user|systemd-system` · `--image <ref>` ·
   `--token <tok>` · `-y, --yes` · `--force`
 - `status`: `--port <n>` · `logs`: `-f, --follow`
-- `uninstall`: `--purge` (also deletes `~/.grounded` — destroys all data) · `-y, --yes`
+- `uninstall`: `--purge` (also deletes `~/Grounded` and `~/.grounded` — destroys all data) · `-y, --yes`
 - `mcp install`: `--env KEY=VAL` (repeatable) · `--all`
 
 ## Install methods
 
 | Method | What it does | When |
 |---|---|---|
-| Docker | builds or pulls the image and runs a labelled `restart=unless-stopped` container mounting `~/.grounded` | Docker daemon reachable — the default |
+| Docker | builds or pulls the image and runs a labelled `restart=unless-stopped` container mounting `~/.grounded` (config) and `~/Grounded/Cabinet` (data); a pre-split install keeps its single `~/.grounded` mount | Docker daemon reachable — the default |
 | systemd (user) | resolves the `grounded-api` entry point the installer delivered, writes `~/.config/systemd/user/grounded.service`, `enable --now` | no root; runs as you |
 | systemd (system) | the same, at `/etc/systemd/system` via sudo | always-on; needs root/sudo |
 

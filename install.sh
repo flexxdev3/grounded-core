@@ -38,7 +38,9 @@ usage: install.sh [--version X] [--prefix DIR] [--help]
 
 environment:
   GROUNDED_VERSION   same as --version
-  GROUNDED_HOME      install root; default ~/.grounded (runtime goes to $GROUNDED_HOME/lib/<version>/)
+  GROUNDED_HOME      install root; default ~/.grounded (runtime goes to $GROUNDED_HOME/lib/<version>/).
+                     ~/.grounded holds config, models and runtime only; your data lives in
+                     ~/Grounded/Cabinet. A custom GROUNDED_HOME keeps its data in $GROUNDED_HOME/cabinet.
   NODE               node binary to check and run with; default: node on PATH
 
 Starts no service. Afterwards run `grounded install`.
@@ -331,6 +333,12 @@ main() {
   say "    $run install"
   say ""
   say "Then open http://127.0.0.1:7437"
+  say ""
+  if [ "$HOME_DIR" = "$HOME/.grounded" ]; then
+    say "Config and runtime live in $HOME_DIR; your data will live in $HOME/Grounded/Cabinet."
+  else
+    say "Config, runtime and data (cabinet/) all live in $HOME_DIR."
+  fi
 }
 
 main "$@"

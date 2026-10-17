@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { bootstrap, CABINET_DIRS } from "./bootstrap.js";
-import { cabinetDir, defaultConfig, defaultHome, visibleRoot } from "../config.js";
+import { cabinetDir, cabinetLayout, defaultConfig, defaultHome, hasCabinetData, visibleRoot } from "../config.js";
 import {
   readManifest,
   writeManifest,
@@ -91,15 +91,28 @@ describe("defaultHome", () => {
     expect(visibleRoot(h, "win32")).toBe(join(home, "Grounded"));
   });
 
-  it("keeps the cabinet inside any other home", () => {
-    expect(cabinetDir(join(home, ".grounded"), "linux")).toBe(join(home, ".grounded", "cabinet"));
-    expect(visibleRoot(join(home, ".grounded"), "linux")).toBe(join(home, ".grounded"));
-    expect(cabinetDir(join(home, "custom"), "win32")).toBe(join(home, "custom", "cabinet"));
-  });
+  for (const platform of ["win32", "linux", "darwin"] as const) {
+    it(`puts a default .grounded home's data in ~/Grounded/Cabinet on ${platform}`, () => {
+      const h = join(home, ".grounded");
+      expect(cabinetDir(h, platform)).toBe(join(home, "Grounded", "Cabinet"));
+      expect(visibleRoot(h, platform)).toBe(join(home, "Grounded"));
+      expect(defaultConfig(h, platform).storage.path).toBe(join(home, "Grounded", "Cabinet", "grounded.db"));
+      expect(cabinetLayout(h)).toMatchObject({ kind: "visible", leftover: null });
+    });
 
-  it("puts the Windows default sqlite file in the visible Cabinet", () => {
-    const h = join(home, ".grounded");
-    expect(defaultConfig(h, "win32").storage.path).toBe(join(home, "Grounded", "Cabinet", "grounded.db"));
+    it(`keeps the cabinet inside an explicit custom home on ${platform}`, () => {
+      const h = join(home, "custom");
+      expect(cabinetDir(h, platform)).toBe(join(h, "cabinet"));
+      expect(visibleRoot(h, platform)).toBe(h);
+      expect(defaultConfig(h, platform).storage.path).toBe(join(h, "cabinet", "grounded.db"));
+      expect(cabinetLayout(h).kind).toBe("custom");
+    });
+  }
+
+  it("keeps the legacy .core layout's Cabinet beside it", () => {
+    const h = join(home, "Grounded", ".core");
+    expect(cabinetDir(h)).toBe(join(home, "Grounded", "Cabinet"));
+    expect(visibleRoot(h)).toBe(join(home, "Grounded"));
   });
 
   it("keeps an existing legacy .core install until explicit migration", () => {
@@ -110,6 +123,56 @@ describe("defaultHome", () => {
     mkdirSync(join(home, ".grounded"));
     writeFileSync(join(home, ".grounded", "config.toml"), "[storage]\n");
     expect(defaultHome("win32", home)).toBe(join(home, ".grounded"));
+  });
+});
+
+describe("legacy ~/.grounded/cabinet", () => {
+  const sys = () => join(home, ".grounded");
+  const legacy = () => join(home, ".grounded", "cabinet");
+  const target = () => join(home, "Grounded", "Cabinet");
+
+  it("only files count as data, not bootstrap's empty skeleton", () => {
+    mkdirSync(join(legacy(), "docs"), { recursive: true });
+    expect(hasCabinetData(legacy())).toBe(false);
+    expect(cabinetDir(sys())).toBe(target());
+    writeFileSync(join(legacy(), "docs", "a.md"), "x");
+    expect(hasCabinetData(legacy())).toBe(true);
+  });
+
+  for (const platform of ["win32", "linux", "darwin"] as const) {
+    it(`keeps using an existing legacy cabinet on ${platform} (never a new empty one)`, () => {
+      mkdirSync(legacy(), { recursive: true });
+      writeFileSync(join(legacy(), "grounded.db"), "db");
+      mkdirSync(join(target(), "docs"), { recursive: true }); // empty skeleton does not win
+      expect(cabinetDir(sys(), platform)).toBe(legacy());
+      expect(visibleRoot(sys(), platform)).toBe(sys());
+      expect(defaultConfig(sys(), platform).storage.path).toBe(join(legacy(), "grounded.db"));
+      expect(cabinetLayout(sys())).toEqual({ dir: legacy(), kind: "legacy", target: target(), leftover: legacy() });
+    });
+  }
+
+  it("prefers a populated visible cabinet and reports a leftover legacy one", () => {
+    mkdirSync(legacy(), { recursive: true });
+    writeFileSync(join(legacy(), "grounded.db"), "old");
+    mkdirSync(target(), { recursive: true });
+    writeFileSync(join(target(), "grounded.db"), "new");
+    expect(cabinetLayout(sys())).toEqual({ dir: target(), kind: "visible", target: target(), leftover: legacy() });
+  });
+
+  it("bootstrap of a legacy home keeps writing to the legacy cabinet", async () => {
+    mkdirSync(legacy(), { recursive: true });
+    writeFileSync(join(legacy(), "keep.txt"), "x");
+    await bootstrap({ home: sys(), probeEmbedder: async () => false });
+    expect(existsSync(join(legacy(), "grounded.db"))).toBe(true);
+    expect(existsSync(target())).toBe(false);
+  });
+
+  it("bootstrap of a fresh default home creates ~/Grounded/Cabinet, nothing inside .grounded", async () => {
+    await bootstrap({ home: sys(), probeEmbedder: async () => false });
+    expect(existsSync(join(target(), "grounded.db"))).toBe(true);
+    for (const dir of CABINET_DIRS) expect(existsSync(join(target(), dir))).toBe(true);
+    expect(existsSync(legacy())).toBe(false);
+    expect(existsSync(join(sys(), "config.toml"))).toBe(true);
   });
 });
 
@@ -145,14 +208,43 @@ describe("unit rendering", () => {
     expect(unit).toContain("WantedBy=multi-user.target");
   });
 
-  it("docker run args are labelled, cabinet-mounted, loopback-published", () => {
-    const args = renderDockerRunArgs({ home: "/h/.grounded", port: 7000 });
+  it("docker run args are labelled, mount config and cabinet separately, loopback-published", () => {
+    const h = join(home, ".grounded");
+    const args = renderDockerRunArgs({ home: h, port: 7000 });
     expect(args).toContain("--label");
     expect(args).toContain("com.grounded.managed=true");
     expect(args).toContain("-v");
-    expect(args).toContain("/h/.grounded:/cabinet");
+    expect(args).toContain("GROUNDED_HOME=/grounded/.grounded");
+    expect(args).toContain(`${h}:/grounded/.grounded`);
+    expect(args).toContain(`${join(home, "Grounded", "Cabinet")}:/grounded/Grounded/Cabinet`);
     expect(args).toContain("127.0.0.1:7000:7000");
     expect(args.at(-1)).toBe("grounded:latest");
+    // the in-container home resolves the in-container cabinet by the same rule
+    expect(cabinetDir("/grounded/.grounded")).toBe(join("/grounded", "Grounded", "Cabinet"));
+    const compose = renderComposeYaml({ home: h });
+    expect(compose).toContain(`- ${h}:/grounded/.grounded`);
+    expect(compose).toContain(`- ${join(home, "Grounded", "Cabinet")}:/grounded/Grounded/Cabinet`);
+    expect(compose).toContain("GROUNDED_HOME: /grounded/.grounded");
+  });
+
+  it("docker keeps the old single mount for a legacy or custom home (reinstall keeps its data)", () => {
+    const h = join(home, ".grounded");
+    mkdirSync(join(h, "cabinet"), { recursive: true });
+    writeFileSync(join(h, "cabinet", "grounded.db"), "db");
+    const args = renderDockerRunArgs({ home: h });
+    expect(args).toContain(`${h}:/cabinet`);
+    expect(args.some((a) => a.startsWith("GROUNDED_HOME="))).toBe(false);
+    expect(renderComposeYaml({ home: h })).toContain(`- ${h}:/cabinet`);
+    expect(renderDockerRunArgs({ home: join(home, "custom") })).toContain(`${join(home, "custom")}:/cabinet`);
+    // image default GROUNDED_HOME=/cabinet resolves /cabinet/cabinet = host <home>/cabinet
+    expect(cabinetDir("/cabinet")).toBe(join("/cabinet", "cabinet"));
+  });
+
+  it("docker mounts the whole Grounded folder for a Windows .core home", () => {
+    const h = join(home, "Grounded", ".core");
+    const args = renderDockerRunArgs({ home: h });
+    expect(args).toContain("GROUNDED_HOME=/grounded/Grounded/.core");
+    expect(args).toContain(`${join(home, "Grounded")}:/grounded/Grounded`);
   });
 
   it("token is threaded into both systemd and docker when present", () => {

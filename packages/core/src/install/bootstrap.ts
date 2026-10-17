@@ -1,5 +1,6 @@
 /**
- * Cabinet bootstrap — the one place that materializes `~/.grounded`.
+ * Cabinet bootstrap — the one place that materializes `~/.grounded` (config,
+ * logs, models) and the cabinet (`~/Grounded/Cabinet`, the user's data).
  *
  * Creates the cabinet dir tree, writes a default `config.toml` (never clobbers
  * an existing one), and runs migrations. Lifted out of the old `ground init`
@@ -15,11 +16,11 @@ import { decorateWindowsFolder } from "./windows.js";
 import { openStore } from "../store.js";
 import type { GroundedConfig } from "../contract.js";
 
-/** Cabinet sub-directories created under `<home>/cabinet`. */
+/** Cabinet sub-directories created under `cabinetDir(home)`. */
 export const CABINET_DIRS = ["facts", "sessions", "docs", "briefs", "exports", "backups"] as const;
 
 export interface BootstrapOptions {
-  /** Cabinet root. Falls back to GROUNDED_HOME, then defaultHome(). */
+  /** Engine home (config). Falls back to GROUNDED_HOME, then defaultHome(). */
   home?: string;
   /** Run migrations after writing config (opens + closes a store). Default true. */
   migrate?: boolean;
@@ -136,7 +137,9 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<BootstrapR
   // The default Windows folder sits beside Documents and Downloads, so it gets
   // the Grounded icon like they get theirs, and its `.core` is hidden. A folder
   // the operator chose (--home / GROUNDED_HOME) is theirs: never decorated.
-  if (process.platform === "win32" && base.home === defaultHome()) {
+  // Windows-only, and only when the data actually lives in the visible folder
+  // (a not-yet-migrated legacy cabinet has no `~/Grounded` to decorate).
+  if (process.platform === "win32" && base.home === defaultHome() && visibleRoot(base.home) !== base.home) {
     await decorateWindowsFolder(visibleRoot(base.home), base.home);
   }
 

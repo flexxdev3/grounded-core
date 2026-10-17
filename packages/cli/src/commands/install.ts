@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { bootstrap, detect, writeManifest, installSnippet, resolveHome, DEFAULT_PORT, type InstallMethod, type InstallManifest, cabinetDir, visibleRoot } from "@grounded/core";
+import { bootstrap, detect, writeManifest, installSnippet, resolveHome, DEFAULT_PORT, type InstallMethod, type InstallManifest, cabinetDir } from "@grounded/core";
 import type { GlobalOpts } from "../util/global.js";
 import { c, line, header, field, fail } from "../util/output.js";
 import { select, confirm, interactive, type Choice } from "../util/prompt.js";
@@ -136,7 +136,7 @@ export function installCommand(global: () => GlobalOpts): Command {
       line();
       field("method", METHOD_LABEL[method]);
       field("cabinet", cabinetDir(home));
-      if (visibleRoot(home) !== home) field("engine", home);
+      field("config", home);
       field("port", String(port));
       if (opts.token) field("auth", "bearer token");
       line();

@@ -10,6 +10,7 @@ import {
   uninstallCommand,
 } from "./commands/service.js";
 import { initCommand } from "./commands/init.js";
+import { migrateCabinetCommand } from "./commands/migrate.js";
 import { mcpCommand } from "./commands/mcp.js";
 import { hooksCommand } from "./commands/hooks.js";
 import { addonCommand } from "./commands/addon.js";
@@ -50,6 +51,7 @@ program.addCommand(uninstallCommand(global));
 
 // Low-level cabinet primitive (also used inside install).
 program.addCommand(initCommand(global));
+program.addCommand(migrateCabinetCommand(global));
 
 // Agent wiring — data access itself is console / MCP / HTTP now.
 program.addCommand(mcpCommand(global));

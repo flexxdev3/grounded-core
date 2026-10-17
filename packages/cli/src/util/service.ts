@@ -285,6 +285,32 @@ export async function materializeDocker(o: MaterializeOptions): Promise<void> {
 }
 
 /**
+ * The image and bearer token an existing Grounded container runs with, read
+ * from `docker inspect`, so it can be recreated with new mounts without the
+ * operator re-supplying them. null when there is no such container.
+ */
+export async function inspectDockerService(): Promise<{ image: string; token?: string; mounts: string[] } | null> {
+  const out = await capture("docker", ["inspect", "--format", "{{json .}}", DOCKER_NAME]);
+  if (!out) return null;
+  try {
+    const info = JSON.parse(out) as { Config?: { Image?: string; Env?: string[] }; Mounts?: { Source?: string }[] };
+    const cfg = info.Config ?? {};
+    if (!cfg.Image) return null;
+    const mounts = (info.Mounts ?? []).map((m) => m.Source ?? "").filter(Boolean);
+    const tok = cfg.Env?.find((e) => e.startsWith("GROUNDED_API_TOKEN="))?.slice("GROUNDED_API_TOKEN=".length);
+    return tok ? { image: cfg.Image, token: tok, mounts } : { image: cfg.Image, mounts };
+  } catch {
+    return null;
+  }
+}
+
+/** Docker: replace the container (same image, token, port) so it picks up new mounts. */
+export async function recreateDocker(o: MaterializeOptions): Promise<void> {
+  await stream("docker", ["rm", "-f", DOCKER_NAME]);
+  await materializeDocker(o);
+}
+
+/**
  * systemd: resolve a local grounded-api, write + enable the unit.
  *
  * Nothing is fetched here. Grounded ships no registry package, so this path

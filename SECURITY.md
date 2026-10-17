@@ -37,7 +37,7 @@ this repo's `Dockerfile`, and the systemd/Docker units the installer writes.
 
 Out of scope: vulnerabilities in third-party services you configure Grounded to talk to (Postgres,
 Ollama, OpenAI), and findings that require an attacker to already have write access to
-`~/.grounded` or the host account running the service.
+`~/.grounded`, `~/Grounded` or the host account running the service.
 
 ## Deployment notes that affect your threat model
 
@@ -45,7 +45,7 @@ Ollama, OpenAI), and findings that require an attacker to already have write acc
   another interface, set `GROUNDED_API_TOKEN` and put TLS in front of it.
 - The store holds whatever you put in it — facts, session notes, and ingested documents are stored in
   plaintext in SQLite or Postgres so they stay human-readable and recoverable. Treat the cabinet
-  directory (`~/.grounded`) as sensitive.
+  (`~/Grounded/Cabinet`) and the config home (`~/.grounded`, which can hold an API key) as sensitive.
 - `.groundignore` and `<private>` stripping apply at ingest; verify them before ingesting a directory
   containing secrets.
 

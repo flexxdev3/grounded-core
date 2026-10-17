@@ -12,7 +12,8 @@
 export * from "./contract.js";
 
 // Runtime implementation surface (provided by core internals).
-export { loadConfig, defaultConfig, defaultHome, cabinetDir, visibleRoot, CORE_DIRNAME, SYSTEM_DIRNAME, CONFIG_FILENAME } from "./config.js";
+export { loadConfig, defaultConfig, defaultHome, cabinetDir, cabinetLayout, hasCabinetData, visibleRoot, CORE_DIRNAME, SYSTEM_DIRNAME, LEGACY_CABINET_DIRNAME, CONFIG_FILENAME } from "./config.js";
+export type { CabinetLayout } from "./config.js";
 export { openStore } from "./store.js";
 export { ADDON_CATALOG, addonDefinition, addonSupported } from "./addons/catalog.js";
 export type { AddonDefinition, AddonId, AddonRuntimePackage } from "./addons/catalog.js";
@@ -85,6 +86,8 @@ export {
   renderSystemdUnit,
   renderDockerRunArgs,
   renderComposeYaml,
+  dockerMounts,
+  CONTAINER_ROOT,
   systemdUnitPath,
 } from "./install/unit.js";
 export type { UnitOptions, ServiceScope } from "./install/unit.js";
@@ -102,3 +105,7 @@ export type {
   LauncherOptions,
   TaskXmlOptions,
 } from "./install/windows.js";
+
+// Cabinet migration — move a pre-split ~/.grounded/cabinet into ~/Grounded/Cabinet.
+export { migrateCabinet, planCabinetMigration, CabinetMigrationError } from "./install/migrate.js";
+export type { CabinetMigrationPlan, CabinetMigrationResult } from "./install/migrate.js";

@@ -30,7 +30,7 @@ grounded-api
 # console: http://127.0.0.1:7437/
 ```
 
-The bin self-bootstraps `~/.grounded` (cabinet, config, migrations) and reads
+The bin self-bootstraps `~/.grounded` (config) and `~/Grounded/Cabinet` (data, migrations) and reads
 `GROUNDED_HOME`, `GROUNDED_API_PORT` (7437), `GROUNDED_API_HOST` (127.0.0.1),
 `GROUNDED_API_TOKEN`, `GROUNDED_API_UI` (`0` for headless).
 

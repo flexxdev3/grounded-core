@@ -10,9 +10,9 @@
  *               cabinet and labels the container for detection.
  */
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DEFAULT_PORT, DOCKER_NAME, DOCKER_LABEL, SYSTEMD_UNIT } from "./detect.js";
-import { defaultHome } from "../config.js";
+import { cabinetLayout, defaultHome } from "../config.js";
 
 export type ServiceScope = "user" | "system";
 
@@ -86,6 +86,41 @@ export function renderSystemdUnit(scope: ServiceScope, o: UnitOptions = {}): str
   return lines.join("\n");
 }
 
+/** In-container root the default layout is mounted under (mirrors a user's home). */
+export const CONTAINER_ROOT = "/grounded";
+
+/**
+ * Bind mounts (and the in-container GROUNDED_HOME) that reproduce the host's
+ * cabinet layout inside the container, so the engine there resolves the SAME
+ * cabinet `cabinetLayout()` resolves on the host:
+ *
+ *   - default `~/.grounded` home → config at /grounded/.grounded, data at
+ *     /grounded/Grounded/Cabinet (two mounts, one per host folder).
+ *   - Windows `Grounded/.core` home → the whole `~/Grounded` folder.
+ *   - legacy (data still in `~/.grounded/cabinet`) or custom home → the home at
+ *     /cabinet, exactly what earlier releases rendered, so reinstalling over an
+ *     old Docker install keeps pointing at the same data. The image's default
+ *     GROUNDED_HOME is /cabinet, so no env override is needed.
+ *
+ * `home` is null when the image default applies.
+ */
+export function dockerMounts(hostHome: string): { home: string | null; volumes: string[] } {
+  const layout = cabinetLayout(hostHome);
+  if (layout.kind === "visible") {
+    return {
+      home: `${CONTAINER_ROOT}/.grounded`,
+      volumes: [`${hostHome}:${CONTAINER_ROOT}/.grounded`, `${layout.dir}:${CONTAINER_ROOT}/Grounded/Cabinet`],
+    };
+  }
+  if (layout.kind === "core") {
+    return {
+      home: `${CONTAINER_ROOT}/Grounded/.core`,
+      volumes: [`${dirname(hostHome)}:${CONTAINER_ROOT}/Grounded`],
+    };
+  }
+  return { home: null, volumes: [`${hostHome}:/cabinet`] };
+}
+
 /** `docker run` argv for the container backend (detached, restart, labelled, cabinet-mounted). */
 export function renderDockerRunArgs(o: UnitOptions = {}): string[] {
   const home = homeOf(o);
@@ -105,9 +140,10 @@ export function renderDockerRunArgs(o: UnitOptions = {}): string[] {
     `127.0.0.1:${port}:${port}`,
     "-e",
     `GROUNDED_API_PORT=${port}`,
-    "-v",
-    `${home}:/cabinet`,
   ];
+  const m = dockerMounts(home);
+  if (m.home) args.push("-e", `GROUNDED_HOME=${m.home}`);
+  for (const v of m.volumes) args.push("-v", v);
   if (o.token) args.push("-e", `GROUNDED_API_TOKEN=${o.token}`);
   args.push(image);
   return args;
@@ -119,6 +155,7 @@ export function renderComposeYaml(o: UnitOptions = {}): string {
   const port = o.port ?? DEFAULT_PORT;
   const image = o.image ?? "grounded:latest";
   const tokenLine = o.token ? `      GROUNDED_API_TOKEN: ${o.token}\n` : "";
+  const m = dockerMounts(home);
   return (
     `services:\n` +
     `  grounded:\n` +
@@ -131,8 +168,9 @@ export function renderComposeYaml(o: UnitOptions = {}): string {
     `      - "127.0.0.1:${port}:${port}"\n` +
     `    environment:\n` +
     `      GROUNDED_API_PORT: ${port}\n` +
+    (m.home ? `      GROUNDED_HOME: ${m.home}\n` : "") +
     tokenLine +
     `    volumes:\n` +
-    `      - ${home}:/cabinet\n`
+    m.volumes.map((v) => `      - ${v}\n`).join("")
   );
 }

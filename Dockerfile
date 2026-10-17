@@ -1,6 +1,9 @@
 # Grounded — self-hosted continuity API (grounded-api + console)
 # Builds the pnpm monorepo and runs the REST/console server headless-capable.
-# Config comes from a cabinet mounted at GROUNDED_HOME (default /cabinet).
+# Config comes from GROUNDED_HOME. `grounded install` mounts ~/.grounded at
+# /grounded/.grounded and ~/Grounded/Cabinet at /grounded/Grounded/Cabinet and
+# sets GROUNDED_HOME to match; a hand-run container that mounts one folder at
+# the default /cabinet is a self-contained home (data in /cabinet/cabinet).
 
 # ---- build ----
 FROM node:22-bookworm-slim AS build
